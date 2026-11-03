@@ -50,11 +50,11 @@ The name is the short program name the kernel keeps for each process (at most
 processes share one socket, such as a web server and the workers it started,
 the one with the lowest process ID is shown; that is usually the parent.
 
-The exception is `systemd (1)`. With socket activation, systemd opens a port
-and hands it to a service such as sshd, so both hold the socket; reachmap then
+The exception is systemd. With socket activation, systemd opens a port and
+hands it to a service such as sshd, so both hold the socket; reachmap then
 shows the service. `systemd (1)` appears only when systemd is the sole holder:
 a socket unit (for example `cockpit.socket`) whose service has not started
-yet.
+yet. The same applies to per-user `systemd --user` instances.
 
 | SERVICE | Meaning |
 |---------|---------|
