@@ -35,8 +35,8 @@ pub fn socket_inode(target: &str) -> Option<u64> {
 }
 
 /// Maps each socket inode to the process that has it open. Links that are not
-/// sockets are ignored. When several processes share a socket (a server and
-/// the workers it forked), the lowest pid wins: usually the parent.
+/// sockets are ignored. When several processes share a socket, [`precedence`]
+/// picks the one shown.
 pub fn owners_by_inode<'a>(links: impl IntoIterator<Item = FdLink<'a>>) -> HashMap<u64, Process> {
     let mut owners = HashMap::new();
     for link in links {
@@ -47,13 +47,30 @@ pub fn owners_by_inode<'a>(links: impl IntoIterator<Item = FdLink<'a>>) -> HashM
             Entry::Vacant(slot) => {
                 slot.insert(process(link));
             }
-            Entry::Occupied(mut slot) if link.pid < slot.get().pid => {
+            Entry::Occupied(mut slot) if precedence(link.pid) < precedence(slot.get().pid) => {
                 slot.insert(process(link));
             }
             Entry::Occupied(_) => {}
         }
     }
     owners
+}
+
+/// The pid of init, systemd on most hosts.
+const INIT_PID: u32 = 1;
+
+/// Sort key for the processes sharing one socket; the smallest wins.
+///
+/// - Init comes last. With socket activation, systemd opens a socket and
+///   hands it to the service (e.g. sshd), so both hold it, and the service is
+///   the useful answer. Init still wins when it is the only holder: a socket
+///   unit whose service has not started yet.
+/// - Then the lowest pid: a server comes before the workers it forked.
+///
+/// Tuples compare field by field and `false < true`, so `(is_init, pid)`
+/// orders exactly that way.
+fn precedence(pid: u32) -> (bool, u32) {
+    (pid == INIT_PID, pid)
 }
 
 /// The owned [`Process`] for a link. The name is copied out of the borrowed
@@ -129,6 +146,34 @@ mod tests {
         ]);
 
         assert_eq!(worker_first, HashMap::from([(200, process(950, "nginx"))]));
+    }
+
+    #[test]
+    fn a_socket_systemd_hands_to_a_service_belongs_to_the_service() {
+        // Socket activation, as seen for sshd on a real host: systemd (pid 1)
+        // opened the socket and passed it on, so both hold it.
+        for links in [
+            [
+                link(1, "systemd\n", "socket:[300]"),
+                link(7748, "sshd\n", "socket:[300]"),
+            ],
+            [
+                link(7748, "sshd\n", "socket:[300]"),
+                link(1, "systemd\n", "socket:[300]"),
+            ],
+        ] {
+            assert_eq!(
+                owners_by_inode(links),
+                HashMap::from([(300, process(7748, "sshd"))])
+            );
+        }
+    }
+
+    #[test]
+    fn a_socket_only_systemd_holds_belongs_to_systemd() {
+        // A socket unit whose service has not started yet.
+        let owners = owners_by_inode([link(1, "systemd\n", "socket:[400]")]);
+        assert_eq!(owners, HashMap::from([(400, process(1, "systemd"))]));
     }
 
     #[test]
