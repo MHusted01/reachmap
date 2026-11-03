@@ -14,13 +14,13 @@ pub fn render_chain(error: &(dyn Error + 'static)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan::ScanError;
+    use crate::collect::CollectError;
     use std::io;
 
     #[test]
     fn joins_every_cause_outermost_first() {
-        let error = ScanError::Read {
-            path: "/proc/net/tcp",
+        let error = CollectError::Read {
+            path: "/proc/net/tcp".into(),
             source: io::Error::new(io::ErrorKind::PermissionDenied, "permission denied"),
         };
         assert_eq!(
@@ -31,7 +31,7 @@ mod tests {
 
     #[test]
     fn an_error_without_causes_is_just_its_message() {
-        let error = ScanError::UnsupportedOs { os: "macos" };
+        let error = CollectError::UnsupportedOs { os: "macos" };
         assert_eq!(
             render_chain(&error),
             "reachmap scan is Linux only for now (this system is macos)"

@@ -16,29 +16,47 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use thiserror::Error;
 
-use crate::socket::{ListeningSocket, Protocol};
+use crate::socket::{AddressFamily, ListeningSocket, Protocol};
 
 /// A row that could not be understood, with its 1-based line number.
 #[derive(Debug, Error, PartialEq, Eq)]
 #[error("line {line}: {kind}")]
 pub struct ParseError {
+    /// 1-based line number in the file (the header is line 1).
     pub line: usize,
+    /// What was wrong with the row.
     pub kind: ParseErrorKind,
 }
 
 /// What was wrong with a row.
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ParseErrorKind {
+    /// The row ends before the inode column.
     #[error("expected at least {expected} fields, found {found}")]
-    TooFewFields { expected: usize, found: usize },
+    TooFewFields {
+        /// Fields needed, up to and including the inode.
+        expected: usize,
+        /// Fields present.
+        found: usize,
+    },
+    /// The local address has no `:PORT` part.
     #[error("local address {0:?} is not in ADDRESS:PORT form")]
     MissingPort(String),
+    /// The address is not the expected number of hex digits.
     #[error("address {value:?} is not {digits} hex digits")]
-    BadAddress { value: String, digits: usize },
+    BadAddress {
+        /// The text found.
+        value: String,
+        /// Hex digits expected: 8 for IPv4, 32 for IPv6.
+        digits: usize,
+    },
+    /// The port is not 4 hex digits.
     #[error("port {0:?} is not 4 hex digits")]
     BadPort(String),
+    /// The connection state is not 2 hex digits.
     #[error("state {0:?} is not 2 hex digits")]
     BadState(String),
+    /// The inode is not a non-negative decimal number.
     #[error("inode {0:?} is not a whole number")]
     BadInode(String),
 }
@@ -62,12 +80,12 @@ const STATE_DIGITS: usize = 2;
 /// Stops at the first malformed row and reports its 1-based line number.
 pub fn parse_proc_net_tcp(
     text: &str,
-    protocol: Protocol,
+    family: AddressFamily,
 ) -> Result<Vec<ListeningSocket>, ParseError> {
     text.lines()
         .enumerate()
         .filter_map(|(index, line)| {
-            parse_line(line, protocol)
+            parse_line(line, family)
                 .map_err(|kind| ParseError {
                     line: index + 1,
                     kind,
@@ -79,7 +97,10 @@ pub fn parse_proc_net_tcp(
 
 /// Parses one line. `Ok(None)` means "nothing to report": a blank line, the
 /// header, or a socket that is not listening.
-fn parse_line(line: &str, protocol: Protocol) -> Result<Option<ListeningSocket>, ParseErrorKind> {
+fn parse_line(
+    line: &str,
+    family: AddressFamily,
+) -> Result<Option<ListeningSocket>, ParseErrorKind> {
     // Only the first MIN_FIELDS fields matter; a fixed array avoids a heap
     // allocation per line.
     let mut fields = [""; MIN_FIELDS];
@@ -107,14 +128,14 @@ fn parse_line(line: &str, protocol: Protocol) -> Result<Option<ListeningSocket>,
         return Ok(None);
     }
 
-    let (address, port) = parse_endpoint(fields[LOCAL_ADDRESS_FIELD], protocol)?;
+    let (address, port) = parse_endpoint(fields[LOCAL_ADDRESS_FIELD], family)?;
     let inode_text = fields[INODE_FIELD];
     let inode: u64 = inode_text
         .parse()
         .map_err(|_| ParseErrorKind::BadInode(inode_text.to_string()))?;
 
     Ok(Some(ListeningSocket {
-        protocol,
+        protocol: Protocol::Tcp,
         address,
         port,
         inode,
@@ -122,14 +143,14 @@ fn parse_line(line: &str, protocol: Protocol) -> Result<Option<ListeningSocket>,
 }
 
 /// Splits `ADDRESS:PORT` and decodes both halves.
-fn parse_endpoint(field: &str, protocol: Protocol) -> Result<(IpAddr, u16), ParseErrorKind> {
+fn parse_endpoint(field: &str, family: AddressFamily) -> Result<(IpAddr, u16), ParseErrorKind> {
     let (address_hex, port_hex) = field
         .split_once(':')
         .ok_or_else(|| ParseErrorKind::MissingPort(field.to_string()))?;
 
-    let address = match protocol {
-        Protocol::Tcp => IpAddr::V4(decode_ipv4(address_hex)?),
-        Protocol::Tcp6 => IpAddr::V6(decode_ipv6(address_hex)?),
+    let address = match family {
+        AddressFamily::Ipv4 => IpAddr::V4(decode_ipv4(address_hex)?),
+        AddressFamily::Ipv6 => IpAddr::V6(decode_ipv6(address_hex)?),
     };
     let port = parse_hex(port_hex, PORT_DIGITS, u16::from_str_radix)
         .ok_or_else(|| ParseErrorKind::BadPort(port_hex.to_string()))?;
@@ -145,17 +166,20 @@ fn decode_ipv4(hex: &str) -> Result<Ipv4Addr, ParseErrorKind> {
 
 /// Four words, each decoded like an IPv4 address, give the 16 address bytes.
 fn decode_ipv6(hex: &str) -> Result<Ipv6Addr, ParseErrorKind> {
-    if !is_hex_digits(hex, IPV6_DIGITS) {
-        return Err(bad_address(hex, IPV6_DIGITS));
+    let bad = || bad_address(hex, IPV6_DIGITS);
+    if hex.len() != IPV6_DIGITS {
+        return Err(bad());
     }
     let mut bytes = [0u8; 16];
     let (groups, _) = bytes.as_chunks_mut::<4>();
     for (index, group) in groups.iter_mut().enumerate() {
-        // Slicing by byte offset is safe: the check above proved every
-        // character is a one-byte ASCII hex digit.
         let start = index * WORD_DIGITS;
-        let word = parse_word(&hex[start..start + WORD_DIGITS])
-            .ok_or_else(|| bad_address(hex, IPV6_DIGITS))?;
+        // `get` returns None instead of panicking if the range would split a
+        // multi-byte character; `parse_word` rejects anything but hex digits.
+        let word = hex
+            .get(start..start + WORD_DIGITS)
+            .and_then(parse_word)
+            .ok_or_else(bad)?;
         *group = word.to_le_bytes();
     }
     Ok(Ipv6Addr::from(bytes))
@@ -175,6 +199,8 @@ fn parse_word(hex: &str) -> Option<u32> {
 /// Parses exactly `digits` hex digits with the given integer parser, e.g.
 /// `parse_hex("0CEA", 4, u16::from_str_radix)`. The length and digit check
 /// matters: `from_str_radix` alone also accepts a leading `+` and short input.
+/// Taking the parser as a function pointer gives one checked path for every
+/// integer width without a custom trait.
 fn parse_hex<T, E>(
     text: &str,
     digits: usize,
@@ -191,157 +217,4 @@ fn is_hex_digits(text: &str, digits: usize) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const HEADER: &str = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode";
-
-    /// Builds a file with the header and one row; the row is line 2.
-    fn file_with_row(local: &str, state: &str, inode: &str) -> String {
-        format!(
-            "{HEADER}\n   0: {local} 00000000:0000 {state} 00000000:00000000 00:00000000 00000000     0        0 {inode} 1 0000000000000000 100 0 0 10 0\n"
-        )
-    }
-
-    fn error_kind(text: &str, protocol: Protocol) -> ParseErrorKind {
-        match parse_proc_net_tcp(text, protocol) {
-            Err(error) => {
-                assert_eq!(error.line, 2, "the bad row is line 2");
-                error.kind
-            }
-            Ok(sockets) => panic!("expected an error, got {sockets:?}"),
-        }
-    }
-
-    #[test]
-    fn decodes_an_ipv4_listen_row() {
-        let text = file_with_row("0100007F:0CEA", "0A", "23456");
-        let sockets = parse_proc_net_tcp(&text, Protocol::Tcp).unwrap();
-        assert_eq!(
-            sockets,
-            vec![ListeningSocket {
-                protocol: Protocol::Tcp,
-                address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-                port: 3306,
-                inode: 23456,
-            }]
-        );
-    }
-
-    #[test]
-    fn decodes_an_ipv6_address_word_by_word() {
-        // 2001:db8::1 as four little-endian words.
-        let text = file_with_row("B80D0120000000000000000001000000:01BB", "0A", "7");
-        let sockets = parse_proc_net_tcp(&text, Protocol::Tcp6).unwrap();
-        let expected: Ipv6Addr = "2001:db8::1".parse().unwrap();
-        assert_eq!(sockets[0].address, IpAddr::V6(expected));
-        assert_eq!(sockets[0].port, 443);
-    }
-
-    #[test]
-    fn skips_rows_that_are_not_listening() {
-        let text = file_with_row("0100007F:0CEA", "01", "0");
-        assert_eq!(parse_proc_net_tcp(&text, Protocol::Tcp), Ok(Vec::new()));
-    }
-
-    #[test]
-    fn header_only_and_blank_lines_give_no_sockets() {
-        let text = format!("{HEADER}\n\n   \n");
-        assert_eq!(parse_proc_net_tcp(&text, Protocol::Tcp), Ok(Vec::new()));
-        assert_eq!(parse_proc_net_tcp("", Protocol::Tcp), Ok(Vec::new()));
-    }
-
-    #[test]
-    fn a_short_row_is_an_error_with_its_line_number() {
-        let text = format!("{HEADER}\n   0: 0100007F:0CEA 00000000:0000 0A\n");
-        assert_eq!(
-            error_kind(&text, Protocol::Tcp),
-            ParseErrorKind::TooFewFields {
-                expected: 10,
-                found: 4
-            }
-        );
-    }
-
-    #[test]
-    fn a_local_address_without_port_is_an_error() {
-        let text = file_with_row("0100007F", "0A", "1");
-        assert_eq!(
-            error_kind(&text, Protocol::Tcp),
-            ParseErrorKind::MissingPort("0100007F".to_string())
-        );
-    }
-
-    #[test]
-    fn a_non_hex_ipv4_address_is_an_error() {
-        let text = file_with_row("0100007G:0CEA", "0A", "1");
-        assert_eq!(
-            error_kind(&text, Protocol::Tcp),
-            ParseErrorKind::BadAddress {
-                value: "0100007G".to_string(),
-                digits: 8
-            }
-        );
-    }
-
-    #[test]
-    fn an_ipv4_address_in_the_ipv6_table_is_an_error() {
-        let text = file_with_row("0100007F:0CEA", "0A", "1");
-        assert_eq!(
-            error_kind(&text, Protocol::Tcp6),
-            ParseErrorKind::BadAddress {
-                value: "0100007F".to_string(),
-                digits: 32
-            }
-        );
-    }
-
-    #[test]
-    fn a_signed_address_is_an_error() {
-        // `u32::from_str_radix` would accept a leading `+`; the parser must not.
-        let text = file_with_row("+100007F:0CEA", "0A", "1");
-        assert!(matches!(
-            error_kind(&text, Protocol::Tcp),
-            ParseErrorKind::BadAddress { .. }
-        ));
-    }
-
-    #[test]
-    fn a_bad_port_is_an_error() {
-        let text = file_with_row("0100007F:CEA", "0A", "1");
-        assert_eq!(
-            error_kind(&text, Protocol::Tcp),
-            ParseErrorKind::BadPort("CEA".to_string())
-        );
-    }
-
-    #[test]
-    fn a_bad_state_is_an_error() {
-        let text = file_with_row("0100007F:0CEA", "ZZ", "1");
-        assert_eq!(
-            error_kind(&text, Protocol::Tcp),
-            ParseErrorKind::BadState("ZZ".to_string())
-        );
-    }
-
-    #[test]
-    fn a_bad_inode_is_an_error() {
-        let text = file_with_row("0100007F:0CEA", "0A", "-3");
-        assert_eq!(
-            error_kind(&text, Protocol::Tcp),
-            ParseErrorKind::BadInode("-3".to_string())
-        );
-    }
-
-    #[test]
-    fn errors_read_like_sentences() {
-        let error = ParseError {
-            line: 7,
-            kind: ParseErrorKind::BadPort("CEA".to_string()),
-        };
-        assert_eq!(
-            error.to_string(),
-            "line 7: port \"CEA\" is not 4 hex digits"
-        );
-    }
-}
+mod tests;

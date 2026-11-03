@@ -1,11 +1,13 @@
 //! Command-line entry point. Kept thin: parse arguments, call the library,
 //! print, set the exit code.
 
+use std::fmt;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use reachmap::errors::render_chain;
+use reachmap::table::Table;
 
 /// Shows which services on a host can be reached, from where, and why.
 #[derive(Parser)]
@@ -29,20 +31,24 @@ fn main() -> ExitCode {
 }
 
 fn run_scan() -> ExitCode {
-    let sockets = match reachmap::scan::scan() {
-        Ok(sockets) => sockets,
+    match reachmap::scan::scan() {
+        Ok(sockets) => write_stdout(&Table(&sockets)),
         Err(error) => {
             eprintln!("error: {}", render_chain(&error));
-            return ExitCode::FAILURE;
+            if let Some(hint) = error.hint() {
+                eprintln!("hint: {hint}");
+            }
+            ExitCode::FAILURE
         }
-    };
-    write_stdout(&reachmap::table::render_table(&sockets))
+    }
 }
 
-/// Writes to stdout without `print!`, which panics when the reader has gone
-/// away (`reachmap scan | head -1`). A closed pipe is a normal way to stop.
-fn write_stdout(text: &str) -> ExitCode {
-    match io::stdout().lock().write_all(text.as_bytes()) {
+/// Writes to stdout and flushes, without `print!`, which panics when the
+/// reader has gone away (`reachmap scan | head -1`). A closed pipe is a
+/// normal way to stop; any other write error is reported.
+fn write_stdout(content: &impl fmt::Display) -> ExitCode {
+    let mut out = io::stdout().lock();
+    match write!(out, "{content}").and_then(|()| out.flush()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(error) => {

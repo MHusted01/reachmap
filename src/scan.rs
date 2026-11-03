@@ -1,39 +1,49 @@
 //! `reachmap scan`: read the kernel's socket tables and turn them into one
-//! sorted list of listening sockets.
+//! sorted list of listening sockets. Data flows one way:
+//! [`crate::collect`] reads, [`crate::parse`] decodes, this module joins them.
+
+use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::collect;
+use crate::collect::{self, CollectError, RawTable};
 use crate::parse::proc_net::{ParseError, parse_proc_net_tcp};
-use crate::socket::{ListeningSocket, Protocol, sort_by_port};
+use crate::socket::{ListeningSocket, sort_by_port};
 
-/// The raw text of one kernel table, as read from disk.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RawTable {
-    pub protocol: Protocol,
-    /// Where the text came from, used in error messages.
-    pub path: &'static str,
-    pub text: String,
-}
+/// Where users report problems reachmap cannot handle.
+const ISSUES_URL: &str = "https://github.com/MHusted01/reachmap/issues";
 
 /// Why a scan could not finish. Each variant describes only itself; the
-/// underlying cause is reachable through `Error::source`, see `crate::errors`.
+/// cause is reachable through `Error::source` (see [`crate::errors`]).
 #[derive(Debug, Error)]
 pub enum ScanError {
-    #[error("could not read {path}")]
-    Read {
-        path: &'static str,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("could not understand {path}")]
+    /// The system could not be read.
+    #[error(transparent)]
+    Collect(#[from] CollectError),
+    /// A table was read but its content is not in the expected format.
+    #[error("could not understand {}", path.display())]
     Parse {
-        path: &'static str,
+        /// The table that failed.
+        path: PathBuf,
+        /// The row and what was wrong with it.
         #[source]
         source: ParseError,
     },
-    #[error("reachmap scan is Linux only for now (this system is {os})")]
-    UnsupportedOs { os: &'static str },
+}
+
+impl ScanError {
+    /// A suggestion for the user, when there is one beyond the message.
+    pub fn hint(&self) -> Option<String> {
+        match self {
+            ScanError::Parse { path, source } => Some(format!(
+                "this is likely a reachmap bug or a new kernel format; please report it at \
+                 {ISSUES_URL} with line {} of {}",
+                source.line,
+                path.display()
+            )),
+            ScanError::Collect(_) => None,
+        }
+    }
 }
 
 /// Reads this host's TCP tables and returns its listening sockets, sorted by port.
@@ -48,8 +58,8 @@ pub fn parse_tables(tables: &[RawTable]) -> Result<Vec<ListeningSocket>, ScanErr
     let mut sockets = Vec::new();
     for table in tables {
         let parsed =
-            parse_proc_net_tcp(&table.text, table.protocol).map_err(|source| ScanError::Parse {
-                path: table.path,
+            parse_proc_net_tcp(&table.text, table.family).map_err(|source| ScanError::Parse {
+                path: table.path.clone(),
                 source,
             })?;
         sockets.extend(parsed);

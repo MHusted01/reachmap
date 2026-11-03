@@ -2,6 +2,7 @@
 name = "reachmap"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 description = "Shows which services on a host can be reached, from where, and why"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/MHusted01/reachmap"

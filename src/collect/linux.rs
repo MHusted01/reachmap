@@ -1,34 +1,32 @@
-//! Linux collector: reads the kernel's TCP socket tables from `/proc`.
-//! Reading them needs no root; every user can see all sockets in the
-//! current network namespace.
+//! Linux sources: the kernel's TCP socket tables in `/proc`. Reading them
+//! needs no root; every user sees all sockets of the current network namespace.
 
-use std::fs;
-use std::io::ErrorKind;
+use std::path::PathBuf;
 
-use crate::scan::{RawTable, ScanError};
-use crate::socket::Protocol;
+use super::TableSource;
+use crate::socket::AddressFamily;
 
-const TCP_TABLES: [(Protocol, &str); 2] = [
-    (Protocol::Tcp, "/proc/net/tcp"),
-    (Protocol::Tcp6, "/proc/net/tcp6"),
-];
+// The `/proc/net/tcp` parser decodes addresses as little-endian words, which
+// is how the kernel prints them on little-endian hosts. Refuse to build
+// rather than report wrong addresses on a big-endian one.
+#[cfg(target_endian = "big")]
+compile_error!("reachmap's /proc/net/tcp parser assumes a little-endian host");
 
-/// Reads `/proc/net/tcp` and `/proc/net/tcp6`.
-///
-/// When IPv6 is disabled in the kernel, `/proc/net/tcp6` does not exist. That
-/// is not missing data: it means there are no IPv6 sockets, so the table is skipped.
-pub fn read_tcp_tables() -> Result<Vec<RawTable>, ScanError> {
-    let mut tables = Vec::new();
-    for (protocol, path) in TCP_TABLES {
-        match fs::read_to_string(path) {
-            Ok(text) => tables.push(RawTable {
-                protocol,
-                path,
-                text,
-            }),
-            Err(error) if protocol == Protocol::Tcp6 && error.kind() == ErrorKind::NotFound => {}
-            Err(source) => return Err(ScanError::Read { path, source }),
-        }
-    }
-    Ok(tables)
+/// `/proc/net/tcp` (required) and `/proc/net/tcp6`. The IPv6 table is
+/// optional: it does not exist when IPv6 is disabled in the kernel, which
+/// means there are no IPv6 sockets. It is also absent when `/proc/net` is
+/// not mounted, but then `/proc/net/tcp` is missing too and reading fails.
+pub(super) fn tcp_sources() -> [TableSource; 2] {
+    [
+        TableSource {
+            family: AddressFamily::Ipv4,
+            path: PathBuf::from("/proc/net/tcp"),
+            optional: false,
+        },
+        TableSource {
+            family: AddressFamily::Ipv6,
+            path: PathBuf::from("/proc/net/tcp6"),
+            optional: true,
+        },
+    ]
 }
