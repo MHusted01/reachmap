@@ -51,7 +51,7 @@ impl ProcessFds {
 
 /// Reads the open files of every process below `proc_root` (normally `/proc`).
 ///
-/// Processes that cannot be inspected for lack of privileges set
+/// Processes or links that cannot be inspected for lack of privileges set
 /// [`ProcessFds::permission_denied`]; processes that exit during the walk are
 /// skipped. Any other failure is an error naming the path.
 pub fn read_process_fds(proc_root: &Path) -> Result<ProcessFds, CollectError> {
@@ -61,20 +61,71 @@ pub fn read_process_fds(proc_root: &Path) -> Result<ProcessFds, CollectError> {
         let Some(pid) = pid_of(&entry.file_name()) else {
             continue;
         };
-        match read_process(&entry.path(), pid) {
-            Ok(Some(process)) => found.processes.push(process),
-            Ok(None) => {}
-            Err(CollectError::Read { source, .. })
-                if source.kind() == ErrorKind::PermissionDenied =>
-            {
-                found.permission_denied = true;
-            }
-            // The process exited between listing `/proc` and reading it.
-            Err(CollectError::Read { source, .. }) if source.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        let dir = entry.path();
+        let Some(fds) = found.tolerate(read_fd_targets(&dir.join("fd")))? else {
+            continue;
+        };
+        found.permission_denied |= fds.denied;
+        // No open files (kernel threads): skip without reading the name.
+        if fds.targets.is_empty() {
+            continue;
         }
+        let comm_path = dir.join("comm");
+        let comm = fs::read_to_string(&comm_path).map_err(read_error(&comm_path));
+        let Some(comm) = found.tolerate(comm)? else {
+            continue;
+        };
+        found.processes.push(RawProcess {
+            pid,
+            comm,
+            fd_targets: fds.targets,
+        });
     }
     Ok(found)
+}
+
+impl ProcessFds {
+    /// Turns the failures a walk expects into "skip this process": a denial
+    /// is recorded, a process that is gone is ignored. Other failures stay
+    /// errors.
+    fn tolerate<T>(&mut self, result: Result<T, CollectError>) -> Result<Option<T>, CollectError> {
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(CollectError::Read { source, .. }) if classify(&source) == Failure::Denied => {
+                self.permission_denied = true;
+                Ok(None)
+            }
+            Err(CollectError::Read { source, .. }) if classify(&source) == Failure::Gone => {
+                Ok(None)
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+/// The kinds of failure a walk over `/proc` must tell apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    /// Not allowed for this user (`EACCES` or `EPERM`): root would see more.
+    Denied,
+    /// The process exited, or the file was closed, while it was being read.
+    Gone,
+    /// Anything else: a real problem worth reporting.
+    Other,
+}
+
+/// `ESRCH`, "no such process": what the kernel may return when a process
+/// exits while one of its `/proc` files is read. Rust has no stable
+/// `ErrorKind` for it, so it is matched by number (3 on Linux and macOS).
+const ESRCH: i32 = 3;
+
+fn classify(error: &io::Error) -> Failure {
+    match error.kind() {
+        ErrorKind::PermissionDenied => Failure::Denied,
+        ErrorKind::NotFound => Failure::Gone,
+        _ if error.raw_os_error() == Some(ESRCH) => Failure::Gone,
+        _ => Failure::Other,
+    }
 }
 
 /// The pid a `/proc` entry stands for; `None` for `self`, `net`, `version`
@@ -83,37 +134,36 @@ fn pid_of(name: &OsStr) -> Option<u32> {
     name.to_str()?.parse().ok()
 }
 
-/// One process's open files and name. `None` when it has no open files
-/// (kernel threads), so its name is not even read.
-fn read_process(dir: &Path, pid: u32) -> Result<Option<RawProcess>, CollectError> {
-    let fd_targets = read_fd_targets(&dir.join("fd"))?;
-    if fd_targets.is_empty() {
-        return Ok(None);
-    }
-    let comm_path = dir.join("comm");
-    let comm = fs::read_to_string(&comm_path).map_err(read_error(&comm_path))?;
-    Ok(Some(RawProcess {
-        pid,
-        comm,
-        fd_targets,
-    }))
+/// The link targets found in one `fd` folder.
+#[derive(Debug, Default)]
+struct FdTargets {
+    /// Every target that could be read.
+    targets: Vec<String>,
+    /// True when some links could not be read for lack of privileges.
+    denied: bool,
 }
 
-/// The target of every link in one `fd` folder.
-fn read_fd_targets(fd_dir: &Path) -> Result<Vec<String>, CollectError> {
-    let mut targets = Vec::new();
+/// Reads the target of every link in one `fd` folder. A link that cannot be
+/// read is skipped, so the readable ones are still used.
+fn read_fd_targets(fd_dir: &Path) -> Result<FdTargets, CollectError> {
+    let mut found = FdTargets::default();
     for entry in fs::read_dir(fd_dir).map_err(read_error(fd_dir))? {
         let link = entry.map_err(read_error(fd_dir))?.path();
         match fs::read_link(&link) {
             // Socket targets are always ASCII. A target that is not UTF-8 is
             // a file path, never a socket, so dropping it loses nothing.
-            Ok(target) => targets.extend(target.into_os_string().into_string().ok()),
-            // The file was closed between listing the folder and reading the link.
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(read_error(&link)(error)),
+            Ok(target) => found
+                .targets
+                .extend(target.into_os_string().into_string().ok()),
+            Err(error) => match classify(&error) {
+                Failure::Denied => found.denied = true,
+                // The file was closed between listing the folder and reading the link.
+                Failure::Gone => {}
+                Failure::Other => return Err(read_error(&link)(error)),
+            },
         }
     }
-    Ok(targets)
+    Ok(found)
 }
 
 /// Wraps an I/O error with the path it happened on, for `map_err`.
@@ -221,6 +271,43 @@ mod tests {
                 permission_denied: true,
             }
         );
+    }
+
+    #[test]
+    fn links_that_cannot_be_read_are_recorded_not_an_error() {
+        // Without the search (x) bit the folder can be listed, but the links
+        // inside it cannot be read.
+        let proc = TempDir::new("procs-link-denied");
+        proc.file("1/comm", "systemd\n");
+        let fd = proc.dir("1/fd");
+        proc.symlink("1/fd/3", "socket:[100]");
+        fs::set_permissions(&fd, fs::Permissions::from_mode(0o444)).unwrap();
+        let running_as_root = fs::read_link(fd.join("3")).is_ok();
+
+        let result = read_process_fds(proc.path());
+        fs::set_permissions(&fd, fs::Permissions::from_mode(0o755)).unwrap();
+
+        if running_as_root {
+            return;
+        }
+        assert_eq!(
+            result.unwrap(),
+            ProcessFds {
+                processes: vec![],
+                permission_denied: true,
+            }
+        );
+    }
+
+    #[test]
+    fn classifies_failures_as_denied_gone_or_other() {
+        let os_error = io::Error::from_raw_os_error;
+        assert_eq!(classify(&os_error(13)), Failure::Denied, "EACCES");
+        assert_eq!(classify(&os_error(1)), Failure::Denied, "EPERM");
+        assert_eq!(classify(&os_error(2)), Failure::Gone, "ENOENT");
+        assert_eq!(classify(&os_error(3)), Failure::Gone, "ESRCH");
+        assert_eq!(classify(&os_error(20)), Failure::Other, "ENOTDIR");
+        assert_eq!(classify(&io::Error::other("boom")), Failure::Other);
     }
 
     #[test]

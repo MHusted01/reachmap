@@ -54,7 +54,7 @@ the one with the lowest process ID is shown; that is usually the parent.
 |---------|---------|
 | `sshd (812)` | Process 812, named `sshd`, has the socket open. |
 | `unknown (run with sudo for details)` | Some processes belong to other users and could not be inspected; run `sudo reachmap scan` to see them. |
-| `unknown` | No process holds the socket, even though every process was inspected. This happens for sockets the kernel opens itself (for example NFS) and for a process that exited during the scan. |
+| `unknown` | No visible process holds the socket. This happens for sockets the kernel opens itself (for example NFS), for a process that exited during the scan, and for processes hidden by `hidepid` (see below). |
 
 ## Requirements and limits
 
@@ -65,9 +65,11 @@ the one with the lowest process ID is shown; that is usually the parent.
   socket means reading `/proc/<pid>/fd`, which only works for your own
   processes unless you run `scan` with `sudo`. reachmap only reads; it never
   changes anything, with or without root.
-- **Hidden processes.** When `/proc` is mounted with `hidepid=2`, other users'
-  processes are invisible rather than locked, so their sockets show `unknown`
-  without the sudo hint. Running with `sudo` still finds them.
+- **Hidden processes.** When `/proc` is mounted with `hidepid=2` (or
+  `hidepid=invisible`), other users' processes are invisible rather than
+  locked. reachmap cannot tell them apart from sockets without a process yet,
+  so their sockets show `unknown` without the sudo hint. Running with `sudo`
+  still finds them.
 - **One network namespace.** `scan` sees the sockets of the namespace it runs
   in. Docker containers on their own network have separate sockets; ports
   that Docker publishes show up through `docker-proxy` on the host. Container

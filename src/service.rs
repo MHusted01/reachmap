@@ -22,7 +22,9 @@ pub enum UnknownReason {
     /// owner is probably one of them.
     NeedsRoot,
     /// Every visible process was inspected and none holds the socket, e.g. a
-    /// socket opened by the kernel or by a process that just exited.
+    /// socket opened by the kernel or by a process that just exited. Processes
+    /// hidden by mounting `/proc` with `hidepid=2` are not visible, so this
+    /// does not prove that no process holds it.
     NoProcess,
 }
 
