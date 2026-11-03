@@ -1,5 +1,6 @@
 //! Linux sources: the kernel's TCP socket tables in `/proc`. Reading them
 //! needs no root; every user sees all sockets of the current network namespace.
+//! The open files of other users' processes, under `/proc/<pid>/fd`, do need root.
 
 use std::path::PathBuf;
 
@@ -11,6 +12,9 @@ use crate::socket::AddressFamily;
 // rather than report wrong addresses on a big-endian one.
 #[cfg(target_endian = "big")]
 compile_error!("reachmap's /proc/net/tcp parser assumes a little-endian host");
+
+/// Where the kernel lists one folder per process.
+pub(super) const PROC_ROOT: &str = "/proc";
 
 /// `/proc/net/tcp` (required) and `/proc/net/tcp6`. The IPv6 table is
 /// optional: it does not exist when IPv6 is disabled in the kernel, which

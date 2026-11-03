@@ -1,17 +1,17 @@
 # reachmap scan
 
 `reachmap scan` lists every TCP socket on this host that is waiting for
-connections (the LISTEN state), sorted by port.
+connections (the LISTEN state), sorted by port, with the program behind it.
 
 ```
-$ reachmap scan
-PORT  PROTO  ADDRESS
-22    tcp    0.0.0.0
-22    tcp6   ::
-53    tcp    127.0.0.53
-631   tcp6   ::1
-3306  tcp    127.0.0.1
-8080  tcp    192.168.0.87
+$ sudo reachmap scan
+PORT  PROTO  ADDRESS       SERVICE
+22    tcp    0.0.0.0       sshd (812)
+22    tcp6   ::            sshd (812)
+53    tcp    127.0.0.53    systemd-resolve (640)
+631   tcp6   ::1           cupsd (1033)
+3306  tcp    127.0.0.1     mysqld (1201)
+8080  tcp    192.168.0.87  python3 (4410)
 ```
 
 ## Columns
@@ -21,6 +21,7 @@ PORT  PROTO  ADDRESS
 | PORT    | The TCP port the service listens on. |
 | PROTO   | `tcp` for IPv4, `tcp6` for IPv6. |
 | ADDRESS | The local address the socket is bound to (see below). |
+| SERVICE | The program that has the socket open, as `name (pid)` (see below). |
 
 ## Reading the address
 
@@ -42,12 +43,39 @@ The address alone does not tell you whether a firewall lets traffic through.
 Later versions of reachmap combine it with interfaces, Docker and UFW facts
 into a verdict.
 
+## Reading the service
+
+The name is the short program name the kernel keeps for each process (at most
+15 characters, so `systemd-resolved` shows as `systemd-resolve`). When several
+processes share one socket, such as a web server and the workers it started,
+the one with the lowest process ID is shown; that is usually the parent.
+
+The exception is systemd. With socket activation, systemd opens a port and
+hands it to a service such as sshd, so both hold the socket; reachmap then
+shows the service. `systemd (1)` appears only when systemd is the sole holder:
+a socket unit (for example `cockpit.socket`) whose service has not started
+yet. The same applies to per-user `systemd --user` instances.
+
+| SERVICE | Meaning |
+|---------|---------|
+| `sshd (812)` | Process 812, named `sshd`, has the socket open. |
+| `unknown (run with sudo for details)` | Some processes belong to other users and could not be inspected; run `sudo reachmap scan` to see them. |
+| `unknown` | No visible process holds the socket. This happens for sockets the kernel opens itself (for example NFS), for a process that exited during the scan, and for processes hidden by `hidepid` (see below). |
+
 ## Requirements and limits
 
 - **Linux only for now.** On other systems `scan` prints
   `reachmap scan is Linux only for now` and exits with status 1.
-- **No root needed.** The data comes from `/proc/net/tcp` and `/proc/net/tcp6`,
-  which every user can read.
+- **Root shows more.** The sockets come from `/proc/net/tcp` and
+  `/proc/net/tcp6`, which every user can read. Finding the process behind a
+  socket means reading `/proc/<pid>/fd`, which only works for your own
+  processes unless you run `scan` with `sudo`. reachmap only reads; it never
+  changes anything, with or without root.
+- **Hidden processes.** When `/proc` is mounted with `hidepid=2` (or
+  `hidepid=invisible`), other users' processes are invisible rather than
+  locked. reachmap cannot tell them apart from sockets without a process yet,
+  so their sockets show `unknown` without the sudo hint. Running with `sudo`
+  still finds them.
 - **One network namespace.** `scan` sees the sockets of the namespace it runs
   in. Docker containers on their own network have separate sockets; ports
   that Docker publishes show up through `docker-proxy` on the host. Container

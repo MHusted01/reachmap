@@ -19,7 +19,7 @@ PORT   SERVICE               REACHABLE FROM     WHY
 
 > **Status:** early development. The example shows the planned v0.1 output.
 > Today `reachmap scan` lists listening TCP sockets with their bind address
-> ([details](docs/scan.md)); follow the
+> and the process behind each ([details](docs/scan.md)); follow the
 > [v0.1 milestone](https://github.com/MHusted01/reachmap/milestones) for progress.
 
 ## Install

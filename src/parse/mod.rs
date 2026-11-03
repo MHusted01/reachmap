@@ -2,3 +2,4 @@
 //! so every parser is tested on any OS with fixture files.
 
 pub mod proc_net;
+pub mod proc_pid;
