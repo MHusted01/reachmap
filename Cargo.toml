@@ -11,6 +11,8 @@ categories = ["command-line-utilities", "network-programming"]
 exclude = [".github/", "scripts/"]
 
 [dependencies]
+clap = { version = "4.6.7", features = ["derive"] }
+thiserror = "2.0.21"
 
 [lints.rust]
 unsafe_code = "forbid"

@@ -5,3 +5,9 @@ All notable changes to reachmap are listed here. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Added
+
+- `reachmap scan` lists the TCP sockets listening on a Linux host (IPv4 and
+  IPv6) with their port and bind address, sorted by port
+  ([#2](https://github.com/MHusted01/reachmap/issues/2)).

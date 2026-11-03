@@ -17,9 +17,10 @@ PORT   SERVICE               REACHABLE FROM     WHY
 8080   qbittorrent (docker)  this host only     bound to 127.0.0.1
 ```
 
-> **Status:** early development. The example shows the planned v0.1 output;
-> follow the [v0.1 milestone](https://github.com/MHusted01/reachmap/milestones)
-> for progress.
+> **Status:** early development. The example shows the planned v0.1 output.
+> Today `reachmap scan` lists listening TCP sockets with their bind address
+> ([details](docs/scan.md)); follow the
+> [v0.1 milestone](https://github.com/MHusted01/reachmap/milestones) for progress.
 
 ## Install
 
