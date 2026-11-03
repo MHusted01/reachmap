@@ -1,0 +1,25 @@
+[package]
+name = "reachmap"
+version = "0.1.0"
+edition = "2024"
+description = "Shows which services on a host can be reached, from where, and why"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MHusted01/reachmap"
+readme = "README.md"
+keywords = ["network", "security", "docker", "firewall", "homelab"]
+categories = ["command-line-utilities", "network-programming"]
+exclude = [".github/", "scripts/"]
+
+[dependencies]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

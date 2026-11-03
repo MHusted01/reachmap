@@ -1,0 +1,61 @@
+name: Bug report
+description: reachmap shows something wrong, misses a service or crashes.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Security issues go through private reporting instead,
+        see [SECURITY.md](https://github.com/MHusted01/reachmap/blob/main/SECURITY.md).
+        Please remove public IP addresses and hostnames you do not want to share.
+  - type: checkboxes
+    id: searched
+    attributes:
+      label: Existing issues
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: reachmap version
+      description: Output of `reachmap --version`.
+      placeholder: "reachmap 0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Distribution and version, e.g. from `cat /etc/os-release`.
+      placeholder: "Ubuntu Server 26.04"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Docker, firewall and VPN
+      description: Versions or "none". E.g. Docker 29.4, UFW active, Tailscale 1.90.
+      placeholder: "Docker 29.4, UFW active, Tailscale"
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected and what reachmap showed instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Run `sudo reachmap scan`
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: The relevant reachmap output, and for comparison `ss -tlnp` or `docker ps` if useful.
+      render: text

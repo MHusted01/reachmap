@@ -1,0 +1,15 @@
+# Agent context and personal notes (kept local only, never committed)
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+LEARNING.md
+.claude/
+.agents/
+
+# Build output
+/target/
+/dist/
+lcov.info
+
+# macOS
+.DS_Store
