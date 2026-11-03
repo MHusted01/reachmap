@@ -3,10 +3,15 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+mod processes;
+#[cfg(test)]
+mod test_support;
 
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
+
+pub use processes::{ProcessFds, RawProcess, read_process_fds};
 
 use thiserror::Error;
 
@@ -70,6 +75,20 @@ pub fn read_tcp_tables() -> Result<Vec<RawTable>, CollectError> {
     })
 }
 
+/// Lists the open files of every process on this host, from `/proc`.
+#[cfg(target_os = "linux")]
+pub fn read_open_files() -> Result<ProcessFds, CollectError> {
+    read_process_fds(std::path::Path::new(linux::PROC_ROOT))
+}
+
+/// Lists the open files of every process. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn read_open_files() -> Result<ProcessFds, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
 /// Reads each source in order, skipping optional sources that do not exist.
 pub fn read_tables(sources: &[TableSource]) -> Result<Vec<RawTable>, CollectError> {
     let mut tables = Vec::with_capacity(sources.len());
@@ -94,33 +113,10 @@ pub fn read_tables(sources: &[TableSource]) -> Result<Vec<RawTable>, CollectErro
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::TempDir;
     use super::*;
     use crate::errors::render_chain;
     use std::path::Path;
-
-    /// A fresh directory per test, removed when the guard is dropped.
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let path = std::env::temp_dir().join(format!("reachmap-{}-{name}", std::process::id()));
-            let _ = fs::remove_dir_all(&path);
-            fs::create_dir_all(&path).unwrap();
-            TempDir(path)
-        }
-
-        fn file(&self, name: &str, text: &str) -> PathBuf {
-            let path = self.0.join(name);
-            fs::write(&path, text).unwrap();
-            path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
 
     fn source(family: AddressFamily, path: &Path, optional: bool) -> TableSource {
         TableSource {
@@ -163,7 +159,7 @@ mod tests {
     fn a_missing_optional_source_is_skipped() {
         let dir = TempDir::new("optional");
         let tcp = dir.file("tcp", "four");
-        let missing = dir.0.join("tcp6");
+        let missing = dir.path().join("tcp6");
 
         let tables = read_tables(&[
             source(AddressFamily::Ipv4, &tcp, false),
@@ -178,7 +174,7 @@ mod tests {
     #[test]
     fn a_missing_required_source_is_an_error_naming_the_file() {
         let dir = TempDir::new("required");
-        let missing = dir.0.join("tcp");
+        let missing = dir.path().join("tcp");
 
         let error = read_tables(&[source(AddressFamily::Ipv4, &missing, false)]).unwrap_err();
 
@@ -195,7 +191,7 @@ mod tests {
         // Reading a directory as a file fails with an error that is not NotFound.
         let dir = TempDir::new("not-a-file");
 
-        let result = read_tables(&[source(AddressFamily::Ipv6, &dir.0, true)]);
+        let result = read_tables(&[source(AddressFamily::Ipv6, dir.path(), true)]);
 
         assert!(matches!(result, Err(CollectError::Read { .. })));
     }

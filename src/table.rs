@@ -2,18 +2,24 @@
 
 use std::fmt;
 
-use crate::socket::ListeningSocket;
+use crate::service::ScannedSocket;
 
 /// Printed instead of an empty table.
 pub const NO_SOCKETS: &str = "No listening TCP sockets found.";
 
+/// Number of columns in the table.
+const COLUMNS: usize = 4;
+
+/// Column titles, in order.
+const HEADERS: [&str; COLUMNS] = ["PORT", "PROTO", "ADDRESS", "SERVICE"];
+
 /// Space between columns.
 const GAP: &str = "  ";
 
-/// Displays sockets as an aligned table, one row per socket in the order
-/// given, every line ending in a newline. Use it with `{}` or `to_string()`.
+/// Displays scanned sockets as an aligned table, one row per socket in the
+/// order given, every line ending in a newline. Use it with `{}` or `to_string()`.
 #[derive(Debug, Clone, Copy)]
-pub struct Table<'a>(pub &'a [ListeningSocket]);
+pub struct Table<'a>(pub &'a [ScannedSocket]);
 
 impl fmt::Display for Table<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -21,84 +27,112 @@ impl fmt::Display for Table<'_> {
             return writeln!(f, "{NO_SOCKETS}");
         }
 
-        let rows: Vec<[String; 3]> = self
-            .0
-            .iter()
-            .map(|s| [s.port.to_string(), s.protocol_name(), s.address.to_string()])
-            .collect();
-        let port_width = column_width("PORT", rows.iter().map(|row| row[0].len()));
-        let proto_width = column_width("PROTO", rows.iter().map(|row| row[1].len()));
-        let mut line = |port: &str, proto: &str, address: &str| {
-            writeln!(
-                f,
-                "{port:<port_width$}{GAP}{proto:<proto_width$}{GAP}{address}"
-            )
-        };
+        let rows: Vec<[String; COLUMNS]> = self.0.iter().map(cells).collect();
+        // Characters, not bytes: `{:<width$}` pads by characters, and process
+        // names may contain non-ASCII text.
+        let widths: [usize; COLUMNS] = std::array::from_fn(|column| {
+            rows.iter()
+                .map(|row| row[column].chars().count())
+                .fold(HEADERS[column].len(), usize::max)
+        });
 
-        line("PORT", "PROTO", "ADDRESS")?;
-        for [port, proto, address] in &rows {
-            line(port, proto, address)?;
-        }
-        Ok(())
+        write_row(f, &HEADERS, &widths)?;
+        rows.iter().try_for_each(|row| write_row(f, row, &widths))
     }
 }
 
-/// The widest of the header and all value lengths in one column.
-fn column_width(header: &str, value_lengths: impl Iterator<Item = usize>) -> usize {
-    value_lengths.fold(header.len(), usize::max)
+/// The text of each column for one socket.
+fn cells(scanned: &ScannedSocket) -> [String; COLUMNS] {
+    let socket = &scanned.socket;
+    [
+        socket.port.to_string(),
+        socket.protocol_name(),
+        socket.address.to_string(),
+        scanned.service.to_string(),
+    ]
+}
+
+/// Writes one line. Every column but the last is padded to its width; the
+/// last is written as is, so lines never end in spaces.
+fn write_row(
+    f: &mut fmt::Formatter<'_>,
+    cells: &[impl AsRef<str>; COLUMNS],
+    widths: &[usize; COLUMNS],
+) -> fmt::Result {
+    let [padded @ .., last] = cells;
+    for (cell, width) in padded.iter().zip(widths) {
+        write!(f, "{:<width$}{GAP}", cell.as_ref())?;
+    }
+    writeln!(f, "{}", last.as_ref())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::socket::Protocol;
+    use crate::service::{Process, Service, UnknownReason};
+    use crate::socket::{ListeningSocket, Protocol};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-    fn socket(address: IpAddr, port: u16) -> ListeningSocket {
-        ListeningSocket {
-            protocol: Protocol::Tcp,
-            address,
-            port,
-            inode: 1,
+    const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+    const NEEDS_ROOT: Service = Service::Unknown(UnknownReason::NeedsRoot);
+
+    fn row(address: IpAddr, port: u16, service: Service) -> ScannedSocket {
+        ScannedSocket {
+            socket: ListeningSocket {
+                protocol: Protocol::Tcp,
+                address,
+                port,
+                inode: 1,
+            },
+            service,
         }
+    }
+
+    fn process(name: &str, pid: u32) -> Service {
+        Service::Process(Process {
+            pid,
+            name: name.to_string(),
+        })
     }
 
     #[test]
     fn renders_aligned_columns_with_a_header() {
-        let sockets = [
-            socket(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 22),
-            socket(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 22),
-            socket(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)), 53),
-            socket(IpAddr::V4(Ipv4Addr::LOCALHOST), 3306),
+        let rows = [
+            row(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 22, process("sshd", 812)),
+            row(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 22, process("sshd", 812)),
+            row(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)), 53, NEEDS_ROOT),
+            row(LOCAL_V4, 3306, process("mysqld", 1201)),
         ];
         let expected = "\
-PORT  PROTO  ADDRESS
-22    tcp    0.0.0.0
-22    tcp6   ::
-53    tcp    127.0.0.53
-3306  tcp    127.0.0.1
+PORT  PROTO  ADDRESS     SERVICE
+22    tcp    0.0.0.0     sshd (812)
+22    tcp6   ::          sshd (812)
+53    tcp    127.0.0.53  unknown (run with sudo for details)
+3306  tcp    127.0.0.1   mysqld (1201)
 ";
-        assert_eq!(Table(&sockets).to_string(), expected);
+        assert_eq!(Table(&rows).to_string(), expected);
     }
 
     #[test]
     fn short_values_still_get_header_width_columns() {
-        let sockets = [socket(IpAddr::V4(Ipv4Addr::LOCALHOST), 1)];
+        let rows = [row(IpAddr::V6(Ipv6Addr::LOCALHOST), 1, process("a", 2))];
         assert_eq!(
-            Table(&sockets).to_string(),
-            "PORT  PROTO  ADDRESS\n1     tcp    127.0.0.1\n"
+            Table(&rows).to_string(),
+            "PORT  PROTO  ADDRESS  SERVICE\n1     tcp6   ::1      a (2)\n"
         );
     }
 
     #[test]
     fn a_five_digit_port_widens_the_port_column() {
-        let sockets = [
-            socket(IpAddr::V4(Ipv4Addr::LOCALHOST), 22),
-            socket(IpAddr::V4(Ipv4Addr::LOCALHOST), 41641),
+        let rows = [
+            row(LOCAL_V4, 22, process("sshd", 1)),
+            row(LOCAL_V4, 41641, process("tailscaled", 2)),
         ];
         assert_eq!(
-            Table(&sockets).to_string(),
-            "PORT   PROTO  ADDRESS\n22     tcp    127.0.0.1\n41641  tcp    127.0.0.1\n"
+            Table(&rows).to_string(),
+            "PORT   PROTO  ADDRESS    SERVICE\n\
+             22     tcp    127.0.0.1  sshd (1)\n\
+             41641  tcp    127.0.0.1  tailscaled (2)\n"
         );
     }
 
