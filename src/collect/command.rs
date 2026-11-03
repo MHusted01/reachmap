@@ -1,13 +1,30 @@
 //! Running a read-only system command and capturing what it prints.
 
-use std::process::Command;
+use std::path::Path;
+use std::process::{Command, Stdio};
 
 use super::CollectError;
 
+/// The first of `candidates` that is an existing file, or `fallback` when none
+/// is. Running a program by absolute path keeps a directory early in `PATH`
+/// from supplying its own copy, which matters under `sudo`; the fallback is
+/// looked up through `PATH` for systems that keep it elsewhere.
+pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
+    candidates
+        .iter()
+        .copied()
+        .find(|path| Path::new(path).is_file())
+        .unwrap_or(fallback)
+}
+
 /// Runs `program` with `args` and returns its standard output. Standard input
-/// is closed, so the command cannot wait for input. A command that cannot be
-/// started, exits with a failure status, or prints something other than
-/// UTF-8 is an error.
+/// is `/dev/null`, so the command cannot wait for input. A command that
+/// cannot be started, exits with a failure status, or prints something other
+/// than UTF-8 is an error.
+///
+/// There is no timeout: the only caller runs `ip -j addr`, which asks the
+/// kernel over netlink and does no network or DNS lookups, so it returns at
+/// once. A command that can block would need one.
 pub(super) fn run(program: &str, args: &[&str]) -> Result<String, CollectError> {
     let command = || {
         std::iter::once(program)
@@ -17,6 +34,7 @@ pub(super) fn run(program: &str, args: &[&str]) -> Result<String, CollectError> 
     };
     let output = Command::new(program)
         .args(args)
+        .stdin(Stdio::null())
         .output()
         .map_err(|source| CollectError::Run {
             command: command(),
@@ -37,6 +55,7 @@ pub(super) fn run(program: &str, args: &[&str]) -> Result<String, CollectError> 
 
 #[cfg(all(test, unix))]
 mod tests {
+    use super::super::test_support::TempDir;
     use super::*;
     use crate::errors::render_chain;
     use std::io::ErrorKind;
@@ -84,5 +103,30 @@ mod tests {
     fn output_that_is_not_utf8_is_an_error() {
         let error = run("sh", &["-c", "printf '\\377'"]).unwrap_err();
         assert!(matches!(error, CollectError::NotUtf8 { .. }));
+    }
+
+    #[test]
+    fn locate_returns_the_first_existing_candidate() {
+        let dir = TempDir::new("locate-first");
+        let second = dir.file("bin/ip", "");
+        let third = dir.file("usr/bin/ip", "");
+        let missing = dir.path().join("sbin/ip");
+        let candidates = [
+            missing.to_str().unwrap(),
+            second.to_str().unwrap(),
+            third.to_str().unwrap(),
+        ];
+
+        assert_eq!(locate(&candidates, "ip"), second.to_str().unwrap());
+    }
+
+    #[test]
+    fn locate_skips_directories_and_falls_back_when_nothing_exists() {
+        let dir = TempDir::new("locate-fallback");
+        let not_a_file = dir.path().to_str().unwrap();
+        let missing = dir.path().join("ip");
+
+        assert_eq!(locate(&[not_a_file, missing.to_str().unwrap()], "ip"), "ip");
+        assert_eq!(locate(&[], "ip"), "ip");
     }
 }

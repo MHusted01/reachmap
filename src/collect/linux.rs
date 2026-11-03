@@ -17,10 +17,14 @@ compile_error!("reachmap's /proc/net/tcp parser assumes a little-endian host");
 /// Where the kernel lists one folder per process.
 pub(super) const PROC_ROOT: &str = "/proc";
 
-/// The iproute2 tool that lists interfaces, and the arguments that make it
-/// print every interface with its addresses as JSON. Run by name: under
-/// `sudo`, the search path is sudo's `secure_path`.
+/// Where distributions install iproute2's `ip`, tried in order. Only root can
+/// write to these directories.
+pub(super) const IP_PATHS: &[&str] = &["/usr/sbin/ip", "/usr/bin/ip", "/sbin/ip", "/bin/ip"];
+
+/// The name to look up through `PATH` when `ip` is in none of [`IP_PATHS`].
 pub(super) const IP_PROGRAM: &str = "ip";
+
+/// Makes `ip` print every interface with its addresses as JSON.
 pub(super) const IP_ADDR_ARGS: &[&str] = &["-j", "addr"];
 
 /// `/proc/net/tcp` (required) and `/proc/net/tcp6`. The IPv6 table is

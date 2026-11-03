@@ -135,7 +135,8 @@ pub fn read_open_files() -> Result<ProcessFds, CollectError> {
 /// `ip -j addr` prints. Needs no root.
 #[cfg(target_os = "linux")]
 pub fn read_interfaces() -> Result<String, CollectError> {
-    command::run(linux::IP_PROGRAM, linux::IP_ADDR_ARGS)
+    let program = command::locate(linux::IP_PATHS, linux::IP_PROGRAM);
+    command::run(program, linux::IP_ADDR_ARGS)
 }
 
 /// Lists this host's interfaces. Only Linux is supported for now.

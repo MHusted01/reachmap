@@ -2,7 +2,7 @@
 //! host belongs to.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv6Addr};
 
 /// One address assigned to one of this host's network interfaces, e.g.
 /// `192.168.1.20` on `enp1s0`.
@@ -20,7 +20,8 @@ pub struct HostAddress {
 pub enum Network {
     /// Only programs on this host, through the loopback interface.
     ThisHost,
-    /// Containers on this host's Docker networks.
+    /// Containers on this host's Docker networks, recognized by interface
+    /// name (see [`HostAddress::network`]).
     Docker,
     /// Devices on the Tailscale network (the tailnet).
     Tailnet,
@@ -47,16 +48,22 @@ impl HostAddress {
     /// The network this address is reached from, decided by its interface
     /// and its address range, checked in this order:
     ///
-    /// 1. loopback address or the `lo` interface: [`Network::ThisHost`]
-    /// 2. Tailscale's ranges or the `tailscale0` interface: [`Network::Tailnet`]
+    /// 1. loopback address (`127.0.0.0/8`, `::1`): [`Network::ThisHost`]. Other
+    ///    addresses on `lo` (anycast, virtual IPs) can be routed to from
+    ///    outside, so they go through the remaining checks.
+    /// 2. the `tailscale0` interface or Tailscale's IPv6 prefix: [`Network::Tailnet`]
     /// 3. a Docker interface (`docker0`, `br-<12 hex>`, `veth*`): [`Network::Docker`]
     /// 4. private or link-local address: [`Network::Lan`]
     /// 5. anything else: [`Network::Internet`]
+    ///
+    /// Interfaces are recognized by name only. A Docker bridge renamed with
+    /// `com.docker.network.bridge.name` is not recognized and counts as LAN,
+    /// and veth links of other container tools (Podman, LXC) count as Docker.
     pub fn network(&self) -> Network {
         let ip = self.ip.to_canonical();
-        if self.interface == LOOPBACK_INTERFACE || ip.is_loopback() {
+        if ip.is_loopback() {
             Network::ThisHost
-        } else if self.interface == TAILSCALE_INTERFACE || TAILNET.iter().any(|p| p.contains(ip)) {
+        } else if self.interface == TAILSCALE_INTERFACE || is_tailscale_ipv6(ip) {
             Network::Tailnet
         } else if is_docker_interface(&self.interface) {
             Network::Docker
@@ -67,9 +74,6 @@ impl HostAddress {
         }
     }
 }
-
-/// The loopback interface on Linux.
-const LOOPBACK_INTERFACE: &str = "lo";
 
 /// The interface Tailscale creates on Linux (its default `--tun` name).
 const TAILSCALE_INTERFACE: &str = "tailscale0";
@@ -85,42 +89,23 @@ const DOCKER_BRIDGE_ID_LEN: usize = 12;
 /// The host end of a container's virtual cable is named `veth` plus 7 hex digits.
 const VETH_PREFIX: &str = "veth";
 
-/// Tailscale gives each device an address from these ranges: the shared
-/// address space 100.64.0.0/10 (RFC 6598) and its own IPv6 prefix.
-const TAILNET: [Prefix; 2] = [
-    Prefix {
-        network: IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0)),
-        len: 10,
-    },
-    Prefix {
-        network: IpAddr::V6(Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0)),
-        len: 48,
-    },
-];
+/// Tailscale's IPv6 prefix, `fd7a:115c:a1e0::/48`. Unlike its IPv4 range
+/// `100.64.0.0/10`, which ISPs also use for carrier-grade NAT, this prefix is
+/// Tailscale's alone, so it identifies the tailnet on any interface.
+const TAILSCALE_IPV6_PREFIX: Ipv6Addr = Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0);
+const TAILSCALE_IPV6_PREFIX_LEN: u32 = 48;
 
-/// An address range in CIDR notation, e.g. `100.64.0.0/10`: every address
-/// whose first `len` bits equal those of `network`.
-struct Prefix {
-    network: IpAddr,
-    len: u32,
-}
-
-impl Prefix {
-    /// Whether `ip` is in this range. An address of the other IP version
-    /// never is.
-    fn contains(&self, ip: IpAddr) -> bool {
+/// Whether `ip` is in Tailscale's IPv6 prefix.
+fn is_tailscale_ipv6(ip: IpAddr) -> bool {
+    match ip {
         // XOR leaves a 1 bit wherever the two addresses differ; shifting out
-        // the host bits leaves only differences in the prefix. A shift by the
-        // full width (len 0) is `None`: every address matches.
-        match (self.network, ip) {
-            (IpAddr::V4(network), IpAddr::V4(ip)) => (u32::from(network) ^ u32::from(ip))
-                .checked_shr(u32::BITS - self.len)
-                .is_none_or(|diff| diff == 0),
-            (IpAddr::V6(network), IpAddr::V6(ip)) => (u128::from(network) ^ u128::from(ip))
-                .checked_shr(u128::BITS - self.len)
-                .is_none_or(|diff| diff == 0),
-            _ => false,
+        // the 80 host bits leaves only differences in the prefix.
+        IpAddr::V6(ip) => {
+            (u128::from(ip) ^ u128::from(TAILSCALE_IPV6_PREFIX))
+                >> (u128::BITS - TAILSCALE_IPV6_PREFIX_LEN)
+                == 0
         }
+        IpAddr::V4(_) => false,
     }
 }
 
@@ -157,27 +142,28 @@ mod tests {
     }
 
     #[test]
-    fn loopback_addresses_and_the_lo_interface_are_this_host() {
-        for (interface, ip) in [
-            ("lo", "127.0.0.1"),
-            ("lo", "127.0.0.53"),
-            ("lo", "::1"),
-            // An extra address on lo is still only reachable from this host.
-            ("lo", "10.53.0.1"),
-        ] {
-            assert_eq!(on(interface, ip), Network::ThisHost, "{interface} {ip}");
+    fn loopback_addresses_are_this_host() {
+        for ip in ["127.0.0.1", "127.0.0.53", "::1"] {
+            assert_eq!(on("lo", ip), Network::ThisHost, "{ip}");
         }
     }
 
     #[test]
-    fn tailscale_ranges_and_interface_are_the_tailnet() {
+    fn other_addresses_on_lo_are_classified_by_range() {
+        // Anycast and virtual-IP setups put routable addresses on lo; the
+        // host may route traffic to them from outside.
+        assert_eq!(on("lo", "10.53.0.1"), Network::Lan);
+        assert_eq!(on("lo", "203.0.113.53"), Network::Internet);
+    }
+
+    #[test]
+    fn the_tailscale_interface_and_ipv6_prefix_are_the_tailnet() {
         for (interface, ip) in [
             ("tailscale0", "100.101.102.103"),
             ("tailscale0", "fd7a:115c:a1e0::1"),
             ("tailscale0", "fe80::1:2:3:4"),
-            // First and last address of 100.64.0.0/10.
-            ("tun0", "100.64.0.0"),
-            ("tun0", "100.127.255.255"),
+            // Tailscale's IPv6 prefix is its own, so any interface counts.
+            ("tun0", "fd7a:115c:a1e0::1"),
             ("tun0", "fd7a:115c:a1e0:ffff::1"),
         ] {
             assert_eq!(on(interface, ip), Network::Tailnet, "{interface} {ip}");
@@ -185,9 +171,17 @@ mod tests {
     }
 
     #[test]
-    fn addresses_just_outside_the_tailscale_ranges_are_not_the_tailnet() {
-        assert_eq!(on("eth0", "100.63.255.255"), Network::Internet);
-        assert_eq!(on("eth0", "100.128.0.0"), Network::Internet);
+    fn shared_address_space_on_other_interfaces_is_not_the_tailnet() {
+        // 100.64.0.0/10 is also carrier-grade NAT space from ISPs: without
+        // tailscale0 it proves nothing, and it is not a private range.
+        for ip in ["100.64.0.0", "100.101.102.103", "100.127.255.255"] {
+            assert_eq!(on("eth0", ip), Network::Internet, "{ip}");
+        }
+    }
+
+    #[test]
+    fn addresses_just_outside_the_tailscale_ipv6_prefix_are_not_the_tailnet() {
+        assert_eq!(on("eth0", "fd7a:115c:a1df:ffff::1"), Network::Lan);
         assert_eq!(on("eth0", "fd7a:115c:a1e1::1"), Network::Lan);
     }
 

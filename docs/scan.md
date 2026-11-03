@@ -51,14 +51,23 @@ network:
 
 | Network | Interface addresses that belong to it |
 |---------|----------------------------------------|
-| `this host` | loopback addresses (`127.0.0.0/8`, `::1`) and anything on `lo` |
+| `this host` | loopback addresses (`127.0.0.0/8`, `::1`); other addresses on `lo`, such as anycast or virtual IPs, follow the rules below |
 | `Docker` | addresses on Docker's interfaces: `docker0`, `br-<12 hex digits>` (one per user-defined network) and `veth*` (container links) |
-| `tailnet` | Tailscale addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) and anything on `tailscale0` |
+| `tailnet` | anything on `tailscale0`, and Tailscale's IPv6 prefix `fd7a:115c:a1e0::/48` on any interface |
 | `LAN` | other private addresses (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`) and link-local ones (`169.254.0.0/16`, `fe80::/10`) |
 | `internet (if not filtered upstream)` | every other address: a public IPv4 or IPv6 address |
 
 The rules are checked in that order, so `172.18.0.1` on a Docker bridge is
 `Docker`, not `LAN`.
+
+Interfaces are recognized by name. A Docker bridge renamed with the
+`com.docker.network.bridge.name` option counts as `LAN`, and `veth*` links
+created by other container tools (Podman, LXC) count as `Docker`.
+
+Tailscale's IPv4 addresses come from `100.64.0.0/10`, which internet providers
+also use for carrier-grade NAT. Such an address on any interface other than
+`tailscale0` is therefore not taken as the tailnet; it is not a private range
+either, so it counts as `internet (if not filtered upstream)`.
 
 A socket is reachable from the networks of the addresses it accepts
 connections on:
@@ -70,6 +79,7 @@ connections on:
 | `all IPv4 addresses (bound device not checked)` | Bound to `0.0.0.0`: every network with an IPv4 address on this host. |
 | `all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)` | Bound to `::`: every network with any address on this host. |
 | `no interface has this address` | Bound to an address that no interface has (for example, an interface that went away). REACHABLE FROM is `unknown`. |
+| `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or `::` on a host without any). REACHABLE FROM is `unknown`. |
 | `could not list interfaces` | `ip -j addr` failed; a warning on stderr says why. REACHABLE FROM is `unknown`, except for loopback addresses. |
 
 **Internet means "not filtered by this host's address".** A public address
@@ -132,7 +142,9 @@ yet. The same applies to per-user `systemd --user` instances.
   that Docker publishes show up through `docker-proxy` on the host. Container
   details arrive in a later version.
 - **Interfaces need `ip`.** The interface list comes from `ip -j addr`
-  (package `iproute2`, installed on nearly every Linux distribution). Without
+  (package `iproute2`, installed on nearly every Linux distribution). reachmap
+  runs the first of `/usr/sbin/ip`, `/usr/bin/ip`, `/sbin/ip` and `/bin/ip`
+  that exists, and looks `ip` up through `PATH` only if none does. Without
   it, the scan still lists every socket, prints a warning, and shows
   REACHABLE FROM as `unknown` for all but loopback addresses.
 - **TCP only.** UDP is planned for v0.2.

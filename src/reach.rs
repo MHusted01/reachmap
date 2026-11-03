@@ -32,6 +32,9 @@ pub enum Reason {
     AllAddresses(AddressFamily),
     /// Bound to an address that no interface has (any more).
     NotOnHost,
+    /// Bound to the wildcard address of this family, but no interface has an
+    /// address it covers (e.g. `0.0.0.0` on an IPv6-only host).
+    NoAddresses(AddressFamily),
     /// The host's interfaces could not be listed.
     InterfacesUnknown,
 }
@@ -69,6 +72,10 @@ impl fmt::Display for Reason {
                 f.write_str("all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)")
             }
             Reason::NotOnHost => f.write_str("no interface has this address"),
+            Reason::NoAddresses(AddressFamily::Ipv4) => {
+                f.write_str("no interface has an IPv4 address")
+            }
+            Reason::NoAddresses(AddressFamily::Ipv6) => f.write_str("no interface has an address"),
             Reason::InterfacesUnknown => f.write_str("could not list interfaces"),
         }
     }
@@ -101,10 +108,7 @@ pub fn classify(address: IpAddr, host: Option<&[HostAddress]>) -> Verdict {
         };
     }
     let Some(host) = host else {
-        return Verdict {
-            reach: Reach::Unknown,
-            reason: Reason::InterfacesUnknown,
-        };
+        return Verdict::unknown(Reason::InterfacesUnknown);
     };
     if address.is_unspecified() {
         let family = match address {
@@ -115,35 +119,44 @@ pub fn classify(address: IpAddr, host: Option<&[HostAddress]>) -> Verdict {
         let covered = host
             .iter()
             .filter(|a| family == AddressFamily::Ipv6 || a.ip.to_canonical().is_ipv4());
-        return Verdict {
-            reach: reach_of(covered),
-            reason: Reason::AllAddresses(family),
+        return match networks_of(covered) {
+            Some(networks) => Verdict {
+                reach: Reach::From(networks),
+                reason: Reason::AllAddresses(family),
+            },
+            None => Verdict::unknown(Reason::NoAddresses(family)),
         };
     }
     let matching: Vec<&HostAddress> = host
         .iter()
         .filter(|a| a.ip.to_canonical() == address)
         .collect();
-    if matching.is_empty() {
-        return Verdict {
-            reach: Reach::Unknown,
-            reason: Reason::NotOnHost,
-        };
-    }
-    Verdict {
-        reach: reach_of(matching.iter().copied()),
-        reason: Reason::OnInterfaces(matching.iter().map(|a| a.interface.clone()).collect()),
+    match networks_of(matching.iter().copied()) {
+        Some(networks) => Verdict {
+            reach: Reach::From(networks),
+            reason: Reason::OnInterfaces(matching.iter().map(|a| a.interface.clone()).collect()),
+        },
+        None => Verdict::unknown(Reason::NotOnHost),
     }
 }
 
-/// The networks of the given addresses; [`Reach::Unknown`] when there are none.
-fn reach_of<'a>(addresses: impl Iterator<Item = &'a HostAddress>) -> Reach {
-    let networks: BTreeSet<Network> = addresses.map(HostAddress::network).collect();
-    if networks.is_empty() {
-        Reach::Unknown
-    } else {
-        Reach::From(networks)
+impl Verdict {
+    /// A verdict without reach, for the given reason.
+    fn unknown(reason: Reason) -> Self {
+        Verdict {
+            reach: Reach::Unknown,
+            reason,
+        }
     }
+}
+
+/// The networks of the given addresses, or `None` when there are none, so a
+/// [`Reach::From`] is never empty.
+fn networks_of<'a>(
+    addresses: impl IntoIterator<Item = &'a HostAddress>,
+) -> Option<BTreeSet<Network>> {
+    let networks: BTreeSet<Network> = addresses.into_iter().map(HostAddress::network).collect();
+    (!networks.is_empty()).then_some(networks)
 }
 
 #[cfg(test)]
@@ -254,6 +267,19 @@ mod tests {
             "2001:db8:1::20",
             &[Internet],
             only_on("eth0"),
+        );
+    }
+
+    #[test]
+    fn a_wildcard_without_addresses_of_its_family_is_unknown() {
+        let ipv6_only = host(&[("lo", "::1"), ("eth0", "fd12:3456:789a::1")]);
+        assert_eq!(
+            classify("0.0.0.0".parse().unwrap(), Some(&ipv6_only)),
+            verdict(Reach::Unknown, Reason::NoAddresses(AddressFamily::Ipv4))
+        );
+        assert_eq!(
+            classify("::".parse().unwrap(), Some(&[])),
+            verdict(Reach::Unknown, Reason::NoAddresses(AddressFamily::Ipv6))
         );
     }
 
