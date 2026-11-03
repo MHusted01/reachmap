@@ -12,7 +12,9 @@
 
 pub mod collect;
 pub mod errors;
+pub mod network;
 pub mod parse;
+pub mod reach;
 pub mod scan;
 pub mod service;
 pub mod socket;

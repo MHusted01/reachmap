@@ -3,8 +3,6 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::socket::ListeningSocket;
-
 /// A running program, identified by its process ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Process {
@@ -49,49 +47,19 @@ impl fmt::Display for Service {
     }
 }
 
-/// A listening socket together with the program behind it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ScannedSocket {
-    /// What the kernel's socket table says.
-    pub socket: ListeningSocket,
-    /// Who owns the socket.
-    pub service: Service,
-}
-
-/// Pairs each socket with its owner from `owners` (keyed by socket inode),
-/// keeping the order of `sockets`. A socket without an entry gets
+/// The program that has the socket with this `inode` open, from `owners`
+/// (keyed by socket inode). Without an entry the owner is
 /// `Service::Unknown(missing)`.
-pub fn attach_services(
-    sockets: Vec<ListeningSocket>,
-    owners: &HashMap<u64, Process>,
-    missing: UnknownReason,
-) -> Vec<ScannedSocket> {
-    sockets
-        .into_iter()
-        .map(|socket| {
-            let service = owners
-                .get(&socket.inode)
-                .cloned()
-                .map_or(Service::Unknown(missing), Service::Process);
-            ScannedSocket { socket, service }
-        })
-        .collect()
+pub fn service_of(inode: u64, owners: &HashMap<u64, Process>, missing: UnknownReason) -> Service {
+    owners
+        .get(&inode)
+        .cloned()
+        .map_or(Service::Unknown(missing), Service::Process)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::socket::Protocol;
-    use std::net::{IpAddr, Ipv4Addr};
-
-    fn socket(port: u16, inode: u64) -> ListeningSocket {
-        ListeningSocket {
-            protocol: Protocol::Tcp,
-            address: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-            port,
-            inode,
-        }
-    }
 
     fn process(pid: u32, name: &str) -> Process {
         Process {
@@ -119,40 +87,23 @@ mod tests {
     }
 
     #[test]
-    fn attaches_owners_by_inode_and_keeps_socket_order() {
+    fn finds_the_owner_by_inode() {
         let owners = HashMap::from([(200, process(2, "nginx")), (100, process(1, "sshd"))]);
 
-        let scanned = attach_services(
-            vec![socket(22, 100), socket(80, 200)],
-            &owners,
-            UnknownReason::NoProcess,
-        );
-
         assert_eq!(
-            scanned,
-            vec![
-                ScannedSocket {
-                    socket: socket(22, 100),
-                    service: Service::Process(process(1, "sshd")),
-                },
-                ScannedSocket {
-                    socket: socket(80, 200),
-                    service: Service::Process(process(2, "nginx")),
-                },
-            ]
+            service_of(100, &owners, UnknownReason::NoProcess),
+            Service::Process(process(1, "sshd"))
+        );
+        assert_eq!(
+            service_of(200, &owners, UnknownReason::NoProcess),
+            Service::Process(process(2, "nginx"))
         );
     }
 
     #[test]
     fn a_socket_without_an_owner_gets_the_given_reason() {
-        let scanned = attach_services(
-            vec![socket(5432, 300)],
-            &HashMap::new(),
-            UnknownReason::NeedsRoot,
-        );
-
         assert_eq!(
-            scanned[0].service,
+            service_of(300, &HashMap::new(), UnknownReason::NeedsRoot),
             Service::Unknown(UnknownReason::NeedsRoot)
         );
     }

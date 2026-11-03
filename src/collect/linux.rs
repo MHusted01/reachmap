@@ -1,6 +1,7 @@
-//! Linux sources: the kernel's TCP socket tables in `/proc`. Reading them
-//! needs no root; every user sees all sockets of the current network namespace.
-//! The open files of other users' processes, under `/proc/<pid>/fd`, do need root.
+//! Linux sources: the kernel's TCP socket tables in `/proc` and the interface
+//! list from iproute2's `ip`. Neither needs root; every user sees all sockets
+//! and interfaces of the current network namespace. The open files of other
+//! users' processes, under `/proc/<pid>/fd`, do need root.
 
 use std::path::PathBuf;
 
@@ -15,6 +16,12 @@ compile_error!("reachmap's /proc/net/tcp parser assumes a little-endian host");
 
 /// Where the kernel lists one folder per process.
 pub(super) const PROC_ROOT: &str = "/proc";
+
+/// The iproute2 tool that lists interfaces, and the arguments that make it
+/// print every interface with its addresses as JSON. Run by name: under
+/// `sudo`, the search path is sudo's `secure_path`.
+pub(super) const IP_PROGRAM: &str = "ip";
+pub(super) const IP_ADDR_ARGS: &[&str] = &["-j", "addr"];
 
 /// `/proc/net/tcp` (required) and `/proc/net/tcp6`. The IPv6 table is
 /// optional: it does not exist when IPv6 is disabled in the kernel, which

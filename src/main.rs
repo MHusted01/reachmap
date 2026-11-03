@@ -32,7 +32,15 @@ fn main() -> ExitCode {
 
 fn run_scan() -> ExitCode {
     match reachmap::scan::scan() {
-        Ok(sockets) => write_stdout(&Table(&sockets)),
+        Ok(report) => {
+            if let Some(error) = &report.interfaces_error {
+                eprintln!("warning: {}", render_chain(error));
+                if let Some(hint) = error.hint() {
+                    eprintln!("hint: {hint}");
+                }
+            }
+            write_stdout(&Table(&report.sockets))
+        }
         Err(error) => {
             eprintln!("error: {}", render_chain(&error));
             if let Some(hint) = error.hint() {

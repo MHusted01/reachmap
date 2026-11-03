@@ -2,16 +2,23 @@
 
 use std::fmt;
 
-use crate::service::ScannedSocket;
+use crate::scan::ScannedSocket;
 
 /// Printed instead of an empty table.
 pub const NO_SOCKETS: &str = "No listening TCP sockets found.";
 
 /// Number of columns in the table.
-const COLUMNS: usize = 4;
+const COLUMNS: usize = 6;
 
 /// Column titles, in order.
-const HEADERS: [&str; COLUMNS] = ["PORT", "PROTO", "ADDRESS", "SERVICE"];
+const HEADERS: [&str; COLUMNS] = [
+    "PORT",
+    "PROTO",
+    "ADDRESS",
+    "SERVICE",
+    "REACHABLE FROM",
+    "WHY",
+];
 
 /// Space between columns.
 const GAP: &str = "  ";
@@ -49,6 +56,8 @@ fn cells(scanned: &ScannedSocket) -> [String; COLUMNS] {
         socket.protocol_name(),
         socket.address.to_string(),
         scanned.service.to_string(),
+        scanned.verdict.reach.to_string(),
+        scanned.verdict.reason.to_string(),
     ]
 }
 
@@ -69,12 +78,28 @@ fn write_row(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::HostAddress;
+    use crate::reach::classify;
     use crate::service::{Process, Service, UnknownReason};
     use crate::socket::{ListeningSocket, Protocol};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
     const NEEDS_ROOT: Service = Service::Unknown(UnknownReason::NeedsRoot);
+
+    /// A host with loopback and one LAN address on `enp1s0`.
+    fn host() -> Vec<HostAddress> {
+        [
+            ("lo", "127.0.0.1"),
+            ("lo", "::1"),
+            ("enp1s0", "192.168.1.20"),
+        ]
+        .map(|(interface, ip)| HostAddress {
+            interface: interface.to_string(),
+            ip: ip.parse().unwrap(),
+        })
+        .to_vec()
+    }
 
     fn row(address: IpAddr, port: u16, service: Service) -> ScannedSocket {
         ScannedSocket {
@@ -85,6 +110,7 @@ mod tests {
                 inode: 1,
             },
             service,
+            verdict: classify(address, Some(&host())),
         }
     }
 
@@ -102,13 +128,19 @@ mod tests {
             row(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 22, process("sshd", 812)),
             row(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 53)), 53, NEEDS_ROOT),
             row(LOCAL_V4, 3306, process("mysqld", 1201)),
+            row(
+                IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
+                8080,
+                process("python3", 4410),
+            ),
         ];
         let expected = "\
-PORT  PROTO  ADDRESS     SERVICE
-22    tcp    0.0.0.0     sshd (812)
-22    tcp6   ::          sshd (812)
-53    tcp    127.0.0.53  unknown (run with sudo for details)
-3306  tcp    127.0.0.1   mysqld (1201)
+PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  WHY
+22    tcp    0.0.0.0       sshd (812)                           this host, LAN  all IPv4 addresses (bound device not checked)
+22    tcp6   ::            sshd (812)                           this host, LAN  all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)
+53    tcp    127.0.0.53    unknown (run with sudo for details)  this host       loopback address
+3306  tcp    127.0.0.1     mysqld (1201)                        this host       loopback address
+8080  tcp    192.168.1.20  python3 (4410)                       LAN             only on enp1s0
 ";
         assert_eq!(Table(&rows).to_string(), expected);
     }
@@ -118,7 +150,8 @@ PORT  PROTO  ADDRESS     SERVICE
         let rows = [row(IpAddr::V6(Ipv6Addr::LOCALHOST), 1, process("a", 2))];
         assert_eq!(
             Table(&rows).to_string(),
-            "PORT  PROTO  ADDRESS  SERVICE\n1     tcp6   ::1      a (2)\n"
+            "PORT  PROTO  ADDRESS  SERVICE  REACHABLE FROM  WHY\n\
+             1     tcp6   ::1      a (2)    this host       loopback address\n"
         );
     }
 
@@ -130,9 +163,9 @@ PORT  PROTO  ADDRESS     SERVICE
         ];
         assert_eq!(
             Table(&rows).to_string(),
-            "PORT   PROTO  ADDRESS    SERVICE\n\
-             22     tcp    127.0.0.1  sshd (1)\n\
-             41641  tcp    127.0.0.1  tailscaled (2)\n"
+            "PORT   PROTO  ADDRESS    SERVICE         REACHABLE FROM  WHY\n\
+             22     tcp    127.0.0.1  sshd (1)        this host       loopback address\n\
+             41641  tcp    127.0.0.1  tailscaled (2)  this host       loopback address\n"
         );
     }
 
