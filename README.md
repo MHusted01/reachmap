@@ -12,14 +12,16 @@ $ sudo reachmap scan
 
 PORT   SERVICE               REACHABLE FROM     WHY
 22     sshd                  LAN, tailnet       bound to 0.0.0.0, allowed by UFW
-8096   jellyfin (docker)     LAN, tailnet       published on 0.0.0.0
-5055   seerr (docker)        LAN  (!)           Docker port: UFW does not apply
-8080   qbittorrent (docker)  this host only     bound to 127.0.0.1
+80     nginx (docker)        LAN, tailnet       published on 0.0.0.0
+5432   postgres (docker)     LAN  (!)           Docker port: UFW does not apply
+6379   redis-server          this host only     bound to 127.0.0.1
 ```
 
 > **Status:** early development. The example shows the planned v0.1 output.
-> Today `reachmap scan` lists listening TCP sockets with their bind address
-> and the process behind each ([details](docs/scan.md)); follow the
+> Today `reachmap scan` lists listening TCP sockets with their bind address,
+> the process behind each, and the networks (this host, Docker, tailnet, LAN,
+> internet) it can be reached from, before firewall rules
+> ([details](docs/scan.md)); follow the
 > [v0.1 milestone](https://github.com/MHusted01/reachmap/milestones) for progress.
 
 ## Install

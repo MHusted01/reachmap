@@ -15,3 +15,10 @@ All notable changes to reachmap are listed here. The format follows
   column, e.g. `sshd (812)`. Without root, sockets of other users' processes
   show `unknown (run with sudo for details)`
   ([#3](https://github.com/MHusted01/reachmap/issues/3)).
+- `reachmap scan` shows where each socket can be reached from in two new
+  columns, REACHABLE FROM (this host, Docker, tailnet, LAN, or internet) and
+  WHY. It compares the bind address with the host's interfaces from
+  `ip -j addr`; public addresses are reported as
+  `internet (if not filtered upstream)`, never as safe. Without `ip`, the
+  scan warns and shows `unknown`
+  ([#4](https://github.com/MHusted01/reachmap/issues/4)).

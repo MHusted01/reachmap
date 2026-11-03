@@ -39,7 +39,7 @@ fn ipv4_fixture_yields_only_listening_sockets_in_file_order() {
             (22, "0.0.0.0".to_string(), 21345),
             (53, "127.0.0.53".to_string(), 19876),
             (3306, "127.0.0.1".to_string(), 23456),
-            (8080, "192.168.0.87".to_string(), 34567),
+            (8080, "192.168.1.20".to_string(), 34567),
         ]
     );
 }

@@ -1,6 +1,9 @@
 //! Collectors: the only code that reads from the running system. They gather
 //! raw text and hand it to the pure parsers in [`crate::parse`].
 
+// Only the Linux collectors run commands so far; tests run it everywhere.
+#[cfg(any(target_os = "linux", test))]
+mod command;
 #[cfg(target_os = "linux")]
 mod linux;
 mod processes;
@@ -10,6 +13,8 @@ mod test_support;
 use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::PathBuf;
+use std::process::ExitStatus;
+use std::string::FromUtf8Error;
 
 pub use processes::{ProcessFds, RawProcess, read_process_fds};
 
@@ -58,6 +63,43 @@ pub enum CollectError {
         /// Value of `std::env::consts::OS`, e.g. `macos`.
         os: &'static str,
     },
+    /// A command could not be started, e.g. because it is not installed.
+    #[error("could not run `{command}`")]
+    Run {
+        /// The command line, e.g. `ip -j addr`.
+        command: String,
+        /// The operating system's reason.
+        #[source]
+        source: io::Error,
+    },
+    /// A command ran but reported failure.
+    #[error("`{command}` failed with {status}{}", detail(stderr))]
+    CommandFailed {
+        /// The command line.
+        command: String,
+        /// How it exited.
+        status: ExitStatus,
+        /// What it printed to standard error, trimmed; may be empty.
+        stderr: String,
+    },
+    /// A command printed something that is not UTF-8 text.
+    #[error("`{command}` printed text that is not UTF-8")]
+    NotUtf8 {
+        /// The command line.
+        command: String,
+        /// Where the invalid bytes start.
+        #[source]
+        source: FromUtf8Error,
+    },
+}
+
+/// `": message"`, or nothing when the command printed no message.
+fn detail(stderr: &str) -> String {
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr}")
+    }
 }
 
 /// Reads this host's TCP tables: `/proc/net/tcp` and, when IPv6 is enabled,
@@ -84,6 +126,22 @@ pub fn read_open_files() -> Result<ProcessFds, CollectError> {
 /// Lists the open files of every process. Only Linux is supported for now.
 #[cfg(not(target_os = "linux"))]
 pub fn read_open_files() -> Result<ProcessFds, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
+/// Lists this host's interfaces and their addresses: the JSON that
+/// `ip -j addr` prints. Needs no root.
+#[cfg(target_os = "linux")]
+pub fn read_interfaces() -> Result<String, CollectError> {
+    let program = command::locate(linux::IP_PATHS, linux::IP_PROGRAM);
+    command::run(program, linux::IP_ADDR_ARGS)
+}
+
+/// Lists this host's interfaces. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn read_interfaces() -> Result<String, CollectError> {
     Err(CollectError::UnsupportedOs {
         os: std::env::consts::OS,
     })

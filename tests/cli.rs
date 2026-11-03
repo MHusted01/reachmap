@@ -59,9 +59,15 @@ fn scan_prints_a_table_or_the_empty_message() {
     let output = stdout(&out);
     let first_line = output.lines().next().unwrap_or_default();
     // Compare words, not spacing: column widths depend on the ports found.
-    let is_header = first_line
-        .split_whitespace()
-        .eq(["PORT", "PROTO", "ADDRESS", "SERVICE"]);
+    let is_header = first_line.split_whitespace().eq([
+        "PORT",
+        "PROTO",
+        "ADDRESS",
+        "SERVICE",
+        "REACHABLE",
+        "FROM",
+        "WHY",
+    ]);
     assert!(
         is_header || first_line == reachmap::table::NO_SOCKETS,
         "unexpected first line: {first_line:?}"
@@ -70,7 +76,7 @@ fn scan_prints_a_table_or_the_empty_message() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn scan_finds_a_socket_the_test_is_listening_on_and_names_this_process() {
+fn scan_finds_a_socket_the_test_is_listening_on_with_its_process_and_reach() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -78,16 +84,26 @@ fn scan_finds_a_socket_the_test_is_listening_on_and_names_this_process() {
 
     // The test process owns the socket, so no root is needed to see the
     // owner. Its name is the test binary's (cut to 15 bytes by the kernel),
-    // so only the pid is compared exactly.
+    // so only the pid is compared exactly. A loopback socket needs no
+    // interface facts, so its verdict is known even without `ip`.
     let output = stdout(&out);
     let row = output
         .lines()
-        .map(|line| line.split_whitespace().collect::<Vec<_>>())
-        .find(|words| words.starts_with(&[port.to_string().as_str(), "tcp", "127.0.0.1"]))
+        .find(|line| {
+            line.split_whitespace()
+                .take(3)
+                .eq([port.to_string().as_str(), "tcp", "127.0.0.1"])
+        })
         .unwrap_or_else(|| panic!("port {port} missing from:\n{output}"));
-    assert_eq!(
-        row.last().copied(),
-        Some(format!("({})", std::process::id()).as_str()),
+    let pid = format!("({})", std::process::id());
+    assert!(
+        row.contains(&format!(" {pid}  ")),
+        "no pid {pid} in row for port {port}: {row:?}"
+    );
+    // Columns are padded to the widest value on this host, so compare words.
+    let words: Vec<&str> = row.split_whitespace().collect();
+    assert!(
+        words.ends_with(&["this", "host", "loopback", "address"]),
         "row for port {port}: {row:?}"
     );
 }
