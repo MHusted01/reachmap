@@ -1,19 +1,17 @@
 //! reachmap shows which services on a host can be reached, from where, and why.
+//!
+//! Layout: [`collect`] reads from the running system, [`parse`] holds pure
+//! parsers (text in, values out), [`scan`] joins the two, and [`table`] and
+//! [`errors`] format results for the terminal.
+//!
+//! The library exists for reachmap's own binary and tests. It is not a
+//! stable API and may change in any release.
 
-/// The line printed by `reachmap --version`, e.g. `reachmap 0.1.0`.
-pub fn version_line() -> String {
-    format!("reachmap {}", env!("CARGO_PKG_VERSION"))
-}
+#![warn(missing_docs)]
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_line_names_the_tool_and_its_version() {
-        assert_eq!(
-            version_line(),
-            format!("reachmap {}", env!("CARGO_PKG_VERSION"))
-        );
-    }
-}
+pub mod collect;
+pub mod errors;
+pub mod parse;
+pub mod scan;
+pub mod socket;
+pub mod table;

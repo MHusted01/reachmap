@@ -12,19 +12,88 @@ fn run(args: &[&str]) -> Output {
         .expect("the reachmap binary runs")
 }
 
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).into_owned()
+}
+
 #[test]
 fn version_flag_prints_name_and_version() {
     let out = run(&["--version"]);
     assert!(out.status.success());
     assert_eq!(
-        String::from_utf8_lossy(&out.stdout).trim(),
+        stdout(&out).trim(),
         format!("reachmap {}", env!("CARGO_PKG_VERSION"))
     );
+}
+
+#[test]
+fn help_lists_the_scan_command() {
+    let out = run(&["--help"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("scan"), "help was: {}", stdout(&out));
 }
 
 #[test]
 fn unknown_arguments_print_usage_and_exit_with_2() {
     let out = run(&["--nope"]);
     assert_eq!(out.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("usage: reachmap"));
+    assert!(stderr(&out).contains("Usage: reachmap"));
+}
+
+#[test]
+fn no_command_prints_usage_and_exits_with_2() {
+    let out = run(&[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("Usage: reachmap"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scan_prints_a_table_or_the_empty_message() {
+    let out = run(&["scan"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let output = stdout(&out);
+    let first_line = output.lines().next().unwrap_or_default();
+    // Compare words, not spacing: column widths depend on the ports found.
+    let is_header = first_line
+        .split_whitespace()
+        .eq(["PORT", "PROTO", "ADDRESS"]);
+    assert!(
+        is_header || first_line == reachmap::table::NO_SOCKETS,
+        "unexpected first line: {first_line:?}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scan_finds_a_socket_the_test_is_listening_on() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let out = run(&["scan"]);
+
+    let expected = [port.to_string(), "tcp".to_string(), "127.0.0.1".to_string()];
+    assert!(
+        stdout(&out).lines().any(|line| line
+            .split_whitespace()
+            .eq(expected.iter().map(String::as_str))),
+        "port {port} missing from:\n{}",
+        stdout(&out)
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn scan_explains_it_is_linux_only_and_fails() {
+    let out = run(&["scan"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        stderr(&out).contains("Linux only for now"),
+        "stderr: {}",
+        stderr(&out)
+    );
 }
