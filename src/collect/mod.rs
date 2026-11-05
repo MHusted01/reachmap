@@ -188,6 +188,40 @@ pub fn inspect_containers(_ids: &[&str]) -> Result<String, CollectError> {
     })
 }
 
+/// Reads UFW's configuration file. Every user can read it on a default
+/// install.
+#[cfg(target_os = "linux")]
+pub fn read_ufw_conf() -> Result<String, CollectError> {
+    fs::read_to_string(linux::UFW_CONF).map_err(|source| CollectError::Read {
+        path: PathBuf::from(linux::UFW_CONF),
+        source,
+    })
+}
+
+/// Reads UFW's configuration file. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn read_ufw_conf() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
+/// Lists the rules of the `DOCKER-USER` chain: what `iptables -S` prints for
+/// it. Needs root.
+#[cfg(target_os = "linux")]
+pub fn read_docker_user_rules() -> Result<String, CollectError> {
+    let program = command::locate(linux::IPTABLES_PATHS, linux::IPTABLES_PROGRAM);
+    command::run(program, linux::IPTABLES_ARGS, linux::COMMAND_TIMEOUT)
+}
+
+/// Lists the `DOCKER-USER` rules. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn read_docker_user_rules() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
 /// Reads each source in order, skipping optional sources that do not exist.
 pub fn read_tables(sources: &[TableSource]) -> Result<Vec<RawTable>, CollectError> {
     let mut tables = Vec::with_capacity(sources.len());

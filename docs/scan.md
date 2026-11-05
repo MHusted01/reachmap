@@ -104,8 +104,10 @@ Until reachmap reads them
 case, so REACHABLE FROM may list more networks than can actually connect,
 never fewer.
 
-**Not yet a firewall verdict.** REACHABLE FROM says who could connect if no
-firewall interferes. UFW is checked in a later version.
+**Not a firewall verdict.** REACHABLE FROM says who could connect if no firewall
+interferes. UFW's rules are not evaluated. The one firewall fact reachmap reports
+is that UFW does not apply to Docker's published ports; see
+[Why Docker ports can bypass UFW](docker-and-ufw.md#what-reachmap-reports).
 
 ## Reading the service
 
@@ -185,6 +187,10 @@ ran here, as ports without a host socket.
 - **One network namespace.** `scan` sees the sockets of the namespace it runs
   in. Docker containers on their own network have separate sockets, so only
   their published ports appear (see [Docker](#docker)).
+- **`DOCKER-USER` needs root.** Reading the chain runs `iptables -S DOCKER-USER`,
+  which only works with `sudo`. reachmap runs the first of `/usr/sbin/iptables`,
+  `/sbin/iptables`, `/usr/bin/iptables` and `/bin/iptables` that exists, and looks
+  `iptables` up through `PATH` only if none does.
 - **Interfaces need `ip`.** The interface list comes from `ip -j addr`
   (package `iproute2`, installed on nearly every Linux distribution). reachmap
   runs the first of `/usr/sbin/ip`, `/usr/bin/ip`, `/sbin/ip` and `/bin/ip`
@@ -199,6 +205,6 @@ ran here, as ports without a host socket.
 
 | Status | Meaning |
 |--------|---------|
-| 0 | The scan finished (also when nothing is listening). |
-| 1 | The scan failed; the reason is printed on stderr. |
+| 0 | The scan finished without warnings (also when nothing is listening). |
+| 1 | The scan finished with [warnings](docker-and-ufw.md#what-reachmap-reports) under the table, or it failed and printed the reason on stderr. |
 | 2 | Invalid arguments. |

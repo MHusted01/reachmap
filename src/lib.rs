@@ -2,9 +2,10 @@
 //!
 //! Layout: [`collect`] reads from the running system, [`parse`] holds pure
 //! parsers (text in, values out), [`scan`] joins the two into [`socket`] and
-//! [`service`] values with the help of [`docker`], and [`table`] and
-//! [`errors`] format results for the terminal. [`sanitize`] cleans text from
-//! other programs before it can reach the terminal.
+//! [`service`] values with the help of [`docker`] and [`firewall`], [`warning`]
+//! decides what deserves attention, and [`table`] and [`errors`] format results
+//! for the terminal. [`sanitize`] cleans text from other programs before it can
+//! reach the terminal.
 //!
 //! The library exists for reachmap's own binary and tests. It is not a
 //! stable API and may change in any release.
@@ -14,6 +15,7 @@
 pub mod collect;
 pub mod docker;
 pub mod errors;
+pub mod firewall;
 pub mod network;
 pub mod parse;
 pub mod reach;
@@ -22,3 +24,4 @@ pub mod scan;
 pub mod service;
 pub mod socket;
 pub mod table;
+pub mod warning;
