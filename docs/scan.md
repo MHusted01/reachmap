@@ -161,8 +161,9 @@ follow:
   looks exactly like a server to the kernel, so short-lived rows on high port
   numbers are common. reachmap lists them: they do receive traffic.
 - **A row means the socket accepts traffic, not that anything answers.** Without
-  a handshake, a service can stay silent, so a connect probe cannot confirm
-  a UDP row. The note under the table says so. It is not a warning, so it does
+  a handshake, a service can stay silent, so a connect probe such as
+  [`reachmap probe`](probe.md) cannot confirm a UDP row. The note under the
+  table says so. It is not a warning, so it does
   not change the exit status.
 - **Some sockets belong to the kernel.** Tunnels such as VXLAN and kernel
   WireGuard hold a socket that no process has open, so SERVICE stays `unknown`,

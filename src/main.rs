@@ -3,10 +3,15 @@
 
 use std::fmt;
 use std::io::{self, Write};
+use std::num::NonZeroUsize;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use reachmap::errors::render_chain;
+use reachmap::parse::probe_args::{PortList, parse_timeout};
+use reachmap::probe::report::{Report as ProbeTable, render_json};
+use reachmap::probe::{DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT, ProbeOptions};
 use reachmap::scan::ScanReport;
 use reachmap::table::Report;
 
@@ -26,12 +31,69 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Try to connect to TCP ports of a host from this machine
+    Probe {
+        /// The host to connect to: a name or an IP address
+        host: String,
+        /// The ports to try, for example 22,80,8000-8100
+        #[arg(long)]
+        ports: PortList,
+        /// Seconds to wait for each connection
+        #[arg(long, default_value = DEFAULT_TIMEOUT, value_parser = parse_timeout)]
+        timeout: Duration,
+        /// How many connections may be in progress at once
+        #[arg(long, default_value = DEFAULT_CONCURRENCY)]
+        concurrency: NonZeroUsize,
+        /// Print the results as JSON instead of a table
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { json } => run_scan(json),
+        Command::Probe {
+            host,
+            ports,
+            timeout,
+            concurrency,
+            json,
+        } => {
+            let options = ProbeOptions {
+                timeout,
+                concurrency,
+            };
+            run_probe(&host, &ports, options, json)
+        }
+    }
+}
+
+/// Probes `host`. A closed port is a result, not a failure, so the status only
+/// reports ports that could not be tested.
+fn run_probe(host: &str, ports: &PortList, options: ProbeOptions, json: bool) -> ExitCode {
+    let report = match reachmap::probe::probe(host, ports, options) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("error: {}", render_chain(&error));
+            return ExitCode::FAILURE;
+        }
+    };
+    let status = if report.all_tested() {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    };
+    if !json {
+        return write_stdout(&ProbeTable(&report), status);
+    }
+    match render_json(&report) {
+        Ok(text) => write_stdout(&text, status),
+        Err(error) => {
+            eprintln!("error: could not format the probe as JSON: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 

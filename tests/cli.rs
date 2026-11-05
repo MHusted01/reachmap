@@ -3,6 +3,7 @@
 // Test helpers may panic: a failed test should stop loudly.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::net::{Ipv4Addr, TcpListener};
 use std::process::{Command, Output};
 
 fn run(args: &[&str]) -> Output {
@@ -191,6 +192,80 @@ fn scan_explains_it_is_linux_only_and_fails() {
     assert_eq!(out.status.code(), Some(1));
     assert!(
         stderr(&out).contains("Linux only for now"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn probe_needs_a_port_list() {
+    let out = run(&["probe", "192.0.2.1"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("--ports"), "stderr: {}", stderr(&out));
+}
+
+#[test]
+fn probe_refuses_an_invalid_port_list_with_exit_2() {
+    let out = run(&["probe", "192.0.2.1", "--ports", "22,ssh"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("is not a port"),
+        "stderr: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn probe_refuses_a_concurrency_of_zero_with_exit_2() {
+    let out = run(&["probe", "192.0.2.1", "--ports", "22", "--concurrency", "0"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn probe_refuses_a_timeout_of_zero_with_exit_2() {
+    let out = run(&["probe", "192.0.2.1", "--ports", "22", "--timeout", "0"]);
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn probe_reports_open_and_closed_ports_and_exits_with_0() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let open = listener.local_addr().unwrap().port();
+    let closed = {
+        let released = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        released.local_addr().unwrap().port()
+    };
+
+    let ports = format!("{open},{closed}");
+    let out = run(&["probe", "127.0.0.1", "--ports", &ports]);
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.starts_with("PORT"), "stdout: {text}");
+    assert!(text.contains(" open\n"), "stdout: {text}");
+    assert!(text.contains(" closed\n"), "stdout: {text}");
+}
+
+#[test]
+fn probe_json_is_one_document_on_standard_output() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+
+    let out = run(&["probe", "127.0.0.1", "--ports", &port, "--json"]);
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    let document: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(document["host"], "127.0.0.1");
+    assert_eq!(document["results"][0]["result"]["kind"], "open");
+}
+
+#[test]
+fn probe_of_an_unknown_host_says_so_and_exits_with_1() {
+    let out = run(&["probe", "no-such-host.invalid", "--ports", "80"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "stdout: {}", stdout(&out));
+    assert!(
+        stderr(&out).contains("error: could not resolve no-such-host.invalid"),
         "stderr: {}",
         stderr(&out)
     );
