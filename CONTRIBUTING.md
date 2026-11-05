@@ -41,7 +41,7 @@ and Docker, which runs the workflow and script linters.
 | `check-macos` | Type-checks the macOS code from any OS | CI `build` |
 | `deny` | Advisories, licences, bans and sources (`deny.toml`) | CI `deny` |
 | `coverage` | HTML coverage report in `target/llvm-cov/html` | local only |
-| `check` | All of the above plus the changelog script test | local only |
+| `check` | All of the above plus the release script tests | local only |
 | `fmt` | Formats the code | local only |
 
 ## Rules
@@ -63,3 +63,12 @@ section is renamed to `## [X.Y.Z] - YYYY-MM-DD` in a PR. Maintainers then tag
 the merged commit on `main` with `vX.Y.Z`; the release workflow uses that
 section as the release notes. A tag without a matching section fails, so
 pre-release tags are not supported.
+
+The workflow checks the tag, builds the binaries, creates the GitHub Release,
+publishes to crates.io and opens a formula PR in `MHusted01/homebrew-tap`. It
+needs two secrets in the `release` environment: `CARGO_REGISTRY_TOKEN` and
+`TAP_TOKEN` (Contents and Pull requests on the tap). A PR that changes the
+workflow or its scripts rehearses the checks and builds without publishing.
+
+Tags cannot be moved. If a release fails after the tag, re-run the failed jobs;
+if the tag itself is wrong, release the next patch version.

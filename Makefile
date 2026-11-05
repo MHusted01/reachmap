@@ -23,7 +23,7 @@ lint:
 # GitHub Actions workflows and shell scripts. Needs Docker.
 lint-ci:
 	$(IN_LINT_IMAGE) $(ACTIONLINT_IMAGE) -color
-	$(IN_LINT_IMAGE) --entrypoint shellcheck $(ACTIONLINT_IMAGE) scripts/changelog-section.sh scripts/test-changelog-section.sh scripts/test-docker-scan.sh
+	$(IN_LINT_IMAGE) --entrypoint shellcheck $(ACTIONLINT_IMAGE) scripts/*.sh
 
 # Unit and integration tests with a line coverage gate (cargo-llvm-cov).
 test:
@@ -60,6 +60,7 @@ check-macos:
 # Everything CI runs, in one go.
 check: lint lint-ci test msrv deny build check-macos
 	scripts/test-changelog-section.sh
+	scripts/test-release.sh
 
 clean:
 	cargo clean
