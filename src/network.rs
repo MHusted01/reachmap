@@ -4,6 +4,8 @@
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 
+use serde::Serialize;
+
 /// One address assigned to one of this host's network interfaces, e.g.
 /// `192.168.1.20` on `enp1s0`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +18,8 @@ pub struct HostAddress {
 
 /// Where a client must be to reach an address of this host. Ordered from the
 /// narrowest to the widest audience, so a sorted set reads naturally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Network {
     /// Only programs on this host, through the loopback interface.
     ThisHost,

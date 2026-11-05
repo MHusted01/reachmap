@@ -35,6 +35,10 @@ All notable changes to reachmap are listed here. The format follows
   `filtering may apply, not verified`. When UFW's state or Docker's ports are
   unknown, the warning says so instead of passing
   ([#6](https://github.com/MHusted01/reachmap/issues/6)).
+- `reachmap scan --json` prints the same findings as versioned JSON for
+  scripts, including what could not be collected. The fields are documented in
+  [docs/json.md](docs/json.md)
+  ([#7](https://github.com/MHusted01/reachmap/issues/7)).
 
 ### Changed
 

@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 22,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "no_process"
+      },
+      "reach": {
+        "kind": "unknown"
+      },
+      "reason": {
+        "kind": "interfaces_unknown"
+      },
+      "warning": null
+    }
+  ],
+  "warnings": [],
+  "collector_errors": [
+    {
+      "collector": "interfaces",
+      "message": "could not list interfaces: could not run `ip -j addr`: not found",
+      "hint": "install iproute2, the package that provides `ip`"
+    },
+    {
+      "collector": "docker",
+      "message": "Docker was not found, so published ports are not shown",
+      "hint": null
+    }
+  ]
+}

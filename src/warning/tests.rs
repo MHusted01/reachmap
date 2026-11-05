@@ -148,7 +148,9 @@ fn the_docker_user_chain_adds_a_line_of_its_own() {
         summarise(&rows, None, &firewall(UfwState::Active, Some(unchecked))),
         vec![
             bypassed,
-            ScanWarning::DockerUserUnchecked("run with sudo".to_string())
+            ScanWarning::DockerUserUnchecked {
+                reason: "run with sudo".to_string(),
+            }
         ]
     );
 }
@@ -224,7 +226,9 @@ fn warnings_read_as_written_in_the_docs() {
             "DOCKER-USER has rules, so filtering may apply, not verified",
         ),
         (
-            ScanWarning::DockerUserUnchecked("run with sudo".to_string()),
+            ScanWarning::DockerUserUnchecked {
+                reason: "run with sudo".to_string(),
+            },
             "DOCKER-USER rules were not checked: run with sudo",
         ),
     ];
@@ -267,7 +271,10 @@ fn no_text_ever_claims_protection() {
         }
         .to_string(),
         ScanWarning::DockerUserRules.to_string(),
-        ScanWarning::DockerUserUnchecked("run with sudo".to_string()).to_string(),
+        ScanWarning::DockerUserUnchecked {
+            reason: "run with sudo".to_string(),
+        }
+        .to_string(),
     ];
     for text in texts {
         let lowered = text.to_lowercase();

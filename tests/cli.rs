@@ -51,6 +51,13 @@ fn no_command_prints_usage_and_exits_with_2() {
     assert!(stderr(&out).contains("Usage: reachmap"));
 }
 
+#[test]
+fn scan_help_lists_the_json_flag() {
+    let out = run(&["scan", "--help"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("--json"), "help: {}", stdout(&out));
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn scan_prints_a_table_or_the_empty_message() {
@@ -112,6 +119,43 @@ fn scan_finds_a_socket_the_test_is_listening_on_with_its_process_and_reach() {
         words.ends_with(&["this", "host", "loopback", "address"]),
         "row for port {port}: {row:?}"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn scan_json_is_one_document_with_the_socket_the_test_is_listening_on() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let out = run(&["scan", "--json"]);
+
+    assert!(
+        matches!(out.status.code(), Some(0 | 1)),
+        "stderr: {}",
+        stderr(&out)
+    );
+    let document: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(document["schema_version"], reachmap::json::SCHEMA_VERSION);
+    // As in the table: a warning, and nothing else, makes a finished scan exit with 1.
+    let has_warnings = !document["warnings"].as_array().unwrap().is_empty();
+    assert_eq!(out.status.code(), Some(i32::from(has_warnings)));
+    let row = document["ports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["port"] == port && row["address"] == "127.0.0.1")
+        .unwrap_or_else(|| panic!("port {port} missing from: {document}"));
+    assert_eq!(row["service"]["pid"], std::process::id());
+    assert_eq!(row["reason"]["kind"], "loopback");
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn scan_json_prints_nothing_on_stdout_when_the_scan_fails() {
+    let out = run(&["scan", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(out.stdout.is_empty(), "stdout: {}", stdout(&out));
+    assert!(stderr(&out).contains("Linux only for now"));
 }
 
 #[cfg(not(target_os = "linux"))]
