@@ -140,6 +140,12 @@ host by address and port. The socket's row then shows the container instead of
 the process holding it, which is `docker-proxy` or, with `userland-proxy: false`,
 `dockerd`. This needs no root as long as you can use `docker`, and only reads.
 
+A socket on `::` counts as serving a port published on `0.0.0.0`, as it usually
+accepts IPv4 too. Until reachmap reads the IPv6-only flag
+([#21](https://github.com/MHusted01/reachmap/issues/21)), an unrelated IPv6-only
+socket on the same port takes the container's name and hides the `0.0.0.0` row;
+its own row still lists IPv4 networks, so reach is not understated.
+
 A published port that no socket listens on still gets a row, marked in WHY,
 with the verdict for the published address. A port that is only exposed
 (`EXPOSE`, or `expose:` in Compose) is not reachable from the host's networks

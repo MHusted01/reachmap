@@ -103,6 +103,8 @@ fn published_ports(raw: &RawContainer) -> Result<Vec<PublishedPort>, DockerParse
         .flatten()
         .filter(|(port, _)| port.ends_with(TCP_SUFFIX))
         .flat_map(|(_, bindings)| bindings.iter().flatten())
+        // No host port means nothing is published (yet).
+        .filter(|binding| !binding.host_port.is_empty())
         .map(|binding| {
             Ok(PublishedPort {
                 address: host_address(&binding.host_ip)?,
@@ -235,6 +237,19 @@ mod tests {
     fn a_bad_host_ip_is_an_error_with_clean_text() {
         let error = parse_docker_inspect(&one_binding(r"bad\u001b", "8080")).unwrap_err();
         assert_eq!(error.to_string(), r#""bad\\u{1b}" is not an IP address"#);
+    }
+
+    #[test]
+    fn a_binding_without_a_host_port_publishes_nothing() {
+        let ports = r#"{
+            "80/tcp": [{"HostIp": "0.0.0.0", "HostPort": ""}],
+            "81/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8081"}]
+        }"#;
+
+        let parsed = parse_docker_inspect(&inspect(r#""/web""#, "null", ports)).unwrap();
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].port, 8081);
     }
 
     #[test]

@@ -133,7 +133,9 @@ fn same_address(socket: IpAddr, published: IpAddr) -> bool {
 }
 
 /// A dual-stack socket on `::` also accepts what Docker lists as `0.0.0.0`, so
-/// one proxy socket can serve both bindings of `-p 8080:80`.
+/// one proxy socket can serve both bindings of `-p 8080:80`. Whether a socket
+/// is IPv6-only is not known yet (#21); the `::` row then over-reports IPv4
+/// reach like any other, so reach is not hidden.
 fn covers(socket: IpAddr, published: IpAddr) -> bool {
     socket.is_ipv6() && socket.is_unspecified() && published.is_ipv4() && published.is_unspecified()
 }
