@@ -1,0 +1,5 @@
+24 30 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:7 - sysfs sysfs rw
+25 30 0:23 / /proc rw,nosuid,nodev,noexec,relatime shared:14 - proc proc rw,hidepid=invisible,gid=1500
+30 1 8:2 / / rw,relatime shared:1 - ext4 /dev/sda2 rw,errors=remount-ro
+41 25 0:37 / /proc/sys/fs/binfmt_misc rw,relatime shared:27 - binfmt_misc binfmt_misc rw
+58 30 0:45 / /srv/proc\040backup rw,relatime shared:31 - proc proc rw

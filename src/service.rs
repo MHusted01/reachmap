@@ -37,13 +37,11 @@ impl fmt::Display for Container {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
-    /// Some processes could not be inspected without more privileges; the
-    /// owner is probably one of them.
+    /// Some processes could not be inspected without more privileges, or
+    /// `/proc` may hide them with `hidepid`; the owner is probably one of them.
     NeedsRoot,
-    /// Every visible process was inspected and none holds the socket, e.g. a
-    /// socket opened by the kernel or by a process that just exited. Processes
-    /// hidden by mounting `/proc` with `hidepid=2` are not visible, so this
-    /// does not prove that no process holds it.
+    /// Every process was inspected and none holds the socket, e.g. a socket
+    /// opened by the kernel or by a process that just exited.
     NoProcess,
 }
 

@@ -1,0 +1,12 @@
+Name:	reachmap
+Umask:	0022
+State:	R (running)
+Tgid:	4242
+Ngid:	0
+Pid:	4242
+PPid:	4100
+TracerPid:	0
+Uid:	1000	1001	1002	1003
+Gid:	1000	1000	1000	1000
+FDSize:	64
+Groups:	4 27 1000

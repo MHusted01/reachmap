@@ -17,7 +17,7 @@ use std::process::ExitStatus;
 use std::string::FromUtf8Error;
 use std::time::Duration;
 
-pub use processes::{ProcessFds, RawProcess, read_process_fds};
+pub use processes::{ProcessFds, RawProcess, processes_may_be_hidden, read_process_fds};
 
 use thiserror::Error;
 
@@ -127,10 +127,15 @@ pub fn read_tcp_tables() -> Result<Vec<RawTable>, CollectError> {
     })
 }
 
-/// Lists the open files of every process on this host, from `/proc`.
+/// Lists the open files of every process on this host, from `/proc`, and
+/// notes whether `/proc` may leave some processes out.
 #[cfg(target_os = "linux")]
 pub fn read_open_files() -> Result<ProcessFds, CollectError> {
-    read_process_fds(std::path::Path::new(linux::PROC_ROOT))
+    let proc_root = std::path::Path::new(linux::PROC_ROOT);
+    Ok(ProcessFds {
+        processes_may_be_hidden: processes_may_be_hidden(proc_root),
+        ..read_process_fds(proc_root)?
+    })
 }
 
 /// Lists the open files of every process. Only Linux is supported for now.

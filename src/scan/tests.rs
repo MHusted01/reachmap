@@ -26,6 +26,7 @@ fn open_files(permission_denied: bool) -> ProcessFds {
             fd_targets: vec!["/dev/null".to_string(), "socket:[100]".to_string()],
         }],
         permission_denied,
+        processes_may_be_hidden: false,
     }
 }
 
@@ -78,6 +79,32 @@ fn not_found() -> InterfacesError {
         command: "ip -j addr".to_string(),
         source: io::Error::new(ErrorKind::NotFound, "No such file or directory"),
     })
+}
+
+#[test]
+fn a_socket_without_owner_needs_root_when_processes_may_be_hidden() {
+    // With hidepid nothing is denied: other users' processes are simply absent.
+    let hidden = ProcessFds {
+        processes_may_be_hidden: true,
+        ..open_files(false)
+    };
+
+    let report = join_without_ufw(
+        vec![socket(53, 999)],
+        &hidden,
+        Ok(lan_host()),
+        Ok(Vec::new()),
+    );
+
+    assert_eq!(
+        services(&report),
+        vec![(
+            53,
+            Service::Unknown {
+                reason: UnknownReason::NeedsRoot
+            }
+        )]
+    );
 }
 
 #[test]

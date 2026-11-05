@@ -45,6 +45,7 @@ fn open_files() -> ProcessFds {
             fd_targets: vec!["socket:[21345]".to_string()],
         }],
         permission_denied: true,
+        processes_may_be_hidden: false,
     }
 }
 

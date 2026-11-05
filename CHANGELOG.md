@@ -44,3 +44,9 @@ All notable changes to reachmap are listed here. The format follows
 
 - `reachmap scan` exits with status 1 when it prints a warning, so it fits
   scripts ([#6](https://github.com/MHusted01/reachmap/issues/6)).
+
+### Fixed
+
+- `reachmap scan` shows `unknown (run with sudo for details)` when `/proc` is
+  mounted with `hidepid` and hides other users' processes, instead of a plain
+  `unknown` ([#20](https://github.com/MHusted01/reachmap/issues/20)).

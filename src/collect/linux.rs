@@ -2,7 +2,8 @@
 //! list from iproute2's `ip` and the containers from `docker`. The first two
 //! need no root; every user sees all sockets and interfaces of the current
 //! network namespace. The open files of other users' processes, under
-//! `/proc/<pid>/fd`, do need root, and `docker` needs access to its socket.
+//! `/proc/<pid>/fd`, do need root, and with `hidepid` those processes are not
+//! listed at all without it. `docker` needs access to its socket.
 
 use std::path::PathBuf;
 use std::time::Duration;

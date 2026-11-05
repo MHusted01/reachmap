@@ -127,8 +127,8 @@ yet. The same applies to per-user `systemd --user` instances.
 | `sshd (812)` | Process 812, named `sshd`, has the socket open. |
 | `web (container shop-web-1)` | Docker publishes the port for container `shop-web-1`, service `web` of a Compose project. |
 | `container metrics` | Docker publishes the port for container `metrics`, which is not part of a Compose project. |
-| `unknown (run with sudo for details)` | Some processes belong to other users and could not be inspected; run `sudo reachmap scan` to see them. |
-| `unknown` | No visible process holds the socket. This happens for sockets the kernel opens itself (for example NFS), for a process that exited during the scan, and for processes hidden by `hidepid` (see below). |
+| `unknown (run with sudo for details)` | Some processes belong to other users and could not be inspected, or `/proc` may hide them (see below); run `sudo reachmap scan` to see them. |
+| `unknown` | No process holds the socket. This happens for sockets the kernel opens itself (for example NFS) and for a process that exited during the scan. |
 
 Names come from other programs and may hold anything, so characters that could
 change how the terminal shows the output, such as escape sequences and line
@@ -179,11 +179,14 @@ ran here, as ports without a host socket.
   socket means reading `/proc/<pid>/fd`, which only works for your own
   processes unless you run `scan` with `sudo`. reachmap only reads; it never
   changes anything, with or without root.
-- **Hidden processes.** When `/proc` is mounted with `hidepid=2` (or
-  `hidepid=invisible`), other users' processes are invisible rather than
-  locked. reachmap cannot tell them apart from sockets without a process yet,
-  so their sockets show `unknown` without the sudo hint. Running with `sudo`
-  still finds them.
+- **Hidden processes.** When `/proc` is mounted with `hidepid=2` or
+  `hidepid=4` (also written `invisible` and `ptraceable`), other users'
+  processes are invisible rather than locked. reachmap reads the mount options
+  from `/proc/self/mountinfo` and shows the sudo hint on sockets without an
+  owner, and `sudo` finds those owners. If that file cannot be read or does
+  not list `/proc`, reachmap assumes processes may be hidden and shows the hint
+  too, without a warning. Root never gets the hint, even in a restricted
+  container where root lacks `CAP_SYS_PTRACE` and processes stay hidden.
 - **One network namespace.** `scan` sees the sockets of the namespace it runs
   in. Docker containers on their own network have separate sockets, so only
   their published ports appear (see [Docker](#docker)).
