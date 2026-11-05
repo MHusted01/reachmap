@@ -6,6 +6,8 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-05
+
 ### Added
 
 - `reachmap scan` lists the TCP sockets listening on a Linux host (IPv4 and
@@ -48,6 +50,9 @@ All notable changes to reachmap are listed here. The format follows
   `family`, and `all_addresses` has `checked`. If the kernel cannot be asked, the
   scan continues with a note and the old wording
   ([#21](https://github.com/MHusted01/reachmap/issues/21)).
+- reachmap can be installed with Homebrew, `cargo install`, or as a prebuilt
+  binary for Linux and macOS (x86_64 and aarch64) from the GitHub Release
+  ([#8](https://github.com/MHusted01/reachmap/issues/8)).
 
 ### Changed
 
