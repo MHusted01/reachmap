@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "host": "server.example",
+  "results": [
+    {
+      "port": 22,
+      "address": "192.0.2.10",
+      "result": {
+        "kind": "open"
+      }
+    },
+    {
+      "port": 22,
+      "address": "2001:db8::10",
+      "result": {
+        "kind": "unreachable"
+      }
+    },
+    {
+      "port": 80,
+      "address": "192.0.2.10",
+      "result": {
+        "kind": "closed"
+      }
+    },
+    {
+      "port": 443,
+      "address": "192.0.2.10",
+      "result": {
+        "kind": "no_answer"
+      }
+    },
+    {
+      "port": 8080,
+      "address": "192.0.2.10",
+      "result": {
+        "kind": "failed",
+        "message": "too many open files"
+      }
+    }
+  ]
+}

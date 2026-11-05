@@ -43,17 +43,26 @@ impl fmt::Display for Table<'_> {
         }
 
         let rows: Vec<[String; COLUMNS]> = self.0.iter().map(cells).collect();
-        // Characters, not bytes: `{:<width$}` pads by characters, and process
-        // names may contain non-ASCII text.
-        let widths: [usize; COLUMNS] = std::array::from_fn(|column| {
-            rows.iter()
-                .map(|row| row[column].chars().count())
-                .fold(HEADERS[column].len(), usize::max)
-        });
-
-        write_row(f, &HEADERS, &widths)?;
-        rows.iter().try_for_each(|row| write_row(f, row, &widths))
+        write_table(f, &HEADERS, &rows)
     }
+}
+
+/// Writes `headers` and `rows` as aligned columns.
+pub(crate) fn write_table<const N: usize>(
+    f: &mut fmt::Formatter<'_>,
+    headers: &[&str; N],
+    rows: &[[String; N]],
+) -> fmt::Result {
+    // Characters, not bytes: `{:<width$}` pads by characters, and process
+    // names may contain non-ASCII text.
+    let widths: [usize; N] = std::array::from_fn(|column| {
+        rows.iter()
+            .map(|row| row[column].chars().count())
+            .fold(headers[column].len(), usize::max)
+    });
+
+    write_row(f, headers, &widths)?;
+    rows.iter().try_for_each(|row| write_row(f, row, &widths))
 }
 
 /// Displays a scan as the user sees it on standard output: the table, then a
@@ -112,12 +121,14 @@ fn why(scanned: &ScannedPort) -> String {
 
 /// Writes one line. Every column but the last is padded to its width; the
 /// last is written as is, so lines never end in spaces.
-fn write_row(
+fn write_row<const N: usize>(
     f: &mut fmt::Formatter<'_>,
-    cells: &[impl AsRef<str>; COLUMNS],
-    widths: &[usize; COLUMNS],
+    cells: &[impl AsRef<str>; N],
+    widths: &[usize; N],
 ) -> fmt::Result {
-    let [padded @ .., last] = cells;
+    let Some((last, padded)) = cells.split_last() else {
+        return Ok(());
+    };
     for (cell, width) in padded.iter().zip(widths) {
         write!(f, "{:<width$}{GAP}", cell.as_ref())?;
     }

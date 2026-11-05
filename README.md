@@ -22,7 +22,8 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 > networks (this host, Docker, tailnet, LAN, internet) they can be reached from,
 > before firewall rules, and warns when Docker-published ports skip an active
 > UFW ([details](docs/scan.md)). `reachmap scan --json` prints the same findings
-> for scripts ([fields](docs/json.md)).
+> for scripts ([fields](docs/json.md)). `reachmap probe` tries to connect to a
+> host's TCP ports from another machine ([details](docs/probe.md)).
 
 ## Install
 
@@ -35,7 +36,8 @@ Prebuilt binaries for Linux and macOS (x86_64 and aarch64) are attached to each
 [GitHub Release](https://github.com/MHusted01/reachmap/releases). The Linux
 binaries are static, so they run on any distribution.
 
-`reachmap scan` needs Linux for now; macOS support is planned.
+`reachmap scan` needs Linux for now; macOS support is planned. `reachmap probe`
+runs on both.
 
 ## Features
 

@@ -8,6 +8,11 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap probe <host> --ports 22,80,8000-8100` tries to connect to TCP ports
+  from this machine and reports each as open, closed, no answer, unreachable or
+  failed. It runs on macOS too, tries every address of a host name, and has
+  `--timeout`, `--concurrency` and `--json`
+  ([#10](https://github.com/MHusted01/reachmap/issues/10)).
 - `reachmap scan` lists UDP sockets that can receive from any peer, as `udp` and
   `udp6`, with their owner, verdict and socket options. A note under the table
   says that a connect probe cannot confirm UDP rows; it does not change the exit
