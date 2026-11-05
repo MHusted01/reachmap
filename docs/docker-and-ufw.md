@@ -19,5 +19,6 @@ the network.
   before its own rules, or use a helper such as
   [ufw-docker](https://github.com/chaifeng/ufw-docker).
 
-reachmap flags ports that Docker publishes on all interfaces while UFW is
-active, so you can see where this applies on your host.
+A coming version of reachmap flags ports that Docker publishes on all
+interfaces while UFW is active, so you can see where this applies on your host
+([#6](https://github.com/MHusted01/reachmap/issues/6)).
