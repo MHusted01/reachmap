@@ -102,7 +102,7 @@ with the document.
 |--------|--------------|---------|
 | `process` | `pid` (number), `name` (string) | The process that has the socket open. |
 | `container` | `name` (string), `compose_service` (string or null) | The Docker container the port is published for. |
-| `unknown` | `reason` (string) | No owner was found. `needs_root`: some processes could not be inspected, so run with sudo. `no_process`: no visible process holds the socket. |
+| `unknown` | `reason` (string) | No owner was found. `needs_root`: some processes could not be inspected or may be hidden by `hidepid`, so run with sudo. `no_process`: no process holds the socket. |
 
 ### `reach`
 

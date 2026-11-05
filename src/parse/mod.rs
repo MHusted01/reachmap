@@ -6,4 +6,5 @@ pub mod ip_addr;
 pub mod iptables;
 pub mod proc_net;
 pub mod proc_pid;
+pub mod proc_self;
 pub mod ufw;

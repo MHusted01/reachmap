@@ -198,7 +198,8 @@ pub fn parse_tables(tables: &[RawTable]) -> Result<Vec<ListeningSocket>, ScanErr
 /// Pairs each socket with its container or else the process that has it open,
 /// adds the published ports without a socket, and gives each its verdict and
 /// warning. When no process holds a socket, the reason depends on whether some
-/// processes could not be inspected: then root might find the owner.
+/// processes could not be inspected or may be hidden: then root might find the
+/// owner.
 pub fn join(
     sockets: Vec<ListeningSocket>,
     open_files: &ProcessFds,
@@ -207,7 +208,7 @@ pub fn join(
     firewall: &Firewall,
 ) -> ScanReport {
     let owners = owners_by_inode(open_files.links());
-    let missing = if open_files.permission_denied {
+    let missing = if open_files.incomplete() {
         UnknownReason::NeedsRoot
     } else {
         UnknownReason::NoProcess

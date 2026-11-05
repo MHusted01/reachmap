@@ -4,7 +4,9 @@
 //!
 //! A normal user may only look inside the `fd` folders of their own
 //! processes. Others fail with "permission denied"; that is recorded in
-//! [`ProcessFds::permission_denied`], never treated as an error.
+//! [`ProcessFds::permission_denied`], never treated as an error. With
+//! `hidepid` they do not fail at all, because they are absent from `/proc`;
+//! [`processes_may_be_hidden`] detects that.
 
 use std::ffi::OsStr;
 use std::fs;
@@ -13,6 +15,7 @@ use std::path::Path;
 
 use super::CollectError;
 use crate::parse::proc_pid::FdLink;
+use crate::parse::proc_self::{effective_uid, may_hide_processes, proc_hidepid};
 
 /// The raw data of one process that has at least one open file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,9 +36,19 @@ pub struct ProcessFds {
     /// True when at least one process could not be inspected for lack of
     /// privileges, so a socket without a known owner may belong to it.
     pub permission_denied: bool,
+    /// True when `/proc` may leave out other users' processes, so a socket
+    /// without a known owner may belong to one the walk never saw.
+    pub processes_may_be_hidden: bool,
 }
 
 impl ProcessFds {
+    /// True when the walk may have missed processes, so root might find the
+    /// owner of a socket that has none here.
+    #[must_use]
+    pub fn incomplete(&self) -> bool {
+        self.permission_denied || self.processes_may_be_hidden
+    }
+
     /// Every open file of every process, as input for
     /// [`crate::parse::proc_pid::owners_by_inode`].
     pub fn links(&self) -> impl Iterator<Item = FdLink<'_>> {
@@ -82,6 +95,18 @@ pub fn read_process_fds(proc_root: &Path) -> Result<ProcessFds, CollectError> {
         });
     }
     Ok(found)
+}
+
+/// Whether `proc_root` (normally `/proc`) may leave out other users' processes
+/// for the user running this scan. Files that cannot be read are not an error:
+/// [`may_hide_processes`] then gives the cautious answer.
+#[must_use]
+pub fn processes_may_be_hidden(proc_root: &Path) -> bool {
+    let read = |file: &str| fs::read_to_string(proc_root.join("self").join(file)).ok();
+    may_hide_processes(
+        read("mountinfo").as_deref().and_then(proc_hidepid),
+        read("status").as_deref().and_then(effective_uid),
+    )
 }
 
 impl ProcessFds {
@@ -221,6 +246,7 @@ mod tests {
                     raw(950, "nginx\n", &["socket:[200]"]),
                 ],
                 permission_denied: false,
+                processes_may_be_hidden: false,
             }
         );
     }
@@ -269,6 +295,7 @@ mod tests {
             ProcessFds {
                 processes: vec![raw(500, "me\n", &["socket:[300]"])],
                 permission_denied: true,
+                processes_may_be_hidden: false,
             }
         );
     }
@@ -295,6 +322,7 @@ mod tests {
             ProcessFds {
                 processes: vec![],
                 permission_denied: true,
+                processes_may_be_hidden: false,
             }
         );
     }
@@ -340,6 +368,72 @@ mod tests {
         );
     }
 
+    /// A stand-in for `/proc` with the two files of `/proc/self` that matter.
+    fn proc_self(name: &str, mount_options: &str, uid: u32) -> TempDir {
+        let proc = TempDir::new(name);
+        proc.file(
+            "self/mountinfo",
+            &format!("25 30 0:23 / /proc rw shared:14 - proc proc {mount_options}\n"),
+        );
+        proc.file(
+            "self/status",
+            &format!("Uid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+        );
+        proc
+    }
+
+    #[test]
+    fn hidepid_may_hide_processes_from_a_normal_user() {
+        let proc = proc_self("hidden-user", "rw,hidepid=2", 1000);
+        assert!(processes_may_be_hidden(proc.path()));
+    }
+
+    #[test]
+    fn hidepid_hides_nothing_from_root() {
+        let proc = proc_self("hidden-root", "rw,hidepid=2", 0);
+        assert!(!processes_may_be_hidden(proc.path()));
+    }
+
+    #[test]
+    fn a_plain_proc_mount_hides_nothing() {
+        let proc = proc_self("hidden-plain", "rw", 1000);
+        assert!(!processes_may_be_hidden(proc.path()));
+    }
+
+    #[test]
+    fn an_unreadable_mountinfo_means_processes_may_be_hidden() {
+        let proc = TempDir::new("hidden-no-mountinfo");
+        proc.file("self/status", "Uid:\t1000\t1000\t1000\t1000\n");
+        assert!(processes_may_be_hidden(proc.path()));
+    }
+
+    #[test]
+    fn root_is_exempt_even_when_mountinfo_is_unreadable() {
+        let proc = TempDir::new("hidden-root-no-mountinfo");
+        proc.file("self/status", "Uid:\t0\t0\t0\t0\n");
+        assert!(!processes_may_be_hidden(proc.path()));
+    }
+
+    #[test]
+    fn an_unreadable_status_counts_as_not_root() {
+        let proc = proc_self("hidden-no-status", "rw,hidepid=2", 0);
+        fs::remove_file(proc.path().join("self/status")).unwrap();
+        assert!(processes_may_be_hidden(proc.path()));
+    }
+
+    #[test]
+    fn a_walk_is_incomplete_when_processes_were_denied_or_may_be_hidden() {
+        let walk = |permission_denied, processes_may_be_hidden| ProcessFds {
+            processes: vec![],
+            permission_denied,
+            processes_may_be_hidden,
+        };
+        assert!(!walk(false, false).incomplete());
+        assert!(walk(true, false).incomplete());
+        assert!(walk(false, true).incomplete());
+        assert!(walk(true, true).incomplete());
+    }
+
     #[test]
     fn links_lists_every_fd_link_with_its_process() {
         let fds = ProcessFds {
@@ -348,6 +442,7 @@ mod tests {
                 raw(2, "b\n", &["socket:[2]"]),
             ],
             permission_denied: false,
+            processes_may_be_hidden: false,
         };
 
         let links: Vec<FdLink<'_>> = fds.links().collect();
