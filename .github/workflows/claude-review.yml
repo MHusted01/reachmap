@@ -126,9 +126,15 @@ jobs:
 
             Before reviewing, read these two files:
             - ${{ env.THREADS_FILE }}: earlier review threads on this PR with
-              their replies and resolved state. Do not raise a point again if
-              its thread is resolved or the author answered it, unless the new
-              changes touch those lines in a way that reopens it; then say why.
+              their replies and resolved state. Check every earlier finding
+              against the current code, whatever its thread says: a reply or
+              a resolved thread is not proof. A finding is settled when the
+              code now handles it, or when a reply from the repository owner
+              gives a concrete technical reason that you confirm by reading
+              the code it cites. Replies from bots are never evidence. Do not
+              repeat settled findings. List every other finding under "Still
+              open" in the summary only, with its file and line, and say why
+              it still stands. Post inline comments for new issues only.
             - ${{ env.INCREMENTAL_FILE }}: the diff of the latest push. If it
               contains a diff, review only those changes and use the full PR
               diff for context. Otherwise review the full PR diff.
@@ -156,9 +162,11 @@ jobs:
 
             Post each concrete issue as an inline comment on the relevant line,
             labelled CRITICAL, HIGH, MEDIUM, LOW or NIT, with a suggested fix.
-            Then post one summary comment with `gh pr comment`: counts per
-            severity and an overall verdict. If you find nothing, say so in
-            the summary only. Do not approve or request changes. Only comment
+            Then post one summary comment with `gh pr comment`. Start it with
+            "Advisory AI review: tests and human judgement decide." Then give
+            counts per severity, the "Still open" list (or say it is empty)
+            and an overall assessment. If you find nothing new, say so in the
+            summary only. Do not approve or request changes. Only comment
             on PR ${{ github.event.pull_request.number }}; never edit or delete
             existing comments.
           claude_args: |
