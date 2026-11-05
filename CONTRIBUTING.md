@@ -4,14 +4,21 @@
 
 `main` is protected. Every change goes through a pull request:
 
-1. Branch from `main`: `feat/<topic>`, `fix/<topic>`, `docs/<topic>`, `ci/<topic>`.
+1. Branch from `main` as `<type>/<issue>-<slug>`, e.g. `feat/2-tcp-sockets`.
 2. Keep the PR to one feature or fix.
 3. Title the PR as a conventional commit, e.g. `feat: list listening TCP sockets`.
    The title becomes the squash commit on `main`.
-4. These checks must pass: `lint`, `test`, `build`, `deny` and `pr-title`.
-5. The `claude-review` workflow reviews every push to the PR. Address every
-   comment and resolve all conversations before merging.
-6. Merge with **Squash and merge**. The branch is deleted automatically.
+4. Sign your commits: every commit in the PR needs a
+   [verified signature](https://docs.github.com/en/authentication/managing-commit-signature-verification),
+   not only the squash commit.
+5. These checks must pass: `lint`, `test`, `build`, `deny` and `pr-title`. The
+   branch must be up to date with `main`.
+6. Every PR is reviewed, and all conversations must be resolved before merging.
+   The `claude-review` workflow comments on the owner's PRs from this
+   repository; it does not run on PRs from forks, because they get no secrets.
+   Its output is advisory: it can miss problems and be wrong, so tests and human
+   judgement decide.
+7. Merge with **Squash and merge**. The branch is deleted automatically.
 
 ## Setup
 

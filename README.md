@@ -11,7 +11,7 @@ including the classic trap where ports published by Docker skip UFW.
 $ sudo reachmap scan
 
 PORT   SERVICE               REACHABLE FROM     WHY
-22     sshd                  LAN, tailnet       bound to 0.0.0.0, allowed by UFW
+22     sshd                  LAN, tailnet       bound to 0.0.0.0
 80     nginx (docker)        LAN, tailnet       published on 0.0.0.0
 5432   postgres (docker)     LAN  (!)           Docker port: UFW does not apply
 6379   redis-server          this host only     bound to 127.0.0.1
