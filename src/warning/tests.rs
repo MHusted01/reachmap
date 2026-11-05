@@ -36,7 +36,7 @@ fn row(port: u16, warning: Option<Warning>) -> ScannedPort {
             name: "web".to_string(),
             compose_service: None,
         }),
-        verdict: classify(address, None),
+        verdict: classify(address, None, None),
         warning,
     }
 }

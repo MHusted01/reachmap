@@ -7,6 +7,7 @@
 // Test helpers may panic: a failed test should stop loudly.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::HashMap;
 use std::io;
 
 use reachmap::collect::{CollectError, ProcessFds, RawProcess, RawTable};
@@ -18,7 +19,8 @@ use reachmap::parse::ip_addr::parse_ip_addr;
 use reachmap::parse::iptables::parse_docker_user;
 use reachmap::parse::ufw::parse_ufw_conf;
 use reachmap::scan::{InterfacesError, join, parse_tables};
-use reachmap::socket::{AddressFamily, ListeningSocket};
+use reachmap::socket::{AddressFamily, ListeningSocket, SocketOptions};
+use reachmap::socket_options::SocketOptionsError;
 
 const TCP: &str = include_str!("fixtures/proc_net_tcp.txt");
 const DOCKER: &str = include_str!("fixtures/docker_inspect.json");
@@ -55,11 +57,20 @@ fn a_full_scan_matches_the_snapshot() {
         ufw: parse_ufw_conf(UFW_ENABLED),
         docker_user: Some(parse_docker_user(DOCKER_USER)),
     };
+    // The kernel reported on sshd's socket only.
+    let options = HashMap::from([(
+        21345,
+        SocketOptions {
+            bound_device: None,
+            ipv6_only: false,
+        },
+    )]);
     let report = join(
         sockets(),
         &open_files(),
         Ok(parse_ip_addr(IP_ADDR).unwrap()),
         Ok(parse_docker_inspect(DOCKER).unwrap()),
+        Ok(options),
         &firewall,
     );
 
@@ -79,6 +90,10 @@ fn a_scan_with_missing_collectors_matches_the_snapshot() {
         command: "ip -j addr".to_string(),
         source: io::Error::new(io::ErrorKind::NotFound, "not found"),
     });
+    let options = SocketOptionsError::Collect(CollectError::SockDiag {
+        action: "open",
+        source: io::Error::other("not supported"),
+    });
     let sockets = sockets().into_iter().take(1).collect();
 
     let report = join(
@@ -86,6 +101,7 @@ fn a_scan_with_missing_collectors_matches_the_snapshot() {
         &ProcessFds::default(),
         Err(interfaces),
         Err(DockerError::NotInstalled),
+        Err(options),
         &firewall,
     );
 

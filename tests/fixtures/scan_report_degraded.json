@@ -30,6 +30,11 @@
       "collector": "docker",
       "message": "Docker was not found, so published ports are not shown",
       "hint": null
+    },
+    {
+      "collector": "socket_options",
+      "message": "could not read socket options: could not open the kernel's socket diagnostics: not supported",
+      "hint": null
     }
   ]
 }

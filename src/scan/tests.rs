@@ -1,13 +1,14 @@
 use super::*;
 use crate::collect::RawProcess;
 use crate::errors::render_chain;
-use crate::network::Network;
-use crate::reach::{Reach, Reason};
+use crate::network::{HostAddress, Network};
+use crate::parse::sock_diag::SockDiagError;
+use crate::reach::{Coverage, Reach, Reason};
 use crate::service::{Container, Process};
-use crate::socket::{AddressFamily, Protocol};
-use std::collections::BTreeSet;
+use crate::socket::{Protocol, SocketOptions};
+use std::collections::{BTreeSet, HashMap};
 use std::io;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 fn socket(port: u16, inode: u64) -> ListeningSocket {
     ListeningSocket {
@@ -15,6 +16,7 @@ fn socket(port: u16, inode: u64) -> ListeningSocket {
         address: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         port,
         inode,
+        options: None,
     }
 }
 
@@ -30,17 +32,20 @@ fn open_files(permission_denied: bool) -> ProcessFds {
     }
 }
 
-fn lan_host() -> Vec<HostAddress> {
-    vec![
-        HostAddress {
-            interface: "lo".to_string(),
-            ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
-        },
-        HostAddress {
-            interface: "enp1s0".to_string(),
-            ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
-        },
-    ]
+fn lan_host() -> HostInterfaces {
+    HostInterfaces {
+        addresses: vec![
+            HostAddress {
+                interface: "lo".to_string(),
+                ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            },
+            HostAddress {
+                interface: "enp1s0".to_string(),
+                ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
+            },
+        ],
+        names: HashMap::from([(1, "lo".to_string()), (2, "enp1s0".to_string())]),
+    }
 }
 
 fn firewall(ufw: UfwState) -> Firewall {
@@ -54,7 +59,7 @@ fn firewall(ufw: UfwState) -> Firewall {
 fn join_without_ufw(
     sockets: Vec<ListeningSocket>,
     open_files: &ProcessFds,
-    host: Result<Vec<HostAddress>, InterfacesError>,
+    host: Result<HostInterfaces, InterfacesError>,
     published: Result<Vec<PublishedPort>, DockerError>,
 ) -> ScanReport {
     join(
@@ -62,8 +67,39 @@ fn join_without_ufw(
         open_files,
         host,
         published,
+        Ok(OptionsByInode::new()),
         &firewall(UfwState::Inactive),
     )
+}
+
+/// [`join`] on a LAN host with these facts from the kernel.
+fn join_with_options(
+    sockets: Vec<ListeningSocket>,
+    published: Vec<PublishedPort>,
+    options: Result<OptionsByInode, SocketOptionsError>,
+) -> ScanReport {
+    join(
+        sockets,
+        &open_files(false),
+        Ok(lan_host()),
+        Ok(published),
+        options,
+        &firewall(UfwState::Inactive),
+    )
+}
+
+fn options(bound_device: Option<u32>, ipv6_only: bool) -> SocketOptions {
+    SocketOptions {
+        bound_device,
+        ipv6_only,
+    }
+}
+
+fn all_ipv4(checked: bool) -> Reason {
+    Reason::AllAddresses {
+        covers: Coverage::Ipv4,
+        checked,
+    }
 }
 
 fn services(report: &ScanReport) -> Vec<(u16, Service)> {
@@ -169,9 +205,7 @@ fn classifies_each_socket_against_the_host_interfaces() {
             reach: Reach::From {
                 networks: BTreeSet::from([Network::ThisHost, Network::Lan]),
             },
-            reason: Reason::AllAddresses {
-                family: AddressFamily::Ipv4
-            },
+            reason: all_ipv4(false),
         }
     );
     assert!(report.interfaces_error.is_none());
@@ -233,12 +267,7 @@ fn a_published_port_without_a_socket_gets_its_own_row_in_port_order() {
     assert_eq!(row.endpoint.port, 8080);
     assert_eq!(row.listener, Listener::DockerForward);
     assert_eq!(row.service.to_string(), "container web");
-    assert_eq!(
-        row.verdict.reason,
-        Reason::AllAddresses {
-            family: AddressFamily::Ipv4
-        }
-    );
+    assert_eq!(row.verdict.reason, all_ipv4(false));
     assert_eq!(report.ports.len(), 3);
 }
 
@@ -314,6 +343,7 @@ fn active_ufw_flags_published_rows_and_only_those() {
             published_on("0.0.0.0", 9000),
             published_on("127.0.0.1", 9100),
         ]),
+        Ok(OptionsByInode::new()),
         &firewall(UfwState::Active),
     );
 
@@ -354,6 +384,7 @@ fn unknown_docker_under_active_ufw_ends_up_in_the_warnings() {
         &open_files(false),
         Ok(lan_host()),
         Err(docker_not_reachable()),
+        Ok(OptionsByInode::new()),
         &firewall(UfwState::Active),
     );
 
@@ -402,4 +433,103 @@ fn the_chain_is_left_alone_when_no_port_makes_it_matter() {
         let facts = firewall_facts(published, ufw, chain_must_not_be_read);
         assert_eq!(facts.docker_user, None);
     }
+}
+
+#[test]
+fn a_socket_the_kernel_reports_on_is_checked() {
+    let report = join_with_options(
+        vec![socket(22, 100)],
+        Vec::new(),
+        Ok(HashMap::from([(100, options(None, false))])),
+    );
+
+    assert_eq!(report.ports[0].verdict.reason, all_ipv4(true));
+}
+
+#[test]
+fn a_bound_device_narrows_the_verdict_to_its_interface() {
+    let report = join_with_options(
+        vec![socket(22, 100)],
+        Vec::new(),
+        Ok(HashMap::from([(100, options(Some(1), false))])),
+    );
+
+    assert_eq!(
+        report.ports[0].verdict,
+        Verdict {
+            reach: Reach::From {
+                networks: BTreeSet::from([Network::ThisHost]),
+            },
+            reason: Reason::OnInterfaces {
+                interfaces: BTreeSet::from(["lo".to_string()]),
+            },
+        }
+    );
+}
+
+#[test]
+fn a_socket_the_kernel_did_not_report_stays_unchecked() {
+    let report = join_with_options(
+        vec![socket(22, 100), socket(23, 200)],
+        Vec::new(),
+        Ok(HashMap::from([(100, options(None, false))])),
+    );
+
+    assert_eq!(report.ports[1].verdict.reason, all_ipv4(false));
+}
+
+#[test]
+fn a_device_no_interface_has_leaves_the_socket_unchecked() {
+    let report = join_with_options(
+        vec![socket(22, 100)],
+        Vec::new(),
+        Ok(HashMap::from([(100, options(Some(9), false))])),
+    );
+
+    assert_eq!(report.ports[0].verdict.reason, all_ipv4(false));
+}
+
+#[test]
+fn without_options_verdicts_stay_unchecked_and_the_error_is_kept_without_a_warning() {
+    let refused = SockDiagError::Refused(io::Error::from_raw_os_error(13));
+
+    let report = join_with_options(
+        vec![socket(22, 100)],
+        Vec::new(),
+        Err(SocketOptionsError::Reply(refused)),
+    );
+
+    assert_eq!(report.ports[0].verdict.reason, all_ipv4(false));
+    assert!(report.socket_options_error.is_some());
+    assert!(report.warnings.is_empty());
+}
+
+#[test]
+fn an_ipv6_only_socket_does_not_take_the_name_of_a_port_published_on_ipv4() {
+    let unrelated = ListeningSocket {
+        address: IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+        ..socket(8080, 100)
+    };
+
+    let report = join_with_options(
+        vec![unrelated],
+        vec![published(8080, "web")],
+        Ok(HashMap::from([(100, options(None, true))])),
+    );
+
+    let kinds: Vec<Listener> = report.ports.iter().map(|row| row.listener).collect();
+    assert_eq!(kinds, [Listener::DockerForward, Listener::HostSocket]);
+    assert_eq!(report.ports[0].service.to_string(), "container web");
+    assert_eq!(report.ports[1].service.to_string(), "sshd (812)");
+}
+
+#[test]
+fn a_docker_forward_has_no_socket_to_check() {
+    let report = join_with_options(
+        Vec::new(),
+        vec![published(8080, "web")],
+        Ok(OptionsByInode::new()),
+    );
+
+    assert_eq!(report.ports[0].verdict.reason, all_ipv4(false));
 }

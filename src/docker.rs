@@ -111,7 +111,7 @@ pub fn publisher_of<'a>(
     let on_this_port = || published.iter().filter(|p| p.port == socket.port);
     on_this_port()
         .find(|p| same_address(socket.address, p.address))
-        .or_else(|| on_this_port().find(|p| covers(socket.address, p.address)))
+        .or_else(|| on_this_port().find(|p| covers(socket, p.address)))
 }
 
 /// The published ports that no socket serves: firewall rules alone carry them.
@@ -122,7 +122,7 @@ pub fn without_socket<'a>(
     published.iter().filter(|p| {
         !sockets.iter().any(|socket| {
             socket.port == p.port
-                && (same_address(socket.address, p.address) || covers(socket.address, p.address))
+                && (same_address(socket.address, p.address) || covers(socket, p.address))
         })
     })
 }
@@ -133,17 +133,22 @@ fn same_address(socket: IpAddr, published: IpAddr) -> bool {
 }
 
 /// A dual-stack socket on `::` also accepts what Docker lists as `0.0.0.0`, so
-/// one proxy socket can serve both bindings of `-p 8080:80`. Whether a socket
-/// is IPv6-only is not known yet (#21); the `::` row then over-reports IPv4
-/// reach like any other, so reach is not hidden.
-fn covers(socket: IpAddr, published: IpAddr) -> bool {
-    socket.is_ipv6() && socket.is_unspecified() && published.is_ipv4() && published.is_unspecified()
+/// one proxy socket can serve both bindings of `-p 8080:80`. A socket known to
+/// be IPv6-only cannot. When that is not known, the socket counts as dual-stack:
+/// its row then over-reports IPv4 reach like any other, so reach is not hidden.
+fn covers(socket: &ListeningSocket, published: IpAddr) -> bool {
+    socket.address.is_ipv6()
+        && socket.address.is_unspecified()
+        && !socket.is_ipv6_only()
+        && published.is_ipv4()
+        && published.is_unspecified()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::errors::render_chain;
+    use crate::socket::SocketOptions;
     use std::cell::Cell;
     use std::io;
     use std::process::{Command, ExitStatus};
@@ -169,6 +174,7 @@ mod tests {
             address: address.parse().unwrap(),
             port,
             inode: 1,
+            options: None,
         }
     }
 
@@ -318,6 +324,37 @@ mod tests {
     fn an_ipv4_mapped_socket_matches_the_plain_ipv4_address() {
         let ports = [published("127.0.0.1", 8080, "local")];
         assert!(publisher_of(&ports, &socket("::ffff:127.0.0.1", 8080)).is_some());
+    }
+
+    fn ipv6_only(socket: ListeningSocket) -> ListeningSocket {
+        ListeningSocket {
+            options: Some(SocketOptions {
+                bound_device: None,
+                ipv6_only: true,
+            }),
+            ..socket
+        }
+    }
+
+    #[test]
+    fn an_ipv6_only_socket_does_not_serve_the_ipv4_binding() {
+        let ports = [published("0.0.0.0", 8080, "web")];
+        let unrelated = ipv6_only(socket("::", 8080));
+
+        assert_eq!(publisher_of(&ports, &unrelated), None);
+        assert_eq!(
+            without_socket(&ports, std::slice::from_ref(&unrelated)).count(),
+            1
+        );
+    }
+
+    #[test]
+    fn an_ipv6_only_socket_still_serves_its_own_binding() {
+        let ports = [published("::", 8080, "web")];
+        assert_eq!(
+            publisher_of(&ports, &ipv6_only(socket("::", 8080))),
+            ports.first()
+        );
     }
 
     #[test]

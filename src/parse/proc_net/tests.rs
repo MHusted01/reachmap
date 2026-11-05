@@ -32,6 +32,7 @@ fn decodes_an_ipv4_listen_row() {
             address: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
             port: 3306,
             inode: 23456,
+            options: None,
         }]
     );
 }

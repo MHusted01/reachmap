@@ -7,6 +7,8 @@ mod command;
 #[cfg(target_os = "linux")]
 mod linux;
 mod processes;
+#[cfg(target_os = "linux")]
+mod sock_diag;
 #[cfg(test)]
 mod test_support;
 
@@ -64,6 +66,15 @@ pub enum CollectError {
         /// Value of `std::env::consts::OS`, e.g. `macos`.
         os: &'static str,
     },
+    /// The kernel's socket diagnostics could not be used.
+    #[error("could not {action} the kernel's socket diagnostics")]
+    SockDiag {
+        /// What failed: `open`, `query` or `read`.
+        action: &'static str,
+        /// The operating system's reason.
+        #[source]
+        source: io::Error,
+    },
     /// A command could not be started, e.g. because it is not installed.
     #[error("could not run `{command}`")]
     Run {
@@ -101,6 +112,15 @@ pub enum CollectError {
         #[source]
         source: FromUtf8Error,
     },
+}
+
+/// A way to exchange datagrams with the kernel's socket diagnostics. A trait,
+/// so the code that reads a reply is tested on any OS.
+pub trait SockDiagChannel {
+    /// Sends one request.
+    fn send(&self, request: &[u8]) -> Result<(), CollectError>;
+    /// Reads one datagram into `buffer` and returns its length.
+    fn receive(&self, buffer: &mut [u8]) -> Result<usize, CollectError>;
 }
 
 /// `": message"`, or nothing when the command printed no message.
@@ -141,6 +161,20 @@ pub fn read_open_files() -> Result<ProcessFds, CollectError> {
 /// Lists the open files of every process. Only Linux is supported for now.
 #[cfg(not(target_os = "linux"))]
 pub fn read_open_files() -> Result<ProcessFds, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
+/// Opens a channel to the kernel's socket diagnostics. Needs no root.
+#[cfg(target_os = "linux")]
+pub fn open_sock_diag() -> Result<Box<dyn SockDiagChannel>, CollectError> {
+    sock_diag::open()
+}
+
+/// Opens a channel to the socket diagnostics. Only Linux has them.
+#[cfg(not(target_os = "linux"))]
+pub fn open_sock_diag() -> Result<Box<dyn SockDiagChannel>, CollectError> {
     Err(CollectError::UnsupportedOs {
         os: std::env::consts::OS,
     })

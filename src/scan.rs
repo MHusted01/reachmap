@@ -1,6 +1,6 @@
-//! `reachmap scan`: read the kernel's socket tables, the open files of every
-//! process, the host's interfaces, Docker's published ports and the firewall
-//! facts, and turn them into one sorted list of ports with the program or
+//! `reachmap scan`: read the kernel's socket tables and socket options, the
+//! open files of every process, the host's interfaces, Docker's published ports
+//! and the firewall facts, and turn them into one sorted list of ports with the program or
 //! container behind each, where it can be reached from, and what deserves a
 //! warning. Data flows one way: [`crate::collect`] reads, [`crate::parse`]
 //! decodes, this module joins them.
@@ -14,13 +14,14 @@ use thiserror::Error;
 use crate::collect::{self, CollectError, ProcessFds, RawTable};
 use crate::docker::{self, DockerError, PublishedPort};
 use crate::firewall::{self, DockerUserChain, Firewall, UfwState};
-use crate::network::HostAddress;
+use crate::network::HostInterfaces;
 use crate::parse::ip_addr::parse_ip_addr;
 use crate::parse::proc_net::{ParseError, parse_proc_net_tcp};
 use crate::parse::proc_pid::owners_by_inode;
-use crate::reach::{Verdict, classify};
+use crate::reach::{SocketScope, Verdict, classify};
 use crate::service::{Service, UnknownReason, service_of};
 use crate::socket::{Endpoint, ListeningSocket, sort_by_port};
+use crate::socket_options::{OptionsByInode, SocketOptionsError, read_socket_options};
 use crate::warning::{ScanWarning, Warning, docker_ufw_bypass, summarise};
 
 /// Where users report problems reachmap cannot handle.
@@ -130,15 +131,19 @@ pub struct ScanReport {
     /// Set when Docker could not be asked; published ports then show the
     /// process that holds their socket, and those without one are missing.
     pub docker_error: Option<DockerError>,
+    /// Set when the kernel's socket options could not be read; verdicts then
+    /// assume the widest case and say what was not checked.
+    pub socket_options_error: Option<SocketOptionsError>,
     /// The summary under the table. Any entry makes the scan exit with 1.
     pub warnings: Vec<ScanWarning>,
 }
 
-/// Reads this host's TCP tables, processes, interfaces, Docker containers and
-/// firewall facts and returns its ports, sorted by port number.
+/// Reads this host's TCP tables, socket options, processes, interfaces, Docker
+/// containers and firewall facts and returns its ports, sorted by port number.
 pub fn scan() -> Result<ScanReport, ScanError> {
     let tables = collect::read_tcp_tables()?;
     let sockets = parse_tables(&tables)?;
+    let options = read_socket_options();
     let open_files = collect::read_open_files()?;
     let published = docker::read_published_ports();
     let firewall = firewall_facts(
@@ -149,8 +154,9 @@ pub fn scan() -> Result<ScanReport, ScanError> {
     Ok(join(
         sockets,
         &open_files,
-        read_host_addresses(),
+        read_host_interfaces(),
         published,
+        options,
         &firewall,
     ))
 }
@@ -174,8 +180,8 @@ fn firewall_facts(
     }
 }
 
-/// Lists the addresses of this host's interfaces.
-fn read_host_addresses() -> Result<Vec<HostAddress>, InterfacesError> {
+/// Lists this host's interfaces and their addresses.
+fn read_host_interfaces() -> Result<HostInterfaces, InterfacesError> {
     let json = collect::read_interfaces().map_err(InterfacesError::Collect)?;
     parse_ip_addr(&json).map_err(InterfacesError::Parse)
 }
@@ -199,12 +205,13 @@ pub fn parse_tables(tables: &[RawTable]) -> Result<Vec<ListeningSocket>, ScanErr
 /// adds the published ports without a socket, and gives each its verdict and
 /// warning. When no process holds a socket, the reason depends on whether some
 /// processes could not be inspected or may be hidden: then root might find the
-/// owner.
+/// owner. A socket the kernel reported no options for stays unchecked.
 pub fn join(
     sockets: Vec<ListeningSocket>,
     open_files: &ProcessFds,
-    host: Result<Vec<HostAddress>, InterfacesError>,
+    host: Result<HostInterfaces, InterfacesError>,
     published: Result<Vec<PublishedPort>, DockerError>,
+    options: Result<OptionsByInode, SocketOptionsError>,
     firewall: &Firewall,
 ) -> ScanReport {
     let owners = owners_by_inode(open_files.links());
@@ -215,8 +222,10 @@ pub fn join(
     };
     let (host, interfaces_error) = split(host);
     let (published, docker_error) = split(published);
-    let host = host.as_deref();
+    let (options, socket_options_error) = split(options);
+    let addresses = host.as_ref().map(|host| host.addresses.as_slice());
     let published = published.unwrap_or_default();
+    let sockets = with_options(sockets, options.unwrap_or_default());
 
     let on_sockets = sockets.iter().map(|socket| {
         let publisher = docker::publisher_of(&published, socket);
@@ -227,7 +236,7 @@ pub fn join(
                 || service_of(socket.inode, &owners, missing),
                 |port| Service::Container(port.container.clone()),
             ),
-            verdict: classify(socket.address, host),
+            verdict: classify(socket.address, scope_of(socket, host.as_ref()), addresses),
             warning: publisher.and_then(|port| docker_ufw_bypass(port, &firewall.ufw)),
         }
     });
@@ -235,7 +244,7 @@ pub fn join(
         endpoint: port.endpoint(),
         listener: Listener::DockerForward,
         service: Service::Container(port.container.clone()),
-        verdict: classify(port.address, host),
+        verdict: classify(port.address, None, addresses),
         warning: docker_ufw_bypass(port, &firewall.ufw),
     });
     let mut ports: Vec<ScannedPort> = on_sockets.chain(forwarded).collect();
@@ -245,8 +254,28 @@ pub fn join(
         ports,
         interfaces_error,
         docker_error,
+        socket_options_error,
         warnings,
     }
+}
+
+/// Gives each socket the options the kernel reported for its inode.
+fn with_options(sockets: Vec<ListeningSocket>, options: OptionsByInode) -> Vec<ListeningSocket> {
+    sockets
+        .into_iter()
+        .map(|socket| ListeningSocket {
+            options: options.get(&socket.inode).copied(),
+            ..socket
+        })
+        .collect()
+}
+
+/// What `classify` may rely on for this socket, if anything.
+fn scope_of<'a>(
+    socket: &ListeningSocket,
+    host: Option<&'a HostInterfaces>,
+) -> Option<SocketScope<'a>> {
+    SocketScope::resolve(socket.options?, &host?.names)
 }
 
 /// Separates a value from the error of an optional collector.

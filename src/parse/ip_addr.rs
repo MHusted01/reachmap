@@ -1,16 +1,18 @@
 //! Parser for the JSON that `ip -j addr` prints: one object per network
 //! interface, each with a list of assigned addresses.
 
+use std::collections::HashMap;
 use std::net::IpAddr;
 
 use serde::Deserialize;
 
-use crate::network::HostAddress;
+use crate::network::{HostAddress, HostInterfaces};
 
 /// One interface as `ip -j addr` prints it. Fields reachmap does not use
 /// (MTU, MAC address, flags, ...) are ignored.
 #[derive(Deserialize)]
 struct Link {
+    ifindex: u32,
     ifname: String,
     /// Missing or empty for an interface without addresses.
     #[serde(default)]
@@ -26,19 +28,26 @@ struct AddrInfo {
 }
 
 /// Turns `ip -j addr` output into one [`HostAddress`] per assigned address,
-/// in the order the command printed them.
-pub fn parse_ip_addr(json: &str) -> Result<Vec<HostAddress>, serde_json::Error> {
+/// in the order the command printed them, and the name of every interface.
+pub fn parse_ip_addr(json: &str) -> Result<HostInterfaces, serde_json::Error> {
     let links: Vec<Link> = serde_json::from_str(json)?;
-    Ok(links
+    let names: HashMap<u32, String> = links
+        .iter()
+        .map(|link| (link.ifindex, link.ifname.clone()))
+        .collect();
+    let addresses = links
         .into_iter()
         .flat_map(|link| {
-            let Link { ifname, addr_info } = link;
+            let Link {
+                ifname, addr_info, ..
+            } = link;
             addr_info.into_iter().map(move |addr| HostAddress {
                 interface: ifname.clone(),
                 ip: addr.local,
             })
         })
-        .collect())
+        .collect();
+    Ok(HostInterfaces { addresses, names })
 }
 
 #[cfg(test)]
@@ -48,6 +57,7 @@ mod tests {
     fn pairs(json: &str) -> Vec<(String, String)> {
         parse_ip_addr(json)
             .unwrap()
+            .addresses
             .into_iter()
             .map(|a| (a.interface, a.ip.to_string()))
             .collect()
@@ -78,10 +88,22 @@ mod tests {
     #[test]
     fn interfaces_without_addresses_yield_nothing() {
         let json = r#"[
-            {"ifname": "wlp2s0", "addr_info": []},
-            {"ifname": "dummy0"}
+            {"ifindex": 3, "ifname": "wlp2s0", "addr_info": []},
+            {"ifindex": 4, "ifname": "dummy0"}
         ]"#;
         assert!(pairs(json).is_empty());
+    }
+
+    #[test]
+    fn every_interface_is_named_by_its_index_even_without_addresses() {
+        let json = r#"[
+            {"ifindex": 1, "ifname": "lo", "addr_info": [{"local": "127.0.0.1"}]},
+            {"ifindex": 4, "ifname": "vrf-blue"}
+        ]"#;
+        assert_eq!(
+            parse_ip_addr(json).unwrap().names,
+            HashMap::from([(1, "lo".to_string()), (4, "vrf-blue".to_string())])
+        );
     }
 
     #[test]
@@ -96,12 +118,17 @@ mod tests {
 
     #[test]
     fn an_address_that_is_not_an_ip_is_an_error() {
-        let json = r#"[{"ifname": "eth0", "addr_info": [{"local": "not-an-ip"}]}]"#;
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [{"local": "not-an-ip"}]}]"#;
         assert!(parse_ip_addr(json).is_err());
     }
 
     #[test]
     fn an_interface_without_a_name_is_an_error() {
-        assert!(parse_ip_addr(r#"[{"addr_info": []}]"#).is_err());
+        assert!(parse_ip_addr(r#"[{"ifindex": 2, "addr_info": []}]"#).is_err());
+    }
+
+    #[test]
+    fn an_interface_without_an_index_is_an_error() {
+        assert!(parse_ip_addr(r#"[{"ifname": "eth0", "addr_info": []}]"#).is_err());
     }
 }

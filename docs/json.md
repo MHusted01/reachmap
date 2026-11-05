@@ -61,7 +61,8 @@ with the document.
       },
       "reason": {
         "kind": "all_addresses",
-        "family": "ipv4"
+        "covers": "ipv4",
+        "checked": true
       },
       "warning": "ufw_bypassed"
     }
@@ -123,10 +124,14 @@ nothing upstream filters it. reachmap cannot see such filters. Like the table,
 |--------|--------------|---------|
 | `loopback` | | Bound to a loopback address. |
 | `on_interfaces` | `interfaces` (array of strings) | Bound to one address, carried by these interfaces. |
-| `all_addresses` | `family` (`ipv4` or `ipv6`) | Bound to the wildcard address of this family. The bound device and IPv6-only flag are not checked, so the widest case is assumed. |
+| `all_addresses` | `covers`, `checked` (boolean) | Bound to a wildcard address. `checked` is true when the kernel confirmed that no device restricts the socket, and whether it is IPv6-only. When false, the widest case is assumed; a Docker-forwarded port without a socket is always false. |
 | `not_on_host` | | Bound to an address no interface has. |
-| `no_addresses` | `family` (`ipv4` or `ipv6`) | Bound to a wildcard address, but no interface has an address it covers. |
+| `no_addresses` | `covers` | Bound to a wildcard address, but no interface has an address it covers. |
+| `no_addresses_on_device` | `interface` (string) | Bound to a device that has no address the socket can use. |
 | `interfaces_unknown` | | The interfaces could not be listed. |
+
+`covers` is `ipv4` (`0.0.0.0`), `ipv6` (an IPv6-only `::`) or `ipv4_and_ipv6`
+(any other `::`). A socket bound to a device has the `on_interfaces` reason.
 
 ### `warning`
 
@@ -152,13 +157,13 @@ The `reason` strings are for people; their wording can change.
 
 ## Collector errors
 
-A scan finishes without Docker or without the interface list. Each collector
+A scan finishes without Docker, the interface list or the socket options. Each collector
 that failed adds one entry, so facts that are missing never look like facts
 that are absent: an empty `ports` list with a `docker` entry here does not mean
 that no port is published.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `collector` | string | `interfaces` or `docker`. |
+| `collector` | string | `interfaces`, `docker` or `socket_options`. |
 | `message` | string | What went wrong, for people. The wording can change. |
 | `hint` | string or null | What to try, for people. |

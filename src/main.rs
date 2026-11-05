@@ -46,6 +46,10 @@ fn run_scan(json: bool) -> ExitCode {
                 eprintln!("note: {}", render_chain(error));
                 print_hint(error.hint());
             }
+            if let Some(error) = &report.socket_options_error {
+                eprintln!("note: {}", render_chain(error));
+                print_hint(error.hint());
+            }
             let status = if report.warnings.is_empty() {
                 ExitCode::SUCCESS
             } else {

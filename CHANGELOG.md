@@ -39,6 +39,15 @@ All notable changes to reachmap are listed here. The format follows
   scripts, including what could not be collected. The fields are documented in
   [docs/json.md](docs/json.md)
   ([#7](https://github.com/MHusted01/reachmap/issues/7)).
+- `reachmap scan` asks the kernel which device a socket is bound to and
+  whether it is IPv6-only. A socket bound to `tailscale0` now shows `tailnet`
+  and `only on tailscale0` instead of every network, an IPv6-only `::` socket
+  counts IPv6 addresses only and no longer takes the name of a container
+  published on `0.0.0.0`, and WHY drops "not checked" where the kernel answered.
+  In JSON, `all_addresses` and `no_addresses` now have `covers` instead of
+  `family`, and `all_addresses` has `checked`. If the kernel cannot be asked, the
+  scan continues with a note and the old wording
+  ([#21](https://github.com/MHusted01/reachmap/issues/21)).
 
 ### Changed
 

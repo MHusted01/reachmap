@@ -1,6 +1,7 @@
 //! The networks a client can connect from, and which one each address of this
 //! host belongs to.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 
@@ -14,6 +15,16 @@ pub struct HostAddress {
     pub interface: String,
     /// The address.
     pub ip: IpAddr,
+}
+
+/// What this host's interfaces look like.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HostInterfaces {
+    /// Every assigned address.
+    pub addresses: Vec<HostAddress>,
+    /// The name of each interface by its kernel index, including interfaces
+    /// without addresses.
+    pub names: HashMap<u32, String>,
 }
 
 /// Where a client must be to reach an address of this host. Ordered from the
