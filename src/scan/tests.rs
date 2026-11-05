@@ -99,7 +99,12 @@ fn names_the_owner_and_explains_the_rest_when_nothing_was_hidden() {
                     name: "sshd".to_string()
                 })
             ),
-            (53, Service::Unknown(UnknownReason::NoProcess)),
+            (
+                53,
+                Service::Unknown {
+                    reason: UnknownReason::NoProcess
+                }
+            ),
         ]
     );
 }
@@ -116,7 +121,9 @@ fn suggests_root_for_unowned_sockets_when_processes_were_hidden() {
     assert!(matches!(report.ports[0].service, Service::Process(_)));
     assert_eq!(
         report.ports[1].service,
-        Service::Unknown(UnknownReason::NeedsRoot)
+        Service::Unknown {
+            reason: UnknownReason::NeedsRoot
+        }
     );
 }
 
@@ -132,8 +139,12 @@ fn classifies_each_socket_against_the_host_interfaces() {
     assert_eq!(
         report.ports[0].verdict,
         Verdict {
-            reach: Reach::From(BTreeSet::from([Network::ThisHost, Network::Lan])),
-            reason: Reason::AllAddresses(AddressFamily::Ipv4),
+            reach: Reach::From {
+                networks: BTreeSet::from([Network::ThisHost, Network::Lan]),
+            },
+            reason: Reason::AllAddresses {
+                family: AddressFamily::Ipv4
+            },
         }
     );
     assert!(report.interfaces_error.is_none());
@@ -197,7 +208,9 @@ fn a_published_port_without_a_socket_gets_its_own_row_in_port_order() {
     assert_eq!(row.service.to_string(), "container web");
     assert_eq!(
         row.verdict.reason,
-        Reason::AllAddresses(AddressFamily::Ipv4)
+        Reason::AllAddresses {
+            family: AddressFamily::Ipv4
+        }
     );
     assert_eq!(report.ports.len(), 3);
 }

@@ -8,6 +8,7 @@
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::collect::{self, CollectError, ProcessFds, RawTable};
@@ -89,7 +90,8 @@ impl InterfacesError {
 }
 
 /// What accepts connections on a port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Listener {
     /// A socket in the kernel's tables.
     HostSocket,
@@ -100,15 +102,17 @@ pub enum Listener {
 
 /// A port on this host with what is behind it and where it can be reached
 /// from.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ScannedPort {
     /// Where connections are accepted.
+    #[serde(flatten)]
     pub endpoint: Endpoint,
     /// What accepts them.
     pub listener: Listener,
     /// Who they end up with.
     pub service: Service,
     /// Which networks can connect, and why.
+    #[serde(flatten)]
     pub verdict: Verdict,
     /// What the firewall facts add, for a published port.
     pub warning: Option<Warning>,

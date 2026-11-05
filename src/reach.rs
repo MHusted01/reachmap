@@ -4,43 +4,58 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::net::IpAddr;
 
+use serde::Serialize;
+
 use crate::network::{HostAddress, Network};
 use crate::socket::AddressFamily;
 
 /// Which networks can connect to a socket.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Reach {
-    /// Clients on these networks can connect. Never empty.
-    From(BTreeSet<Network>),
+    /// Clients on these networks can connect.
+    From {
+        /// The networks. Never empty.
+        networks: BTreeSet<Network>,
+    },
     /// reachmap lacks the facts to decide; the [`Reason`] says which.
     Unknown,
 }
 
 /// Why a socket got its [`Reach`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Reason {
     /// Bound to a loopback address, such as `127.0.0.1` or `::1`.
     Loopback,
-    /// Bound to one address of this host, carried by these interfaces
-    /// (almost always one).
-    OnInterfaces(BTreeSet<String>),
+    /// Bound to one address of this host.
+    OnInterfaces {
+        /// The interfaces that carry it (almost always one).
+        interfaces: BTreeSet<String>,
+    },
     /// Bound to the wildcard address of this family: `0.0.0.0` (every IPv4
     /// address) or `::` (every IPv6 address, and IPv4 as well unless the
     /// socket is IPv6-only). Whether the socket is restricted to one device
     /// or is IPv6-only is not visible in `/proc/net/tcp`, so the widest
     /// case is assumed.
-    AllAddresses(AddressFamily),
+    AllAddresses {
+        /// The family of the wildcard address.
+        family: AddressFamily,
+    },
     /// Bound to an address that no interface has (any more).
     NotOnHost,
     /// Bound to the wildcard address of this family, but no interface has an
     /// address it covers (e.g. `0.0.0.0` on an IPv6-only host).
-    NoAddresses(AddressFamily),
+    NoAddresses {
+        /// The family of the wildcard address.
+        family: AddressFamily,
+    },
     /// The host's interfaces could not be listed.
     InterfacesUnknown,
 }
 
 /// Where a socket can be reached from, with the reason.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Verdict {
     /// The networks that can connect.
     pub reach: Reach,
@@ -51,7 +66,7 @@ pub struct Verdict {
 impl fmt::Display for Reach {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Reach::From(networks) => write_joined(f, networks),
+            Reach::From { networks } => write_joined(f, networks),
             Reach::Unknown => f.write_str("unknown"),
         }
     }
@@ -61,21 +76,25 @@ impl fmt::Display for Reason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Reason::Loopback => f.write_str("loopback address"),
-            Reason::OnInterfaces(interfaces) => {
+            Reason::OnInterfaces { interfaces } => {
                 f.write_str("only on ")?;
                 write_joined(f, interfaces)
             }
-            Reason::AllAddresses(AddressFamily::Ipv4) => {
-                f.write_str("all IPv4 addresses (bound device not checked)")
-            }
-            Reason::AllAddresses(AddressFamily::Ipv6) => {
+            Reason::AllAddresses {
+                family: AddressFamily::Ipv4,
+            } => f.write_str("all IPv4 addresses (bound device not checked)"),
+            Reason::AllAddresses {
+                family: AddressFamily::Ipv6,
+            } => {
                 f.write_str("all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)")
             }
             Reason::NotOnHost => f.write_str("no interface has this address"),
-            Reason::NoAddresses(AddressFamily::Ipv4) => {
-                f.write_str("no interface has an IPv4 address")
-            }
-            Reason::NoAddresses(AddressFamily::Ipv6) => f.write_str("no interface has an address"),
+            Reason::NoAddresses {
+                family: AddressFamily::Ipv4,
+            } => f.write_str("no interface has an IPv4 address"),
+            Reason::NoAddresses {
+                family: AddressFamily::Ipv6,
+            } => f.write_str("no interface has an address"),
             Reason::InterfacesUnknown => f.write_str("could not list interfaces"),
         }
     }
@@ -103,7 +122,9 @@ pub fn classify(address: IpAddr, host: Option<&[HostAddress]>) -> Verdict {
     let address = address.to_canonical();
     if address.is_loopback() {
         return Verdict {
-            reach: Reach::From(BTreeSet::from([Network::ThisHost])),
+            reach: Reach::From {
+                networks: BTreeSet::from([Network::ThisHost]),
+            },
             reason: Reason::Loopback,
         };
     }
@@ -121,10 +142,10 @@ pub fn classify(address: IpAddr, host: Option<&[HostAddress]>) -> Verdict {
             .filter(|a| family == AddressFamily::Ipv6 || a.ip.to_canonical().is_ipv4());
         return match networks_of(covered) {
             Some(networks) => Verdict {
-                reach: Reach::From(networks),
-                reason: Reason::AllAddresses(family),
+                reach: Reach::From { networks },
+                reason: Reason::AllAddresses { family },
             },
-            None => Verdict::unknown(Reason::NoAddresses(family)),
+            None => Verdict::unknown(Reason::NoAddresses { family }),
         };
     }
     let matching: Vec<&HostAddress> = host
@@ -133,8 +154,10 @@ pub fn classify(address: IpAddr, host: Option<&[HostAddress]>) -> Verdict {
         .collect();
     match networks_of(matching.iter().copied()) {
         Some(networks) => Verdict {
-            reach: Reach::From(networks),
-            reason: Reason::OnInterfaces(matching.iter().map(|a| a.interface.clone()).collect()),
+            reach: Reach::From { networks },
+            reason: Reason::OnInterfaces {
+                interfaces: matching.iter().map(|a| a.interface.clone()).collect(),
+            },
         },
         None => Verdict::unknown(Reason::NotOnHost),
     }
@@ -198,11 +221,15 @@ mod tests {
     }
 
     fn from(networks: &[Network]) -> Reach {
-        Reach::From(networks.iter().copied().collect())
+        Reach::From {
+            networks: networks.iter().copied().collect(),
+        }
     }
 
     fn only_on(interface: &str) -> Reason {
-        Reason::OnInterfaces(BTreeSet::from([interface.to_string()]))
+        Reason::OnInterfaces {
+            interfaces: BTreeSet::from([interface.to_string()]),
+        }
     }
 
     fn verdict(reach: Reach, reason: Reason) -> Verdict {
@@ -232,8 +259,12 @@ mod tests {
 
     #[test]
     fn wildcards_reach_every_network_with_an_address_of_their_family() {
-        let all_v4 = || Reason::AllAddresses(AddressFamily::Ipv4);
-        let all_v6 = || Reason::AllAddresses(AddressFamily::Ipv6);
+        let all_v4 = || Reason::AllAddresses {
+            family: AddressFamily::Ipv4,
+        };
+        let all_v6 = || Reason::AllAddresses {
+            family: AddressFamily::Ipv6,
+        };
         let everywhere = [ThisHost, Docker, Tailnet, Lan];
 
         check(&example_host(), "0.0.0.0", &everywhere, all_v4());
@@ -275,11 +306,21 @@ mod tests {
         let ipv6_only = host(&[("lo", "::1"), ("eth0", "fd12:3456:789a::1")]);
         assert_eq!(
             classify("0.0.0.0".parse().unwrap(), Some(&ipv6_only)),
-            verdict(Reach::Unknown, Reason::NoAddresses(AddressFamily::Ipv4))
+            verdict(
+                Reach::Unknown,
+                Reason::NoAddresses {
+                    family: AddressFamily::Ipv4
+                }
+            )
         );
         assert_eq!(
             classify("::".parse().unwrap(), Some(&[])),
-            verdict(Reach::Unknown, Reason::NoAddresses(AddressFamily::Ipv6))
+            verdict(
+                Reach::Unknown,
+                Reason::NoAddresses {
+                    family: AddressFamily::Ipv6
+                }
+            )
         );
     }
 
@@ -302,7 +343,9 @@ mod tests {
             classify("10.0.0.1".parse().unwrap(), Some(&host)),
             verdict(
                 from(&[Lan]),
-                Reason::OnInterfaces(BTreeSet::from(["br0".to_string(), "eth0".to_string()]))
+                Reason::OnInterfaces {
+                    interfaces: BTreeSet::from(["br0".to_string(), "eth0".to_string()]),
+                }
             )
         );
     }
@@ -340,16 +383,24 @@ mod tests {
         assert_eq!(Reason::Loopback.to_string(), "loopback address");
         assert_eq!(only_on("enp1s0").to_string(), "only on enp1s0");
         assert_eq!(
-            Reason::OnInterfaces(BTreeSet::from(["eth0".to_string(), "br0".to_string()]))
-                .to_string(),
+            Reason::OnInterfaces {
+                interfaces: BTreeSet::from(["eth0".to_string(), "br0".to_string()]),
+            }
+            .to_string(),
             "only on br0, eth0"
         );
         assert_eq!(
-            Reason::AllAddresses(AddressFamily::Ipv4).to_string(),
+            Reason::AllAddresses {
+                family: AddressFamily::Ipv4
+            }
+            .to_string(),
             "all IPv4 addresses (bound device not checked)"
         );
         assert_eq!(
-            Reason::AllAddresses(AddressFamily::Ipv6).to_string(),
+            Reason::AllAddresses {
+                family: AddressFamily::Ipv6
+            }
+            .to_string(),
             "all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)"
         );
         assert_eq!(

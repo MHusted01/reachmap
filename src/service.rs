@@ -3,8 +3,10 @@
 use std::collections::HashMap;
 use std::fmt;
 
+use serde::Serialize;
+
 /// A running program, identified by its process ID.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Process {
     /// Process ID.
     pub pid: u32,
@@ -14,7 +16,7 @@ pub struct Process {
 }
 
 /// A running Docker container. Both names are sanitised when parsed.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Container {
     /// The container's name, e.g. `shop-web-1`.
     pub name: String,
@@ -32,7 +34,8 @@ impl fmt::Display for Container {
 }
 
 /// Why the program behind a socket is not known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
     /// Some processes could not be inspected without more privileges; the
     /// owner is probably one of them.
@@ -45,14 +48,18 @@ pub enum UnknownReason {
 }
 
 /// The program behind one socket, or why it is not known.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Service {
     /// The process that has the socket open.
     Process(Process),
     /// The Docker container the port is published for.
     Container(Container),
     /// No owner was found.
-    Unknown(UnknownReason),
+    Unknown {
+        /// Why not.
+        reason: UnknownReason,
+    },
 }
 
 impl fmt::Display for Service {
@@ -60,22 +67,24 @@ impl fmt::Display for Service {
         match self {
             Service::Process(Process { pid, name }) => write!(f, "{name} ({pid})"),
             Service::Container(container) => container.fmt(f),
-            Service::Unknown(UnknownReason::NeedsRoot) => {
-                f.write_str("unknown (run with sudo for details)")
-            }
-            Service::Unknown(UnknownReason::NoProcess) => f.write_str("unknown"),
+            Service::Unknown {
+                reason: UnknownReason::NeedsRoot,
+            } => f.write_str("unknown (run with sudo for details)"),
+            Service::Unknown {
+                reason: UnknownReason::NoProcess,
+            } => f.write_str("unknown"),
         }
     }
 }
 
 /// The program that has the socket with this `inode` open, from `owners`
 /// (keyed by socket inode). Without an entry the owner is
-/// `Service::Unknown(missing)`.
+/// `Service::Unknown { reason: missing }`.
 pub fn service_of(inode: u64, owners: &HashMap<u64, Process>, missing: UnknownReason) -> Service {
     owners
         .get(&inode)
         .cloned()
-        .map_or(Service::Unknown(missing), Service::Process)
+        .map_or(Service::Unknown { reason: missing }, Service::Process)
 }
 
 #[cfg(test)]
@@ -116,11 +125,17 @@ mod tests {
     #[test]
     fn displays_why_an_owner_is_unknown() {
         assert_eq!(
-            Service::Unknown(UnknownReason::NeedsRoot).to_string(),
+            Service::Unknown {
+                reason: UnknownReason::NeedsRoot
+            }
+            .to_string(),
             "unknown (run with sudo for details)"
         );
         assert_eq!(
-            Service::Unknown(UnknownReason::NoProcess).to_string(),
+            Service::Unknown {
+                reason: UnknownReason::NoProcess
+            }
+            .to_string(),
             "unknown"
         );
     }
@@ -143,7 +158,9 @@ mod tests {
     fn a_socket_without_an_owner_gets_the_given_reason() {
         assert_eq!(
             service_of(300, &HashMap::new(), UnknownReason::NeedsRoot),
-            Service::Unknown(UnknownReason::NeedsRoot)
+            Service::Unknown {
+                reason: UnknownReason::NeedsRoot
+            }
         );
     }
 }

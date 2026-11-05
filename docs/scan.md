@@ -201,6 +201,11 @@ ran here, as ports without a host socket.
 - When IPv6 is disabled in the kernel, `/proc/net/tcp6` does not exist and
   only IPv4 sockets are listed.
 
+## JSON
+
+`reachmap scan --json` prints the same findings as JSON for scripts, with the
+same exit status. See [JSON output](json.md).
+
 ## Exit status
 
 | Status | Meaning |

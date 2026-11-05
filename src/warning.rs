@@ -5,12 +5,15 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use serde::Serialize;
+
 use crate::docker::{DockerError, PublishedPort};
 use crate::firewall::{DockerUserChain, Firewall, UfwState};
 use crate::scan::ScannedPort;
 
 /// What is wrong with one published port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Warning {
     /// UFW is active, and Docker forwards this port past it.
     UfwBypassed,
@@ -19,7 +22,8 @@ pub enum Warning {
 }
 
 /// One line of the summary under the table.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ScanWarning {
     /// UFW is active, and these ports are forwarded past it.
     UfwBypassed {
@@ -40,8 +44,11 @@ pub enum ScanWarning {
     },
     /// `DOCKER-USER` holds rules that may filter these ports.
     DockerUserRules,
-    /// `DOCKER-USER` could not be read, for this reason.
-    DockerUserUnchecked(String),
+    /// `DOCKER-USER` could not be read.
+    DockerUserUnchecked {
+        /// Why not.
+        reason: String,
+    },
 }
 
 /// The warning for one published port, if it deserves one. Every address but
@@ -116,9 +123,9 @@ impl DockerUserChain {
         match self {
             DockerUserChain::NoRules => None,
             DockerUserChain::HasRules => Some(ScanWarning::DockerUserRules),
-            DockerUserChain::Unchecked(reason) => {
-                Some(ScanWarning::DockerUserUnchecked(reason.clone()))
-            }
+            DockerUserChain::Unchecked(reason) => Some(ScanWarning::DockerUserUnchecked {
+                reason: reason.clone(),
+            }),
         }
     }
 }
@@ -160,7 +167,7 @@ impl fmt::Display for ScanWarning {
             ScanWarning::DockerUserRules => {
                 f.write_str("DOCKER-USER has rules, so filtering may apply, not verified")
             }
-            ScanWarning::DockerUserUnchecked(reason) => {
+            ScanWarning::DockerUserUnchecked { reason } => {
                 write!(f, "DOCKER-USER rules were not checked: {reason}")
             }
         }

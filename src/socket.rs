@@ -3,9 +3,12 @@
 use std::fmt;
 use std::net::IpAddr;
 
+use serde::Serialize;
+
 /// Transport protocol of a socket. The IP version is not part of it: that
 /// comes from the socket's address (see [`Endpoint::protocol_name`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Protocol {
     /// Transmission Control Protocol.
     Tcp,
@@ -21,7 +24,8 @@ impl fmt::Display for Protocol {
 
 /// IP version of a kernel socket table: `/proc/net/tcp` holds IPv4 sockets,
 /// `/proc/net/tcp6` IPv6 sockets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AddressFamily {
     /// IPv4: addresses are one 32-bit word.
     Ipv4,
@@ -31,7 +35,7 @@ pub enum AddressFamily {
 
 /// Where a host accepts connections. Ordered by port, then protocol, then
 /// address (IPv4 before IPv6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Endpoint {
     /// The local port.
     pub port: u16,

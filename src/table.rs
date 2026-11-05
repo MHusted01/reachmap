@@ -124,7 +124,9 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-    const NEEDS_ROOT: Service = Service::Unknown(UnknownReason::NeedsRoot);
+    const NEEDS_ROOT: Service = Service::Unknown {
+        reason: UnknownReason::NeedsRoot,
+    };
 
     /// A host with loopback and one LAN address on `enp1s0`.
     fn host() -> Vec<HostAddress> {

@@ -22,7 +22,8 @@ PORT   SERVICE               REACHABLE FROM     WHY
 > the process or Docker container behind each, and the networks (this host,
 > Docker, tailnet, LAN, internet) it can be reached from, before firewall rules,
 > and warns when Docker-published ports skip an active UFW
-> ([details](docs/scan.md)); follow the
+> ([details](docs/scan.md)). `reachmap scan --json` prints the same findings
+> for scripts ([fields](docs/json.md)). Follow the
 > [v0.1 milestone](https://github.com/MHusted01/reachmap/milestones) for progress.
 
 ## Install
