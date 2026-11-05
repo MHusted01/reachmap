@@ -38,7 +38,6 @@ cat <<FORMULA
 class Reachmap < Formula
   desc "Shows which services on a host can be reached, from where, and why"
   homepage "https://github.com/MHusted01/reachmap"
-  version "$version"
   license any_of: ["MIT", "Apache-2.0"]
 
   on_macos do
