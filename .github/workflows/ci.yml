@@ -27,6 +27,7 @@ jobs:
       - run: make lint
       - run: make lint-ci
       - run: scripts/test-changelog-section.sh
+      - run: scripts/test-release.sh
 
   test:
     name: test
