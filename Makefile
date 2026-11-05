@@ -29,6 +29,7 @@ test:
 # The tests on the minimum supported Rust version, in their own target
 # directory so they do not evict the stable build.
 msrv:
+	$(if $(MSRV),,$(error could not read rust-version from Cargo.toml))
 	rustup toolchain install $(MSRV) --profile minimal
 	CARGO_TARGET_DIR=target/msrv cargo +$(MSRV) test --locked
 
