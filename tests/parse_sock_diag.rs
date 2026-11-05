@@ -10,6 +10,8 @@ use reachmap::socket::SocketOptions;
 
 const IPV4: &[u8] = include_bytes!("fixtures/sock_diag_ipv4.bin");
 const IPV6: &[u8] = include_bytes!("fixtures/sock_diag_ipv6.bin");
+const UDP_IPV4: &[u8] = include_bytes!("fixtures/sock_diag_udp_ipv4.bin");
+const UDP_IPV6: &[u8] = include_bytes!("fixtures/sock_diag_udp_ipv6.bin");
 
 fn options(bound_device: Option<u32>, ipv6_only: bool) -> SocketOptions {
     SocketOptions {
@@ -46,5 +48,30 @@ fn an_ipv6_dump_gives_the_ipv6_only_flag_of_each_socket() {
             // The kernel binds a link-local socket to its scope's interface.
             (68175, options(Some(3), true)),
         ]
+    );
+}
+
+#[test]
+fn a_udp_ipv4_dump_gives_the_bound_device_of_each_socket() {
+    let Dump { sockets, done } = parse_dump(UDP_IPV4).unwrap();
+
+    assert!(done);
+    assert_eq!(
+        sockets,
+        [
+            (81557, options(None, false)),
+            (81558, options(Some(2), false)),
+        ]
+    );
+}
+
+#[test]
+fn a_udp_ipv6_dump_gives_the_ipv6_only_flag_of_each_socket() {
+    let Dump { sockets, done } = parse_dump(UDP_IPV6).unwrap();
+
+    assert!(done);
+    assert_eq!(
+        sockets,
+        [(81559, options(None, false)), (81560, options(None, true)),]
     );
 }

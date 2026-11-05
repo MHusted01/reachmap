@@ -14,6 +14,7 @@ fn unknown() -> UfwState {
 
 fn published(address: &str) -> PublishedPort {
     PublishedPort {
+        protocol: Protocol::Tcp,
         address: address.parse().unwrap(),
         port: 8080,
         container: Container {

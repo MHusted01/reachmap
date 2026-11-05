@@ -3,9 +3,14 @@
 use std::fmt;
 
 use crate::scan::{Listener, ScanReport, ScannedPort};
+use crate::socket::Protocol;
 
 /// Printed instead of an empty table.
-pub const NO_SOCKETS: &str = "No listening TCP sockets found.";
+pub const NO_SOCKETS: &str = "No listening TCP or UDP sockets found.";
+
+/// Printed under a table with UDP rows. It is no warning, so it does not
+/// change the exit status: nearly every host has a UDP socket.
+const UDP_NOTE: &str = "UDP has no connection handshake, so a connect probe cannot confirm that UDP rows are reachable";
 
 /// Number of columns in the table.
 const COLUMNS: usize = 6;
@@ -52,7 +57,7 @@ impl fmt::Display for Table<'_> {
 }
 
 /// Displays a scan as the user sees it on standard output: the table, then a
-/// blank line and the warnings, if there are any.
+/// blank line and the warnings and the UDP note, if there are any.
 #[derive(Debug, Clone, Copy)]
 pub struct Report<'a>(pub &'a ScanReport);
 
@@ -62,12 +67,19 @@ impl fmt::Display for Report<'_> {
             ports, warnings, ..
         } = self.0;
         write!(f, "{}", Table(ports))?;
-        if !warnings.is_empty() {
+        let has_udp = ports
+            .iter()
+            .any(|port| port.endpoint.protocol == Protocol::Udp);
+        if has_udp || !warnings.is_empty() {
             writeln!(f)?;
         }
         warnings
             .iter()
-            .try_for_each(|warning| writeln!(f, "warning: {warning}"))
+            .try_for_each(|warning| writeln!(f, "warning: {warning}"))?;
+        if has_udp {
+            writeln!(f, "note: {UDP_NOTE}")?;
+        }
+        Ok(())
     }
 }
 
@@ -118,7 +130,7 @@ mod tests {
     use crate::network::HostAddress;
     use crate::reach::classify;
     use crate::service::{Container, Process, Service, UnknownReason};
-    use crate::socket::{Endpoint, Protocol};
+    use crate::socket::Endpoint;
     use crate::warning::{ScanWarning, Warning};
     use std::collections::BTreeSet;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -285,6 +297,52 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
                 Table(&report.ports)
             )
         );
+    }
+
+    fn with_udp_row(mut report: ScanReport) -> ScanReport {
+        report.ports[0].endpoint.protocol = Protocol::Udp;
+        report
+    }
+
+    #[test]
+    fn a_udp_row_adds_one_note_after_a_blank_line() {
+        let mut report = with_udp_row(report(Vec::new()));
+        report.ports.push(report.ports[0].clone());
+
+        assert_eq!(
+            Report(&report).to_string(),
+            format!(
+                "{}\nnote: UDP has no connection handshake, so a connect probe cannot confirm \
+                 that UDP rows are reachable\n",
+                Table(&report.ports)
+            )
+        );
+    }
+
+    #[test]
+    fn the_note_follows_the_warnings_under_one_blank_line() {
+        let report = with_udp_row(report(vec![ScanWarning::DockerUserRules]));
+
+        assert_eq!(
+            Report(&report).to_string(),
+            format!(
+                "{}\nwarning: DOCKER-USER has rules, so filtering may apply, not verified\n\
+                 note: {UDP_NOTE}\n",
+                Table(&report.ports)
+            )
+        );
+    }
+
+    #[test]
+    fn a_udp_row_shows_its_protocol() {
+        let report = with_udp_row(report(Vec::new()));
+
+        assert!(Table(&report.ports).to_string().contains("22    udp "));
+    }
+
+    #[test]
+    fn no_sockets_says_both_protocols_were_looked_for() {
+        assert_eq!(NO_SOCKETS, "No listening TCP or UDP sockets found.");
     }
 
     #[test]

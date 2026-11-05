@@ -23,13 +23,15 @@ pub use processes::{ProcessFds, RawProcess, processes_may_be_hidden, read_proces
 
 use thiserror::Error;
 
-use crate::socket::AddressFamily;
+use crate::socket::{AddressFamily, Protocol};
 
 /// A kernel table to read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableSource {
     /// IP version of the sockets in the table.
     pub family: AddressFamily,
+    /// Transport protocol of the sockets in the table.
+    pub protocol: Protocol,
     /// File to read.
     pub path: PathBuf,
     /// When true, a missing file means "no sockets of this kind" instead of
@@ -42,6 +44,8 @@ pub struct TableSource {
 pub struct RawTable {
     /// IP version of the sockets in the table.
     pub family: AddressFamily,
+    /// Transport protocol of the sockets in the table.
+    pub protocol: Protocol,
     /// Where the text came from, used in error messages.
     pub path: PathBuf,
     /// The file's content.
@@ -132,16 +136,16 @@ fn detail(stderr: &str) -> String {
     }
 }
 
-/// Reads this host's TCP tables: `/proc/net/tcp` and, when IPv6 is enabled,
-/// `/proc/net/tcp6`.
+/// Reads this host's socket tables: `/proc/net/tcp`, `/proc/net/udp` and, when
+/// IPv6 is enabled, `/proc/net/tcp6` and `/proc/net/udp6`.
 #[cfg(target_os = "linux")]
-pub fn read_tcp_tables() -> Result<Vec<RawTable>, CollectError> {
-    read_tables(&linux::tcp_sources())
+pub fn read_socket_tables() -> Result<Vec<RawTable>, CollectError> {
+    read_tables(&linux::socket_sources())
 }
 
-/// Reads this host's TCP tables. Only Linux is supported for now.
+/// Reads this host's socket tables. Only Linux is supported for now.
 #[cfg(not(target_os = "linux"))]
-pub fn read_tcp_tables() -> Result<Vec<RawTable>, CollectError> {
+pub fn read_socket_tables() -> Result<Vec<RawTable>, CollectError> {
     Err(CollectError::UnsupportedOs {
         os: std::env::consts::OS,
     })
@@ -268,6 +272,7 @@ pub fn read_tables(sources: &[TableSource]) -> Result<Vec<RawTable>, CollectErro
         match fs::read_to_string(&source.path) {
             Ok(text) => tables.push(RawTable {
                 family: source.family,
+                protocol: source.protocol,
                 path: source.path.clone(),
                 text,
             }),
@@ -293,6 +298,7 @@ mod tests {
     fn source(family: AddressFamily, path: &Path, optional: bool) -> TableSource {
         TableSource {
             family,
+            protocol: Protocol::Tcp,
             path: path.to_path_buf(),
             optional,
         }
@@ -315,11 +321,13 @@ mod tests {
             vec![
                 RawTable {
                     family: AddressFamily::Ipv4,
+                    protocol: Protocol::Tcp,
                     path: tcp,
                     text: "four".to_string()
                 },
                 RawTable {
                     family: AddressFamily::Ipv6,
+                    protocol: Protocol::Tcp,
                     path: tcp6,
                     text: "six".to_string()
                 },

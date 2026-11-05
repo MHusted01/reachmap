@@ -6,6 +6,25 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `reachmap scan` lists UDP sockets that can receive from any peer, as `udp` and
+  `udp6`, with their owner, verdict and socket options. A note under the table
+  says that a connect probe cannot confirm UDP rows; it does not change the exit
+  status. `--json` reports them with `"protocol": "udp"`
+  ([#9](https://github.com/MHusted01/reachmap/issues/9)).
+- Docker's published UDP ports are listed and get the UFW warnings
+  ([#9](https://github.com/MHusted01/reachmap/issues/9)).
+- A socket bound to a multicast address says so in WHY, instead of
+  `no interface has this address`
+  ([#9](https://github.com/MHusted01/reachmap/issues/9)).
+
+### Fixed
+
+- A failed request for socket options no longer discards what the kernel already
+  reported, so those sockets keep their checked verdicts
+  ([#9](https://github.com/MHusted01/reachmap/issues/9)).
+
 ## [0.1.0] - 2026-11-05
 
 ### Added

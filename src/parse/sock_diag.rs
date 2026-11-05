@@ -1,7 +1,8 @@
 //! The kernel's socket diagnostics (`NETLINK_SOCK_DIAG`), as bytes: the
-//! request that asks for every listening TCP socket, and the parser for the
-//! reply. `ss` reads the same interface. It reports two things `/proc/net/tcp`
-//! does not: the device a socket is bound to, and its IPv6-only flag.
+//! request that asks for the open sockets of one protocol, and the parser for
+//! the reply. `ss` reads the same interface. It reports two things the tables
+//! in `/proc/net` do not: the device a socket is bound to, and its IPv6-only
+//! flag.
 //!
 //! A reply is a run of netlink messages. Each starts with its own length, and
 //! the next one starts at the following multiple of 4; the attributes after a
@@ -12,7 +13,7 @@ use std::io;
 
 use thiserror::Error;
 
-use crate::socket::{AddressFamily, SocketOptions};
+use crate::socket::{AddressFamily, Protocol, SocketOptions};
 
 /// The length of [`dump_request`]'s result.
 pub const REQUEST_LEN: usize = HEADER_LEN + REQUEST_BODY_LEN;
@@ -50,7 +51,7 @@ const INET_DIAG_SKV6ONLY: u16 = 11;
 const AF_INET: u8 = 2;
 const AF_INET6: u8 = 10;
 const IPPROTO_TCP: u8 = 6;
-const TCP_LISTEN: u32 = 10;
+const IPPROTO_UDP: u8 = 17;
 
 /// Sequence number of the requests. One request is in flight at a time.
 const SEQUENCE: u32 = 1;
@@ -76,8 +77,9 @@ pub struct Dump {
     pub done: bool,
 }
 
-/// The request for every listening TCP socket of one address family.
-pub fn dump_request(family: AddressFamily) -> [u8; REQUEST_LEN] {
+/// The request for every open socket of one protocol and address family (see
+/// [`Protocol::open_state`]).
+pub fn dump_request(protocol: Protocol, family: AddressFamily) -> [u8; REQUEST_LEN] {
     let mut request = [0; REQUEST_LEN];
     write(&mut request, 0, &(REQUEST_LEN as u32).to_ne_bytes());
     write(
@@ -92,11 +94,15 @@ pub fn dump_request(family: AddressFamily) -> [u8; REQUEST_LEN] {
     );
     write(&mut request, SEQUENCE_OFFSET, &SEQUENCE.to_ne_bytes());
     write(&mut request, HEADER_LEN, &[family_number(family)]);
-    write(&mut request, REQUEST_PROTOCOL_OFFSET, &[IPPROTO_TCP]);
+    write(
+        &mut request,
+        REQUEST_PROTOCOL_OFFSET,
+        &[protocol_number(protocol)],
+    );
     write(
         &mut request,
         REQUEST_STATES_OFFSET,
-        &(1u32 << TCP_LISTEN).to_ne_bytes(),
+        &(1u32 << protocol.open_state()).to_ne_bytes(),
     );
     request
 }
@@ -111,6 +117,14 @@ fn family_number(family: AddressFamily) -> u8 {
     match family {
         AddressFamily::Ipv4 => AF_INET,
         AddressFamily::Ipv6 => AF_INET6,
+    }
+}
+
+/// The kernel's number for a transport protocol.
+fn protocol_number(protocol: Protocol) -> u8 {
+    match protocol {
+        Protocol::Tcp => IPPROTO_TCP,
+        Protocol::Udp => IPPROTO_UDP,
     }
 }
 

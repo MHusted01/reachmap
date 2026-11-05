@@ -19,10 +19,11 @@ use reachmap::parse::ip_addr::parse_ip_addr;
 use reachmap::parse::iptables::parse_docker_user;
 use reachmap::parse::ufw::parse_ufw_conf;
 use reachmap::scan::{InterfacesError, join, parse_tables};
-use reachmap::socket::{AddressFamily, ListeningSocket, SocketOptions};
-use reachmap::socket_options::SocketOptionsError;
+use reachmap::socket::{AddressFamily, ListeningSocket, Protocol, SocketOptions};
+use reachmap::socket_options::{OptionsReport, SocketOptionsError};
 
 const TCP: &str = include_str!("fixtures/proc_net_tcp.txt");
+const UDP: &str = include_str!("fixtures/proc_net_udp.txt");
 const DOCKER: &str = include_str!("fixtures/docker_inspect.json");
 const IP_ADDR: &str = include_str!("fixtures/ip_addr.json");
 const UFW_ENABLED: &str = include_str!("fixtures/ufw_enabled.conf");
@@ -30,11 +31,20 @@ const UFW_DISABLED: &str = include_str!("fixtures/ufw_disabled.conf");
 const DOCKER_USER: &str = include_str!("fixtures/iptables_docker_user.txt");
 
 fn sockets() -> Vec<ListeningSocket> {
-    parse_tables(&[RawTable {
-        family: AddressFamily::Ipv4,
-        path: "/proc/net/tcp".into(),
-        text: TCP.to_string(),
-    }])
+    parse_tables(&[
+        RawTable {
+            family: AddressFamily::Ipv4,
+            protocol: Protocol::Tcp,
+            path: "/proc/net/tcp".into(),
+            text: TCP.to_string(),
+        },
+        RawTable {
+            family: AddressFamily::Ipv4,
+            protocol: Protocol::Udp,
+            path: "/proc/net/udp".into(),
+            text: UDP.to_string(),
+        },
+    ])
     .unwrap()
 }
 
@@ -58,19 +68,22 @@ fn a_full_scan_matches_the_snapshot() {
         docker_user: Some(parse_docker_user(DOCKER_USER)),
     };
     // The kernel reported on sshd's socket only.
-    let options = HashMap::from([(
-        21345,
-        SocketOptions {
-            bound_device: None,
-            ipv6_only: false,
-        },
-    )]);
+    let options = OptionsReport {
+        by_inode: HashMap::from([(
+            21345,
+            SocketOptions {
+                bound_device: None,
+                ipv6_only: false,
+            },
+        )]),
+        error: None,
+    };
     let report = join(
         sockets(),
         &open_files(),
         Ok(parse_ip_addr(IP_ADDR).unwrap()),
         Ok(parse_docker_inspect(DOCKER).unwrap()),
-        Ok(options),
+        options,
         &firewall,
     );
 
@@ -90,10 +103,13 @@ fn a_scan_with_missing_collectors_matches_the_snapshot() {
         command: "ip -j addr".to_string(),
         source: io::Error::new(io::ErrorKind::NotFound, "not found"),
     });
-    let options = SocketOptionsError::Collect(CollectError::SockDiag {
-        action: "open",
-        source: io::Error::other("not supported"),
-    });
+    let options = OptionsReport {
+        error: Some(SocketOptionsError::Open(CollectError::SockDiag {
+            action: "open",
+            source: io::Error::other("not supported"),
+        })),
+        ..OptionsReport::default()
+    };
     let sockets = sockets().into_iter().take(1).collect();
 
     let report = join(
@@ -101,7 +117,7 @@ fn a_scan_with_missing_collectors_matches_the_snapshot() {
         &ProcessFds::default(),
         Err(interfaces),
         Err(DockerError::NotInstalled),
-        Err(options),
+        options,
         &firewall,
     );
 

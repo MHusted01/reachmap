@@ -9,11 +9,11 @@ use serde::Serialize;
 use crate::network::{HostAddress, Network};
 use crate::socket::SocketOptions;
 
-/// Which networks can connect to a socket.
+/// Which networks can reach a socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Reach {
-    /// Clients on these networks can connect.
+    /// Clients on these networks can connect, or for UDP send to it.
     From {
         /// The networks. Never empty.
         networks: BTreeSet<Network>,
@@ -22,7 +22,7 @@ pub enum Reach {
     Unknown,
 }
 
-/// The addresses a wildcard socket accepts connections on.
+/// The addresses a wildcard socket accepts traffic on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Coverage {
@@ -100,6 +100,10 @@ pub enum Reason {
     },
     /// Bound to an address that no interface has (any more).
     NotOnHost,
+    /// Bound to a multicast address: the socket receives what is sent to that
+    /// group, not what is sent to this host. Which networks those senders are
+    /// on depends on the groups the host joined, which reachmap does not read.
+    Multicast,
     /// Bound to a wildcard address, but no interface has an address it covers
     /// (e.g. `0.0.0.0` on an IPv6-only host).
     NoAddresses {
@@ -152,6 +156,7 @@ impl fmt::Display for Reason {
                 }
             }),
             Reason::NotOnHost => f.write_str("no interface has this address"),
+            Reason::Multicast => f.write_str("multicast address, group membership not checked"),
             Reason::NoAddresses { covers } => f.write_str(match covers {
                 Coverage::Ipv4 => "no interface has an IPv4 address",
                 Coverage::Ipv6 => "no interface has an IPv6 address",
@@ -182,7 +187,8 @@ fn write_joined<T: fmt::Display>(
 /// Decides where a socket bound to `address` can be reached from, given what
 /// the kernel reports about it (`None` when that is not known, so the widest
 /// case is assumed) and the addresses of this host's interfaces (`None` when
-/// they could not be listed). Loopback addresses need no other facts.
+/// they could not be listed). Loopback and multicast addresses need no other
+/// facts.
 pub fn classify(
     address: IpAddr,
     scope: Option<SocketScope<'_>>,
@@ -197,6 +203,9 @@ pub fn classify(
             },
             reason: Reason::Loopback,
         };
+    }
+    if address.is_multicast() {
+        return Verdict::unknown(Reason::Multicast);
     }
     let Some(host) = host else {
         return Verdict::unknown(Reason::InterfacesUnknown);

@@ -1,4 +1,6 @@
-//! Parser for the kernel's TCP socket tables, `/proc/net/tcp` and `/proc/net/tcp6`.
+//! Parser for the kernel's socket tables: `/proc/net/tcp`, `/proc/net/udp` and
+//! their IPv6 twins, `tcp6` and `udp6`. All four have the same columns, up to
+//! and including the inode.
 //!
 //! Each row after the header describes one socket, for example:
 //!
@@ -8,7 +10,7 @@
 //! ```
 //!
 //! `0100007F:0CEA` is the local address and port in hex, `0A` is the state
-//! (LISTEN) and `23456` is the socket's inode. Addresses are printed as 32-bit
+//! (LISTEN; see [`Protocol::open_state`]) and `23456` is the socket's inode. Addresses are printed as 32-bit
 //! words in the machine's byte order, which is little-endian on every platform
 //! reachmap supports (x86_64 and aarch64), so `0100007F` means 127.0.0.1.
 
@@ -61,8 +63,6 @@ pub enum ParseErrorKind {
     BadInode(String),
 }
 
-/// The kernel's code for the LISTEN state (`TCP_LISTEN` in `include/net/tcp_states.h`).
-const LISTEN_STATE: u8 = 0x0A;
 /// Rows have more fields, but we only need the first ten (up to the inode).
 const MIN_FIELDS: usize = 10;
 const LOCAL_ADDRESS_FIELD: usize = 1;
@@ -74,18 +74,19 @@ const IPV6_DIGITS: usize = 4 * WORD_DIGITS;
 const PORT_DIGITS: usize = 4;
 const STATE_DIGITS: usize = 2;
 
-/// Parses the text of `/proc/net/tcp` (IPv4) or `/proc/net/tcp6` (IPv6) and
-/// returns the sockets in the LISTEN state, in file order.
+/// Parses the text of one socket table and returns the sockets that take
+/// traffic from any peer, in file order.
 ///
 /// Stops at the first malformed row and reports its 1-based line number.
-pub fn parse_proc_net_tcp(
+pub fn parse_proc_net(
     text: &str,
     family: AddressFamily,
+    protocol: Protocol,
 ) -> Result<Vec<ListeningSocket>, ParseError> {
     text.lines()
         .enumerate()
         .filter_map(|(index, line)| {
-            parse_line(line, family)
+            parse_line(line, family, protocol)
                 .map_err(|kind| ParseError {
                     line: index + 1,
                     kind,
@@ -96,10 +97,11 @@ pub fn parse_proc_net_tcp(
 }
 
 /// Parses one line. `Ok(None)` means "nothing to report": a blank line, the
-/// header, or a socket that is not listening.
+/// header, or a socket in another state.
 fn parse_line(
     line: &str,
     family: AddressFamily,
+    protocol: Protocol,
 ) -> Result<Option<ListeningSocket>, ParseErrorKind> {
     // Only the first MIN_FIELDS fields matter; a fixed array avoids a heap
     // allocation per line.
@@ -124,7 +126,7 @@ fn parse_line(
     let state_hex = fields[STATE_FIELD];
     let state = parse_hex(state_hex, STATE_DIGITS, u8::from_str_radix)
         .ok_or_else(|| ParseErrorKind::BadState(state_hex.to_string()))?;
-    if state != LISTEN_STATE {
+    if state != protocol.open_state() {
         return Ok(None);
     }
 
@@ -135,7 +137,7 @@ fn parse_line(
         .map_err(|_| ParseErrorKind::BadInode(inode_text.to_string()))?;
 
     Ok(Some(ListeningSocket {
-        protocol: Protocol::Tcp,
+        protocol,
         address,
         port,
         inode,

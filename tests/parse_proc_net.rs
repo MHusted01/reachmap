@@ -1,5 +1,5 @@
-//! Fixture tests: parse `/proc/net/tcp{,6}` files through the public library
-//! API. The fixtures are hand-written in the kernel's exact format (header,
+//! Fixture tests: parse `/proc/net/{tcp,udp}{,6}` files through the public
+//! library API. The fixtures are hand-written in the kernel's exact format (header,
 //! column layout, trailing fields), with documentation addresses.
 
 // Test helpers may panic: a failed test should stop loudly.
@@ -7,16 +7,22 @@
 
 use reachmap::collect::RawTable;
 use reachmap::errors::render_chain;
-use reachmap::parse::proc_net::parse_proc_net_tcp;
+use reachmap::parse::proc_net::parse_proc_net;
 use reachmap::scan::{ScanError, parse_tables};
-use reachmap::socket::AddressFamily;
+use reachmap::socket::{AddressFamily, Protocol};
 
 const TCP: &str = include_str!("fixtures/proc_net_tcp.txt");
 const TCP6: &str = include_str!("fixtures/proc_net_tcp6.txt");
+const UDP: &str = include_str!("fixtures/proc_net_udp.txt");
+const UDP6: &str = include_str!("fixtures/proc_net_udp6.txt");
 
 /// (port, address, inode) for each socket, easy to compare.
 fn summary(text: &str, family: AddressFamily) -> Vec<(u16, String, u64)> {
-    parse_proc_net_tcp(text, family)
+    summary_of(text, family, Protocol::Tcp)
+}
+
+fn summary_of(text: &str, family: AddressFamily, protocol: Protocol) -> Vec<(u16, String, u64)> {
+    parse_proc_net(text, family, protocol)
         .unwrap()
         .into_iter()
         .map(|s| (s.port, s.address.to_string(), s.inode))
@@ -26,6 +32,7 @@ fn summary(text: &str, family: AddressFamily) -> Vec<(u16, String, u64)> {
 fn table(family: AddressFamily, path: &str, text: &str) -> RawTable {
     RawTable {
         family,
+        protocol: Protocol::Tcp,
         path: path.into(),
         text: text.to_string(),
     }
@@ -42,6 +49,52 @@ fn ipv4_fixture_yields_only_listening_sockets_in_file_order() {
             (8080, "192.168.1.20".to_string(), 34567),
         ]
     );
+}
+
+#[test]
+fn udp_fixture_yields_unconnected_sockets_and_skips_connected_ones() {
+    assert_eq!(
+        summary_of(UDP, AddressFamily::Ipv4, Protocol::Udp),
+        vec![
+            (1900, "239.255.255.250".to_string(), 41007),
+            (53, "127.0.0.53".to_string(), 41001),
+            (68, "0.0.0.0".to_string(), 41002),
+            (514, "192.168.1.20".to_string(), 41003),
+            // A client that sent without connecting looks just like a server.
+            (47918, "0.0.0.0".to_string(), 41005),
+        ]
+    );
+}
+
+#[test]
+fn udp6_fixture_yields_unconnected_sockets_and_skips_connected_ones() {
+    assert_eq!(
+        summary_of(UDP6, AddressFamily::Ipv6, Protocol::Udp),
+        vec![
+            (546, "::".to_string(), 42001),
+            (500, "2001:db8::1".to_string(), 42002),
+        ]
+    );
+}
+
+#[test]
+fn a_table_keeps_the_protocol_it_was_read_as() {
+    let tables = [
+        RawTable {
+            protocol: Protocol::Udp,
+            ..table(AddressFamily::Ipv4, "/proc/net/udp", UDP)
+        },
+        table(AddressFamily::Ipv4, "/proc/net/tcp", TCP),
+    ];
+
+    let on_port_53: Vec<Protocol> = parse_tables(&tables)
+        .unwrap()
+        .into_iter()
+        .filter(|socket| socket.port == 53)
+        .map(|socket| socket.protocol)
+        .collect();
+
+    assert_eq!(on_port_53, [Protocol::Tcp, Protocol::Udp]);
 }
 
 #[test]

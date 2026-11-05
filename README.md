@@ -17,7 +17,7 @@ PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM              
 warning: UFW is active, but it does not apply to these Docker ports: 8080
 ```
 
-> **Status:** v0.1. `reachmap scan` lists listening TCP sockets on Linux with
+> **Status:** v0.1. `reachmap scan` lists listening TCP and UDP sockets on Linux with
 > their bind address, the process or Docker container behind each, and the
 > networks (this host, Docker, tailnet, LAN, internet) they can be reached from,
 > before firewall rules, and warns when Docker-published ports skip an active
