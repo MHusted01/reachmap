@@ -12,7 +12,9 @@
    [verified signature](https://docs.github.com/en/authentication/managing-commit-signature-verification),
    not only the squash commit.
 5. These checks must pass: `lint`, `test`, `build`, `deny` and `pr-title`. The
-   branch must be up to date with `main`.
+   branch must be up to date with `main`. The `macos` check runs the tests on
+   macOS but is not required, because macOS runners can take long to start. If
+   it fails, fix the failure, also when it fails after the merge.
 6. Every PR is reviewed, and all conversations must be resolved before merging.
    The `claude-review` workflow comments on the owner's PRs from this
    repository; it does not run on PRs from forks, because they get no secrets.
@@ -35,7 +37,8 @@ and Docker, which runs the workflow and script linters.
 | `lint-ci` | actionlint on the workflows, ShellCheck on `scripts/` | CI `lint` |
 | `test` | Unit and integration tests with an 80% line coverage gate | CI `test` |
 | `msrv` | The tests on the `rust-version` from `Cargo.toml` | CI `test` |
-| `build` | Debug build | CI `build` (macOS) |
+| `build` | Debug build | CI `build`, CI `macos` |
+| `check-macos` | Type-checks the macOS code from any OS | CI `build` |
 | `deny` | Advisories, licences, bans and sources (`deny.toml`) | CI `deny` |
 | `coverage` | HTML coverage report in `target/llvm-cov/html` | local only |
 | `check` | All of the above plus the changelog script test | local only |

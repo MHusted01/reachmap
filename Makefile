@@ -8,7 +8,10 @@ MSRV := $(shell sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)
 ACTIONLINT_IMAGE := rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 IN_LINT_IMAGE := docker run --rm -v "$(CURDIR)":/repo:ro -w /repo
 
-.PHONY: fmt lint lint-ci test test-docker msrv coverage deny build check clean
+# The target for type-checking the macOS code from any OS.
+MACOS_TARGET := aarch64-apple-darwin
+
+.PHONY: fmt lint lint-ci test test-docker msrv coverage deny build check-macos check clean
 
 fmt:
 	cargo fmt --all
@@ -48,8 +51,14 @@ deny:
 build:
 	cargo build --locked
 
+# Type-checks the code for macOS without a Mac: `cargo check` needs no linker.
+# This only works while no dependency compiles C code.
+check-macos:
+	rustup target add $(MACOS_TARGET)
+	cargo check --locked --all-targets --target $(MACOS_TARGET)
+
 # Everything CI runs, in one go.
-check: lint lint-ci test msrv deny build
+check: lint lint-ci test msrv deny build check-macos
 	scripts/test-changelog-section.sh
 
 clean:
