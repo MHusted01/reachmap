@@ -50,7 +50,18 @@ means a failed scan; a failed scan prints `error:` on stderr and no table.
 | `could not tell whether UFW is active` | `ufw.conf` could not be read or understood; the warning gives the reason. If UFW is active, the ports listed are forwarded past it. |
 | `UFW is active and Docker could not be asked` | The published ports are unknown, so this is not a clean result. Without access to Docker's socket, run with `sudo`. When Docker is not installed there is no warning. |
 | `DOCKER-USER has rules, so filtering may apply, not verified` | The chain holds rules. reachmap does not evaluate them, so the ports stay flagged. |
-| `DOCKER-USER rules were not checked` | `iptables -S DOCKER-USER` needs root, or it failed; the warning gives the reason. |
+| `DOCKER-USER rules were not checked` | `iptables -S DOCKER-USER` needs root, failed, or found no such chain, which can mean Docker uses another firewall backend; the warning gives the reason. |
 
 The chain is read with `iptables` only when a port is flagged, and only for IPv4.
 Rules in the IPv6 chain are not noticed yet.
+
+### When the warning does not hold
+
+reachmap assumes Docker's default setup and does not verify that Docker's
+forwarding rules exist. Two setups send traffic to a socket on the host instead,
+so UFW does apply and the warning overstates the risk:
+
+- Rootless Docker, which forwards ports through a program on the host.
+- A daemon with `"iptables": false`, which adds no rules of its own.
+
+The warning errs towards more reach here, so it never hides a port.

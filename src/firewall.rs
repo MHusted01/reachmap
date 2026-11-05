@@ -12,6 +12,11 @@ use crate::parse::ufw::parse_ufw_conf;
 /// What `iptables` prints when a chain does not exist.
 const NO_SUCH_CHAIN: &str = "no chain/target/match";
 
+/// Why a missing chain is reported. It does not mean nothing filters: Docker
+/// may use nftables, or another `iptables` backend than this command.
+const NO_CHAIN_REASON: &str =
+    "there is no such chain in iptables, Docker may use another firewall backend";
+
 /// Whether UFW filters this host's traffic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UfwState {
@@ -39,11 +44,11 @@ impl From<CollectError> for UfwState {
 /// What `DOCKER-USER`, the chain for filtering Docker's traffic, holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DockerUserChain {
-    /// The chain is missing, or holds only Docker's default rule.
+    /// The chain exists and holds at most Docker's default rule.
     NoRules,
     /// The chain holds rules. reachmap does not evaluate them.
     HasRules,
-    /// The chain could not be read, for this reason.
+    /// The chain is missing or could not be read, for this reason.
     Unchecked(String),
 }
 
@@ -53,7 +58,7 @@ impl From<CollectError> for DockerUserChain {
             CollectError::CommandFailed { stderr, .. }
                 if stderr.to_lowercase().contains(NO_SUCH_CHAIN) =>
             {
-                DockerUserChain::NoRules
+                DockerUserChain::Unchecked(NO_CHAIN_REASON.to_string())
             }
             CollectError::CommandFailed { stderr, .. }
                 if stderr.to_lowercase().contains("permission denied") =>
@@ -127,9 +132,15 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_chain_has_no_rules() {
+    fn a_missing_chain_is_a_gap_not_an_empty_chain() {
         let error = iptables_failed("iptables: No chain/target/match by that name.");
-        assert_eq!(DockerUserChain::from(error), DockerUserChain::NoRules);
+        assert_eq!(
+            DockerUserChain::from(error),
+            DockerUserChain::Unchecked(
+                "there is no such chain in iptables, Docker may use another firewall backend"
+                    .to_string()
+            )
+        );
     }
 
     #[test]

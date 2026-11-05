@@ -66,3 +66,10 @@ fn dockers_default_return_rule_does_not_count() {
     let rules = "-N DOCKER-USER\n-A DOCKER-USER -j RETURN\n";
     assert_eq!(parse_docker_user(rules), DockerUserChain::NoRules);
 }
+
+#[test]
+fn output_without_the_chain_is_a_gap_not_an_empty_chain() {
+    let unchecked = DockerUserChain::Unchecked("iptables did not print the chain".to_string());
+    assert_eq!(parse_docker_user(""), unchecked);
+    assert_eq!(parse_docker_user("something else\n"), unchecked);
+}
