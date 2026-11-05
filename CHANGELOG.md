@@ -29,3 +29,14 @@ All notable changes to reachmap are listed here. The format follows
   have a timeout, and names and messages from other programs are cleaned of
   terminal escape sequences before printing
   ([#5](https://github.com/MHusted01/reachmap/issues/5)).
+- `reachmap scan` warns when UFW is active and Docker publishes a port on
+  anything but loopback: WHY says `Docker port: UFW does not apply`, and a
+  summary follows the table. Rules in `DOCKER-USER` are reported as
+  `filtering may apply, not verified`. When UFW's state or Docker's ports are
+  unknown, the warning says so instead of passing
+  ([#6](https://github.com/MHusted01/reachmap/issues/6)).
+
+### Changed
+
+- `reachmap scan` exits with status 1 when it prints a warning, so it fits
+  scripts ([#6](https://github.com/MHusted01/reachmap/issues/6)).

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use reachmap::errors::render_chain;
-use reachmap::table::Table;
+use reachmap::table::Report;
 
 /// Shows which services on a host can be reached, from where, and why.
 #[derive(Parser)]
@@ -41,7 +41,12 @@ fn run_scan() -> ExitCode {
                 eprintln!("note: {}", render_chain(error));
                 print_hint(error.hint());
             }
-            write_stdout(&Table(&report.ports))
+            let status = if report.warnings.is_empty() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+            write_stdout(&Report(&report), status)
         }
         Err(error) => {
             eprintln!("error: {}", render_chain(&error));
@@ -58,13 +63,14 @@ fn print_hint(hint: Option<String>) {
 }
 
 /// Writes to stdout and flushes, without `print!`, which panics when the
-/// reader has gone away (`reachmap scan | head -1`). A closed pipe is a
-/// normal way to stop; any other write error is reported.
-fn write_stdout(content: &impl fmt::Display) -> ExitCode {
+/// reader has gone away (`reachmap scan | head -1`), and returns `status`. A
+/// closed pipe is a normal way to stop, so it does not change `status`; any
+/// other write error is reported.
+fn write_stdout(content: &impl fmt::Display, status: ExitCode) -> ExitCode {
     let mut out = io::stdout().lock();
     match write!(out, "{content}").and_then(|()| out.flush()) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
+        Ok(()) => status,
+        Err(error) if error.kind() == io::ErrorKind::BrokenPipe => status,
         Err(error) => {
             eprintln!("error: could not write output: {error}");
             ExitCode::FAILURE

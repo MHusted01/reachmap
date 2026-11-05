@@ -1,7 +1,8 @@
 //! `reachmap scan`: read the kernel's socket tables, the open files of every
-//! process, the host's interfaces and Docker's published ports, and turn them
-//! into one sorted list of ports with the program or container behind each and
-//! where it can be reached from. Data flows one way: [`crate::collect`] reads, [`crate::parse`]
+//! process, the host's interfaces, Docker's published ports and the firewall
+//! facts, and turn them into one sorted list of ports with the program or
+//! container behind each, where it can be reached from, and what deserves a
+//! warning. Data flows one way: [`crate::collect`] reads, [`crate::parse`]
 //! decodes, this module joins them.
 
 use std::io::ErrorKind;
@@ -11,6 +12,7 @@ use thiserror::Error;
 
 use crate::collect::{self, CollectError, ProcessFds, RawTable};
 use crate::docker::{self, DockerError, PublishedPort};
+use crate::firewall::{self, DockerUserChain, Firewall, UfwState};
 use crate::network::HostAddress;
 use crate::parse::ip_addr::parse_ip_addr;
 use crate::parse::proc_net::{ParseError, parse_proc_net_tcp};
@@ -18,6 +20,7 @@ use crate::parse::proc_pid::owners_by_inode;
 use crate::reach::{Verdict, classify};
 use crate::service::{Service, UnknownReason, service_of};
 use crate::socket::{Endpoint, ListeningSocket, sort_by_port};
+use crate::warning::{ScanWarning, Warning, docker_ufw_bypass, summarise};
 
 /// Where users report problems reachmap cannot handle.
 pub(crate) const ISSUES_URL: &str = "https://github.com/MHusted01/reachmap/issues";
@@ -107,6 +110,8 @@ pub struct ScannedPort {
     pub service: Service,
     /// Which networks can connect, and why.
     pub verdict: Verdict,
+    /// What the firewall facts add, for a published port.
+    pub warning: Option<Warning>,
 }
 
 /// The result of a scan: every port, plus the reasons when optional facts
@@ -121,20 +126,48 @@ pub struct ScanReport {
     /// Set when Docker could not be asked; published ports then show the
     /// process that holds their socket, and those without one are missing.
     pub docker_error: Option<DockerError>,
+    /// The summary under the table. Any entry makes the scan exit with 1.
+    pub warnings: Vec<ScanWarning>,
 }
 
-/// Reads this host's TCP tables, processes, interfaces and Docker containers
-/// and returns its ports, sorted by port number.
+/// Reads this host's TCP tables, processes, interfaces, Docker containers and
+/// firewall facts and returns its ports, sorted by port number.
 pub fn scan() -> Result<ScanReport, ScanError> {
     let tables = collect::read_tcp_tables()?;
     let sockets = parse_tables(&tables)?;
     let open_files = collect::read_open_files()?;
+    let published = docker::read_published_ports();
+    let firewall = firewall_facts(
+        &published,
+        firewall::read_ufw_state(),
+        firewall::read_docker_user_chain,
+    );
     Ok(join(
         sockets,
         &open_files,
         read_host_addresses(),
-        docker::read_published_ports(),
+        published,
+        &firewall,
     ))
+}
+
+/// Combines UFW's state with the `DOCKER-USER` chain. `iptables` only runs
+/// when a port makes the chain matter, because it is one more program to
+/// start and most hosts have no such port.
+fn firewall_facts(
+    published: &Result<Vec<PublishedPort>, DockerError>,
+    ufw: UfwState,
+    read_chain: impl FnOnce() -> DockerUserChain,
+) -> Firewall {
+    let chain_matters = published.as_ref().is_ok_and(|ports| {
+        ports
+            .iter()
+            .any(|port| docker_ufw_bypass(port, &ufw).is_some())
+    });
+    Firewall {
+        ufw,
+        docker_user: chain_matters.then(read_chain),
+    }
 }
 
 /// Lists the addresses of this host's interfaces.
@@ -159,14 +192,15 @@ pub fn parse_tables(tables: &[RawTable]) -> Result<Vec<ListeningSocket>, ScanErr
 }
 
 /// Pairs each socket with its container or else the process that has it open,
-/// adds the published ports without a socket, and gives each its verdict. When
-/// no process holds a socket, the reason depends on whether some processes
-/// could not be inspected: then root might find the owner.
+/// adds the published ports without a socket, and gives each its verdict and
+/// warning. When no process holds a socket, the reason depends on whether some
+/// processes could not be inspected: then root might find the owner.
 pub fn join(
     sockets: Vec<ListeningSocket>,
     open_files: &ProcessFds,
     host: Result<Vec<HostAddress>, InterfacesError>,
     published: Result<Vec<PublishedPort>, DockerError>,
+    firewall: &Firewall,
 ) -> ScanReport {
     let owners = owners_by_inode(open_files.links());
     let missing = if open_files.permission_denied {
@@ -179,27 +213,34 @@ pub fn join(
     let host = host.as_deref();
     let published = published.unwrap_or_default();
 
-    let on_sockets = sockets.iter().map(|socket| ScannedPort {
-        endpoint: socket.endpoint(),
-        listener: Listener::HostSocket,
-        service: docker::publisher_of(&published, socket).map_or_else(
-            || service_of(socket.inode, &owners, missing),
-            |port| Service::Container(port.container.clone()),
-        ),
-        verdict: classify(socket.address, host),
+    let on_sockets = sockets.iter().map(|socket| {
+        let publisher = docker::publisher_of(&published, socket);
+        ScannedPort {
+            endpoint: socket.endpoint(),
+            listener: Listener::HostSocket,
+            service: publisher.map_or_else(
+                || service_of(socket.inode, &owners, missing),
+                |port| Service::Container(port.container.clone()),
+            ),
+            verdict: classify(socket.address, host),
+            warning: publisher.and_then(|port| docker_ufw_bypass(port, &firewall.ufw)),
+        }
     });
     let forwarded = docker::without_socket(&published, &sockets).map(|port| ScannedPort {
         endpoint: port.endpoint(),
         listener: Listener::DockerForward,
         service: Service::Container(port.container.clone()),
         verdict: classify(port.address, host),
+        warning: docker_ufw_bypass(port, &firewall.ufw),
     });
     let mut ports: Vec<ScannedPort> = on_sockets.chain(forwarded).collect();
     ports.sort_by_key(|port| port.endpoint);
+    let warnings = summarise(&ports, docker_error.as_ref(), firewall);
     ScanReport {
         ports,
         interfaces_error,
         docker_error,
+        warnings,
     }
 }
 

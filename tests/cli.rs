@@ -55,7 +55,13 @@ fn no_command_prints_usage_and_exits_with_2() {
 #[test]
 fn scan_prints_a_table_or_the_empty_message() {
     let out = run(&["scan"]);
-    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    // A host with UFW and Docker may exit with 1 and warnings; the table below
+    // tells that apart from a scan that failed.
+    assert!(
+        matches!(out.status.code(), Some(0 | 1)),
+        "stderr: {}",
+        stderr(&out)
+    );
     let output = stdout(&out);
     let first_line = output.lines().next().unwrap_or_default();
     // Compare words, not spacing: column widths depend on the ports found.
