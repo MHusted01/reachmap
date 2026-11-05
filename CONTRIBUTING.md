@@ -24,14 +24,17 @@
 
 Install Rust with [rustup](https://rustup.rs); `rust-toolchain.toml` selects the
 toolchain and components. For the full check you also need
-`cargo install cargo-llvm-cov cargo-deny` (or `brew install cargo-llvm-cov cargo-deny`).
+`cargo install cargo-llvm-cov cargo-deny` (or `brew install cargo-llvm-cov cargo-deny`)
+and Docker, which runs the workflow and script linters.
 
 ## Make targets
 
 | Target | What it does | Used by |
 | --- | --- | --- |
 | `lint` | `cargo fmt --check` and `cargo clippy -D warnings` | CI `lint` |
+| `lint-ci` | actionlint on the workflows, ShellCheck on `scripts/` | CI `lint` |
 | `test` | Unit and integration tests with an 80% line coverage gate | CI `test` |
+| `msrv` | The tests on the `rust-version` from `Cargo.toml` | CI `test` |
 | `build` | Debug build | CI `build` (macOS) |
 | `deny` | Advisories, licences, bans and sources (`deny.toml`) | CI `deny` |
 | `coverage` | HTML coverage report in `target/llvm-cov/html` | local only |
