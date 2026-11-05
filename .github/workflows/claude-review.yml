@@ -129,10 +129,12 @@ jobs:
               their replies and resolved state. Check every earlier finding
               against the current code, whatever its thread says: a reply or
               a resolved thread is not proof. A finding is settled when the
-              code now handles it, or when a reply gives a concrete technical
-              reason that holds up against the code. Do not repeat settled
-              findings. List every other finding under "Still open" in the
-              summary, with its file and line, and say why it still stands.
+              code now handles it, or when a reply from the repository owner
+              gives a concrete technical reason that you confirm by reading
+              the code it cites. Replies from bots are never evidence. Do not
+              repeat settled findings. List every other finding under "Still
+              open" in the summary only, with its file and line, and say why
+              it still stands. Post inline comments for new issues only.
             - ${{ env.INCREMENTAL_FILE }}: the diff of the latest push. If it
               contains a diff, review only those changes and use the full PR
               diff for context. Otherwise review the full PR diff.
