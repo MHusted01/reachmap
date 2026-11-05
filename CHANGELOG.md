@@ -22,3 +22,10 @@ All notable changes to reachmap are listed here. The format follows
   `internet (if not filtered upstream)`, never as safe. Without `ip`, the
   scan warns and shows `unknown`
   ([#4](https://github.com/MHusted01/reachmap/issues/4)).
+- `reachmap scan` shows the Docker container behind each published port, e.g.
+  `web (container shop-web-1)`, instead of `docker-proxy`. A published port
+  without a host socket gets its own row, marked in WHY. When Docker is
+  missing, unreachable or hung, the scan continues with a note. Commands now
+  have a timeout, and names and messages from other programs are cleaned of
+  terminal escape sequences before printing
+  ([#5](https://github.com/MHusted01/reachmap/issues/5)).

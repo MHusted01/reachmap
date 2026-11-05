@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
+use crate::sanitize::sanitize;
 use crate::service::Process;
 
 /// One open file of one process: the (pid, link target, comm) of a single
@@ -91,7 +92,7 @@ fn name_of(comm: &str) -> &str {
 fn process(link: FdLink<'_>) -> Process {
     Process {
         pid: link.pid,
-        name: name_of(link.comm).to_string(),
+        name: sanitize(name_of(link.comm)),
     }
 }
 
@@ -108,6 +109,12 @@ mod tests {
             pid,
             name: name.to_string(),
         }
+    }
+
+    #[test]
+    fn process_names_are_sanitised() {
+        let owners = owners_by_inode([link(7, "evil\u{1b}[2J\n", "socket:[100]")]);
+        assert_eq!(owners[&100].name, "evil\\u{1b}[2J");
     }
 
     #[test]

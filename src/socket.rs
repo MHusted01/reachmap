@@ -4,7 +4,7 @@ use std::fmt;
 use std::net::IpAddr;
 
 /// Transport protocol of a socket. The IP version is not part of it: that
-/// comes from the socket's address (see [`ListeningSocket::protocol_name`]).
+/// comes from the socket's address (see [`Endpoint::protocol_name`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Protocol {
     /// Transmission Control Protocol.
@@ -29,6 +29,29 @@ pub enum AddressFamily {
     Ipv6,
 }
 
+/// Where a host accepts connections. Ordered by port, then protocol, then
+/// address (IPv4 before IPv6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Endpoint {
+    /// The local port.
+    pub port: u16,
+    /// Transport protocol.
+    pub protocol: Protocol,
+    /// The local address, e.g. `0.0.0.0` (all IPv4 interfaces) or `127.0.0.1`
+    /// (this host only).
+    pub address: IpAddr,
+}
+
+impl Endpoint {
+    /// The name `ss` and `netstat` use: `tcp` for IPv4, `tcp6` for IPv6.
+    pub fn protocol_name(&self) -> String {
+        match self.address {
+            IpAddr::V4(_) => self.protocol.to_string(),
+            IpAddr::V6(_) => format!("{}6", self.protocol),
+        }
+    }
+}
+
 /// One socket in the LISTEN state: a service waiting for connections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListeningSocket {
@@ -44,11 +67,12 @@ pub struct ListeningSocket {
 }
 
 impl ListeningSocket {
-    /// The name `ss` and `netstat` use: `tcp` for IPv4, `tcp6` for IPv6.
-    pub fn protocol_name(&self) -> String {
-        match self.address {
-            IpAddr::V4(_) => self.protocol.to_string(),
-            IpAddr::V6(_) => format!("{}6", self.protocol),
+    /// Where this socket accepts connections.
+    pub fn endpoint(&self) -> Endpoint {
+        Endpoint {
+            port: self.port,
+            protocol: self.protocol,
+            address: self.address,
         }
     }
 }
@@ -80,8 +104,8 @@ mod tests {
 
     #[test]
     fn protocol_name_adds_6_for_ipv6_addresses() {
-        assert_eq!(socket(ANY_V4, 22).protocol_name(), "tcp");
-        assert_eq!(socket(ANY_V6, 22).protocol_name(), "tcp6");
+        assert_eq!(socket(ANY_V4, 22).endpoint().protocol_name(), "tcp");
+        assert_eq!(socket(ANY_V6, 22).endpoint().protocol_name(), "tcp6");
     }
 
     #[test]

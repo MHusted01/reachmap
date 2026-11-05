@@ -15,6 +15,7 @@ use std::io::{self, ErrorKind};
 use std::path::PathBuf;
 use std::process::ExitStatus;
 use std::string::FromUtf8Error;
+use std::time::Duration;
 
 pub use processes::{ProcessFds, RawProcess, read_process_fds};
 
@@ -79,8 +80,17 @@ pub enum CollectError {
         command: String,
         /// How it exited.
         status: ExitStatus,
-        /// What it printed to standard error, trimmed; may be empty.
+        /// What it printed to standard error, trimmed and sanitised; may be
+        /// empty.
         stderr: String,
+    },
+    /// A command was still running when its time was up.
+    #[error("`{command}` did not finish within {timeout:?}")]
+    TimedOut {
+        /// The command line.
+        command: String,
+        /// How long it was given.
+        timeout: Duration,
     },
     /// A command printed something that is not UTF-8 text.
     #[error("`{command}` printed text that is not UTF-8")]
@@ -136,12 +146,43 @@ pub fn read_open_files() -> Result<ProcessFds, CollectError> {
 #[cfg(target_os = "linux")]
 pub fn read_interfaces() -> Result<String, CollectError> {
     let program = command::locate(linux::IP_PATHS, linux::IP_PROGRAM);
-    command::run(program, linux::IP_ADDR_ARGS)
+    command::run(program, linux::IP_ADDR_ARGS, linux::COMMAND_TIMEOUT)
 }
 
 /// Lists this host's interfaces. Only Linux is supported for now.
 #[cfg(not(target_os = "linux"))]
 pub fn read_interfaces() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
+/// Lists the IDs of the running containers: what `docker ps -q` prints.
+#[cfg(target_os = "linux")]
+pub fn list_containers() -> Result<String, CollectError> {
+    let program = command::locate(linux::DOCKER_PATHS, linux::DOCKER_PROGRAM);
+    command::run(program, linux::DOCKER_PS_ARGS, linux::COMMAND_TIMEOUT)
+}
+
+/// Lists the running containers. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn list_containers() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
+/// Describes the containers with these IDs: the JSON `docker inspect` prints.
+#[cfg(target_os = "linux")]
+pub fn inspect_containers(ids: &[&str]) -> Result<String, CollectError> {
+    let program = command::locate(linux::DOCKER_PATHS, linux::DOCKER_PROGRAM);
+    let args = [linux::DOCKER_INSPECT_ARGS, ids].concat();
+    command::run(program, &args, linux::COMMAND_TIMEOUT)
+}
+
+/// Describes containers. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn inspect_containers(_ids: &[&str]) -> Result<String, CollectError> {
     Err(CollectError::UnsupportedOs {
         os: std::env::consts::OS,
     })
