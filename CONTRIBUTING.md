@@ -53,8 +53,8 @@ and Docker, which runs the workflow and script linters.
 - Parsing and decision logic are pure functions, developed test-first with
   fixture files; code that touches the system stays thin.
 - No `unsafe`; no `unwrap()` or `expect()` outside tests.
-- Files under 400 lines, small functions. New dependencies need a reason and
-  must pass `make deny`.
+- Non-test code under 400 lines per file (800 at most with tests), small
+  functions. New dependencies need a reason and must pass `make deny`.
 
 ## Releases
 
