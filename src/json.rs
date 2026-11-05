@@ -38,6 +38,7 @@ struct CollectorError {
 enum Collector {
     Interfaces,
     Docker,
+    SocketOptions,
 }
 
 impl CollectorError {
@@ -60,11 +61,19 @@ pub fn render(report: &ScanReport) -> Result<String, serde_json::Error> {
         .docker_error
         .as_ref()
         .map(|error| CollectorError::new(Collector::Docker, error, error.hint()));
+    let socket_options = report
+        .socket_options_error
+        .as_ref()
+        .map(|error| CollectorError::new(Collector::SocketOptions, error, error.hint()));
     let document = JsonReport {
         schema_version: SCHEMA_VERSION,
         ports: &report.ports,
         warnings: &report.warnings,
-        collector_errors: interfaces.into_iter().chain(docker).collect(),
+        collector_errors: interfaces
+            .into_iter()
+            .chain(docker)
+            .chain(socket_options)
+            .collect(),
     };
     serde_json::to_string_pretty(&document).map(|text| text + "\n")
 }

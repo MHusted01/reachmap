@@ -15,6 +15,7 @@ const IP_ADDR: &str = include_str!("fixtures/ip_addr.json");
 fn fixture_yields_each_address_with_its_interface_and_network() {
     let summary: Vec<(String, String, Network)> = parse_ip_addr(IP_ADDR)
         .unwrap()
+        .addresses
         .into_iter()
         .map(|a| {
             let network = a.network();
@@ -39,4 +40,13 @@ fn fixture_yields_each_address_with_its_interface_and_network() {
     .map(|(interface, ip, network)| (interface.to_string(), ip.to_string(), network));
 
     assert_eq!(summary, expected);
+}
+
+#[test]
+fn fixture_names_interfaces_by_index() {
+    let names = parse_ip_addr(IP_ADDR).unwrap().names;
+
+    assert_eq!(names[&4], "tailscale0");
+    // Interfaces without addresses count too: a socket can be bound to one.
+    assert_eq!(names[&3], "wlp2s0");
 }

@@ -139,6 +139,7 @@ fn parse_line(
         address,
         port,
         inode,
+        options: None,
     }))
 }
 

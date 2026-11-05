@@ -153,12 +153,12 @@ jobs:
             - Parsing and decision logic are pure functions tested with
               fixtures (TDD); system access stays in thin collector modules.
               Line coverage >= 80%.
-            - Files under 400 lines, small functions. New dependencies need a
-              reason and must pass cargo-deny.
+            - Small functions. New dependencies need a reason and must pass
+              cargo-deny.
 
             Focus on correctness, edge cases, concurrency, memory ownership,
             API design and missing tests. Skip pure style that rustfmt or
-            clippy already enforce.
+            clippy already enforce, and do not comment on file length.
 
             Post each concrete issue as an inline comment on the relevant line,
             labelled CRITICAL, HIGH, MEDIUM, LOW or NIT, with a suggested fix.

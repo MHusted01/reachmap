@@ -22,7 +22,8 @@
       },
       "reason": {
         "kind": "all_addresses",
-        "family": "ipv4"
+        "covers": "ipv4",
+        "checked": true
       },
       "warning": null
     },
@@ -131,7 +132,8 @@
       },
       "reason": {
         "kind": "all_addresses",
-        "family": "ipv4"
+        "covers": "ipv4",
+        "checked": false
       },
       "warning": "ufw_bypassed"
     },
@@ -156,7 +158,8 @@
       },
       "reason": {
         "kind": "all_addresses",
-        "family": "ipv6"
+        "covers": "ipv4_and_ipv6",
+        "checked": false
       },
       "warning": "ufw_bypassed"
     },

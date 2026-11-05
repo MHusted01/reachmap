@@ -30,7 +30,7 @@ When UFW is active, every Docker port published on anything but loopback gets
 
 ```
 PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM  WHY
-8080  tcp    0.0.0.0    web (container shop-web-1)  this host, LAN  all IPv4 addresses (bound device not checked); Docker port: UFW does not apply
+8080  tcp    0.0.0.0    web (container shop-web-1)  this host, LAN  all IPv4 addresses; Docker port: UFW does not apply
 9000  tcp    127.0.0.1  api (container shop-api-1)  this host       loopback address
 
 warning: UFW is active, but it does not apply to these Docker ports: 8080

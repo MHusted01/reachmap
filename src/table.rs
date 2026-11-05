@@ -151,7 +151,7 @@ mod tests {
             },
             listener: Listener::HostSocket,
             service,
-            verdict: classify(address, Some(&host())),
+            verdict: classify(address, None, Some(&host())),
             warning: None,
         }
     }
@@ -255,6 +255,7 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
             ports: vec![row(LOCAL_V4, 22, process("sshd", 1))],
             interfaces_error: None,
             docker_error: None,
+            socket_options_error: None,
             warnings,
         }
     }

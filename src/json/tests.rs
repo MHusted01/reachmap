@@ -8,10 +8,10 @@ use serde_json::{Value, json};
 
 use super::*;
 use crate::network::Network;
-use crate::reach::{Reach, Reason, Verdict};
+use crate::reach::{Coverage, Reach, Reason, Verdict};
 use crate::scan::Listener;
 use crate::service::{Container, Process, Service, UnknownReason};
-use crate::socket::{AddressFamily, Endpoint, Protocol};
+use crate::socket::{Endpoint, Protocol};
 use crate::warning::Warning;
 
 fn to_json(value: impl Serialize) -> Value {
@@ -27,6 +27,7 @@ fn report(ports: Vec<ScannedPort>, warnings: Vec<ScanWarning>) -> ScanReport {
         ports,
         interfaces_error: None,
         docker_error: None,
+        socket_options_error: None,
         warnings,
     }
 }
@@ -99,16 +100,30 @@ fn every_reason_has_a_kind() {
         ),
         (
             Reason::AllAddresses {
-                family: AddressFamily::Ipv4,
+                covers: Coverage::Ipv4,
+                checked: true,
             },
-            json!({"kind": "all_addresses", "family": "ipv4"}),
+            json!({"kind": "all_addresses", "covers": "ipv4", "checked": true}),
+        ),
+        (
+            Reason::AllAddresses {
+                covers: Coverage::Ipv6,
+                checked: true,
+            },
+            json!({"kind": "all_addresses", "covers": "ipv6", "checked": true}),
         ),
         (Reason::NotOnHost, json!({"kind": "not_on_host"})),
         (
             Reason::NoAddresses {
-                family: AddressFamily::Ipv6,
+                covers: Coverage::Ipv4AndIpv6,
             },
-            json!({"kind": "no_addresses", "family": "ipv6"}),
+            json!({"kind": "no_addresses", "covers": "ipv4_and_ipv6"}),
+        ),
+        (
+            Reason::NoAddressesOnDevice {
+                interface: "eth1".to_string(),
+            },
+            json!({"kind": "no_addresses_on_device", "interface": "eth1"}),
         ),
         (
             Reason::InterfacesUnknown,

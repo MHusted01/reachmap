@@ -8,15 +8,16 @@ from.
 ```
 $ sudo reachmap scan
 PORT  PROTO  ADDRESS          SERVICE                     REACHABLE FROM                   WHY
-22    tcp    0.0.0.0          sshd (812)                  this host, Docker, tailnet, LAN  all IPv4 addresses (bound device not checked)
-22    tcp6   ::               sshd (812)                  this host, Docker, tailnet, LAN  all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)
+22    tcp    0.0.0.0          sshd (812)                  this host, Docker, tailnet, LAN  all IPv4 addresses
+22    tcp6   ::               sshd (812)                  this host, tailnet, LAN          all IPv6 addresses
 53    tcp    127.0.0.53       systemd-resolve (640)       this host                        loopback address
 631   tcp6   ::1              cupsd (1033)                this host                        loopback address
 3000  tcp    127.0.0.1        web (container shop-web-1)  this host                        loopback address
 3306  tcp    127.0.0.1        mysqld (1201)               this host                        loopback address
 8080  tcp    192.168.1.20     python3 (4410)              LAN                              only on enp1s0
-9000  tcp    0.0.0.0          container metrics           this host, Docker, tailnet, LAN  all IPv4 addresses (bound device not checked)
+9000  tcp    0.0.0.0          container metrics           this host, Docker, tailnet, LAN  all IPv4 addresses
 9100  tcp    100.101.102.103  node_exporter (902)         tailnet                          only on tailscale0
+9200  tcp    0.0.0.0          grafana (1544)              tailnet                          only on tailscale0
 ```
 
 ## Columns
@@ -78,11 +79,15 @@ connections on:
 | WHY | Meaning |
 |-----|---------|
 | `loopback address` | Bound to `127.0.0.1`, `::1` or another loopback address: only programs on this host can connect. Needs no interface facts. |
-| `only on enp1s0` | Bound to one address; the interface that has it decides the network. |
-| `all IPv4 addresses (bound device not checked)` | Bound to `0.0.0.0`: every network with an IPv4 address on this host. |
-| `all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)` | Bound to `::`: every network with any address on this host. |
+| `only on enp1s0` | Bound to one address, or to this device; the interface decides the network. |
+| `all IPv4 addresses` | Bound to `0.0.0.0`: every network with an IPv4 address on this host. |
+| `all IPv6 and IPv4 addresses` | Bound to `::`: every network with any address on this host. |
+| `all IPv6 addresses` | Bound to `::` with the IPv6-only option: every network with an IPv6 address on this host. |
+| `all IPv4 addresses (bound device not checked)` | Like `all IPv4 addresses`, but the socket's options are unknown (see below). |
+| `all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)` | Like `all IPv6 and IPv4 addresses`, but the socket's options are unknown (see below). |
 | `no interface has this address` | Bound to an address that no interface has (for example, an interface that went away). REACHABLE FROM is `unknown`. |
-| `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or `::` on a host without any). REACHABLE FROM is `unknown`. |
+| `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or an IPv6-only `::` on a host without IPv6 addresses, or `::` on a host without any). REACHABLE FROM is `unknown`. |
+| `bound to eth1, which has no address it can use` | Bound to a device without a suitable address, such as a VRF device whose addresses are on other interfaces. REACHABLE FROM is `unknown`. |
 | `...; no host socket, Docker forwards this port` | Docker publishes the port but no socket listens on the host (see [Docker](#docker)). The first part is the usual reason for the published address. |
 | `could not list interfaces` | `ip -j addr` failed; a warning on stderr says why. REACHABLE FROM is `unknown`, except for loopback addresses. |
 
@@ -91,18 +96,24 @@ puts a socket on the internet unless a router, cloud security group or
 firewall in front of the host drops the traffic. reachmap cannot see those, so
 it never calls such a socket safe.
 
-**What "not checked" means.** Two socket options narrow who can connect but
-are not visible in `/proc/net/tcp`:
+**Socket options.** Two options narrow who can connect but are not visible in
+`/proc/net/tcp`, so reachmap asks the kernel for them through netlink
+`sock_diag`, the interface `ss` uses. This needs no root and only reads.
 
 - A socket can be bound to one device (`SO_BINDTODEVICE`); `ss` shows this as
-  `0.0.0.0%tailscale0:PORT`. It then accepts traffic from that interface only.
+  `0.0.0.0%tailscale0:PORT`. It then accepts traffic from that interface only,
+  so REACHABLE FROM lists that interface's network and WHY says
+  `only on tailscale0`. The kernel also does this by itself for a link-local
+  address, which keeps its own verdict.
 - A `::` socket accepts IPv4 too, unless it is IPv6-only (`IPV6_V6ONLY`).
   Services such as sshd set this and open a separate IPv4 socket.
 
-Until reachmap reads them
-([#21](https://github.com/MHusted01/reachmap/issues/21)), it assumes the wider
-case, so REACHABLE FROM may list more networks than can actually connect,
-never fewer.
+**What "not checked" means.** When the kernel gives no answer for a socket,
+reachmap assumes the wider case, so REACHABLE FROM may list more networks than
+can actually connect, never fewer. If the request fails, a note on stderr says
+why and the scan continues; the exit code does not change. Docker-forwarded
+ports without a host socket always show this wording, as there is no socket
+to ask about.
 
 **Not a firewall verdict.** REACHABLE FROM says who could connect if no firewall
 interferes. UFW's rules are not evaluated. The one firewall fact reachmap reports
@@ -143,10 +154,9 @@ the process holding it, which is `docker-proxy` or, with `userland-proxy: false`
 `dockerd`. This needs no root as long as you can use `docker`, and only reads.
 
 A socket on `::` counts as serving a port published on `0.0.0.0`, as it usually
-accepts IPv4 too. Until reachmap reads the IPv6-only flag
-([#21](https://github.com/MHusted01/reachmap/issues/21)), an unrelated IPv6-only
-socket on the same port takes the container's name and hides the `0.0.0.0` row;
-its own row still lists IPv4 networks, so reach is not understated.
+accepts IPv4 too. An IPv6-only socket does not, so it keeps its own process and
+the `0.0.0.0` row stays. If the socket's options are unknown it counts as
+serving the port; its row then lists IPv4 networks, so reach is not understated.
 
 A published port that no socket listens on still gets a row, marked in WHY,
 with the verdict for the published address. A port that is only exposed

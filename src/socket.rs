@@ -56,6 +56,18 @@ impl Endpoint {
     }
 }
 
+/// What the kernel's socket diagnostics report beyond `/proc/net/tcp`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketOptions {
+    /// Index of the interface the socket is bound to (`SO_BINDTODEVICE`, or
+    /// the scope of a link-local address), if any. Such a socket only accepts
+    /// traffic arriving on that interface.
+    pub bound_device: Option<u32>,
+    /// Whether a `tcp6` socket refuses IPv4 (`IPV6_V6ONLY`). Always false for
+    /// an IPv4 socket.
+    pub ipv6_only: bool,
+}
+
 /// One socket in the LISTEN state: a service waiting for connections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListeningSocket {
@@ -68,9 +80,16 @@ pub struct ListeningSocket {
     pub port: u16,
     /// Kernel ID of the socket. Later used to find the owning process.
     pub inode: u64,
+    /// `None` until read from the kernel, or when it could not be.
+    pub options: Option<SocketOptions>,
 }
 
 impl ListeningSocket {
+    /// Whether the socket is known to refuse IPv4.
+    pub fn is_ipv6_only(&self) -> bool {
+        self.options.is_some_and(|options| options.ipv6_only)
+    }
+
     /// Where this socket accepts connections.
     pub fn endpoint(&self) -> Endpoint {
         Endpoint {
@@ -103,7 +122,26 @@ mod tests {
             address,
             port,
             inode: 1,
+            options: None,
         }
+    }
+
+    #[test]
+    fn only_a_socket_with_the_flag_is_known_to_be_ipv6_only() {
+        let options = |ipv6_only| {
+            Some(SocketOptions {
+                bound_device: None,
+                ipv6_only,
+            })
+        };
+        let with = |options| ListeningSocket {
+            options,
+            ..socket(ANY_V6, 22)
+        };
+
+        assert!(with(options(true)).is_ipv6_only());
+        assert!(!with(options(false)).is_ipv6_only());
+        assert!(!with(None).is_ipv6_only());
     }
 
     #[test]
