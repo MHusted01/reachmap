@@ -61,8 +61,8 @@ so every address is tried: one row per address and port, by port, then address.
 A link-local IPv6 address exists per interface, so it shows the interface's
 number: `fe80::1%3`.
 
-`failed: Too many open files` means `--concurrency` is above what this machine
-allows. Lower it, or raise the limit with `ulimit -n`.
+`failed: Too many open files (os error 24)` means `--concurrency` is above what
+this machine allows. Lower it, or raise the limit with `ulimit -n`.
 
 ## Exit status
 
@@ -97,7 +97,7 @@ appear without a new version. Treat an unknown `kind` as not tested.
       "address": "192.0.2.10",
       "result": {
         "kind": "failed",
-        "message": "too many open files"
+        "message": "Too many open files (os error 24)"
       }
     }
   ]

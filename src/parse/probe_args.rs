@@ -60,11 +60,13 @@ fn parse_range(item: &str) -> Result<RangeInclusive<u16>, PortListError> {
     Ok(first..=last)
 }
 
-/// Reads one port. Port 0 cannot be connected to.
+/// Reads one port: digits only, because `u16` would also accept `+80`. Port 0
+/// cannot be connected to.
 fn parse_port(text: &str) -> Result<u16, PortListError> {
     let text = text.trim();
-    text.parse()
-        .ok()
+    Some(text)
+        .filter(|text| text.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|digits| digits.parse().ok())
         .filter(|&port| port != 0)
         .ok_or_else(|| PortListError::InvalidPort {
             text: text.to_string(),
@@ -137,6 +139,11 @@ mod tests {
     #[test]
     fn refuses_a_port_above_the_maximum() {
         assert_eq!(ports("65536"), Err(invalid("65536")));
+    }
+
+    #[test]
+    fn refuses_a_sign_in_front_of_a_port() {
+        assert_eq!(ports("+80"), Err(invalid("+80")));
     }
 
     #[test]
