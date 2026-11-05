@@ -18,9 +18,10 @@ JSON holds facts as typed values, not the sentences of the table.
 ## Stability
 
 `schema_version` is `1`. It goes up when a change would break an existing
-script: a field is removed or renamed, or a value changes meaning. New fields
-and new `kind` values can appear without a new version, so ignore what you do
-not know, and treat an unknown `kind` as unknown rather than as fine.
+script: a field is removed or renamed, or a value changes meaning. New fields,
+new `kind` values and new `protocol` values can appear without a new version, so
+ignore what you do not know, and treat an unknown `kind` as unknown rather than
+as fine.
 
 Every field listed here is always present; a missing value is `null`, not an
 absent key.
@@ -80,7 +81,7 @@ with the document.
 | Field | Type | Meaning |
 |-------|------|---------|
 | `schema_version` | number | See [Stability](#stability). |
-| `ports` | array | One object per row of the table, in the same order: by port, then address. Empty when nothing listens. |
+| `ports` | array | One object per row of the table, in the same order: by port, then protocol, then address. Empty when nothing listens. |
 | `warnings` | array | The summary under the table. Any entry means exit status 1. |
 | `collector_errors` | array | Optional facts that could not be collected. |
 
@@ -88,8 +89,8 @@ with the document.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `port` | number | The TCP port. |
-| `protocol` | string | Always `tcp` for now. The table's `tcp6` is `tcp` with an IPv6 `address`. |
+| `port` | number | The TCP or UDP port. |
+| `protocol` | string | `tcp` or `udp`. The table's `tcp6` is `tcp` with an IPv6 `address`, and `udp6` is `udp` with one. A connect probe cannot confirm a `udp` row; see [UDP](scan.md#udp). |
 | `address` | string | The local address, e.g. `0.0.0.0` or `::1`. |
 | `listener` | string | `host_socket`, or `docker_forward` when Docker publishes the port and no socket listens on the host. |
 | `service` | object | Who the connections end up with. |
@@ -109,7 +110,7 @@ with the document.
 
 | `kind` | Other fields | Meaning |
 |--------|--------------|---------|
-| `from` | `networks` (array of strings, never empty) | Clients on these networks can connect, narrowest first. |
+| `from` | `networks` (array of strings, never empty) | Clients on these networks can connect, or for UDP send to it, narrowest first. |
 | `unknown` | | reachmap lacks the facts to decide; `reason` says which. Never read this as unreachable. |
 
 Each network is one of `this_host`, `docker`, `tailnet`, `lan` or `internet`.
@@ -126,6 +127,7 @@ nothing upstream filters it. reachmap cannot see such filters. Like the table,
 | `on_interfaces` | `interfaces` (array of strings) | Bound to one address, carried by these interfaces. |
 | `all_addresses` | `covers`, `checked` (boolean) | Bound to a wildcard address. `checked` is true when the kernel confirmed that no device restricts the socket, and whether it is IPv6-only. When false, the widest case is assumed; a Docker-forwarded port without a socket is always false. |
 | `not_on_host` | | Bound to an address no interface has. |
+| `multicast` | | A UDP socket bound to a multicast group. Which networks reach it depends on the groups this host joined, which reachmap does not read. |
 | `no_addresses` | `covers` | Bound to a wildcard address, but no interface has an address it covers. |
 | `no_addresses_on_device` | `interface` (string) | Bound to a device that has no address the socket can use. |
 | `interfaces_unknown` | | The interfaces could not be listed. |
@@ -160,7 +162,8 @@ The `reason` strings are for people; their wording can change.
 A scan finishes without Docker, the interface list or the socket options. Each collector
 that failed adds one entry, so facts that are missing never look like facts
 that are absent: an empty `ports` list with a `docker` entry here does not mean
-that no port is published.
+that no port is published. A `socket_options` entry can be partial: sockets the
+kernel did report on keep `checked: true`.
 
 | Field | Type | Meaning |
 |-------|------|---------|

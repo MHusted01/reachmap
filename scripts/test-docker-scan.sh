@@ -39,6 +39,11 @@ row() {
   awk -v port="$2" -v address="$3" '$1 == port && $3 == address' <<<"$1"
 }
 
+# The UDP row for a port, from the output in $1.
+udp_row() {
+  awk -v port="$2" '$1 == port && $2 == "udp"' <<<"$1"
+}
+
 expect_in_row() {
   local output=$1 port=$2 address=$3 expected=$4 label=$5
   local found
@@ -55,6 +60,9 @@ expect_published_rows() {
   expect_in_row "$output" "$local_port" 127.0.0.1 'loopback address' "$label"
   expect_in_row "$output" "$all_port" 0.0.0.0 'container reachmap-test-all' "$label"
   expect_in_row "$output" "$all_port" 0.0.0.0 'all IPv4 addresses' "$label"
+  [[ $(udp_row "$output" "$all_port") == *'container reachmap-test-all'* ]] ||
+    fail "$label: no UDP row for the container" "$output"
+  [[ $(grep -c '^note: UDP' <<<"$output") == 1 ]] || fail "$label: expected the UDP note" "$output"
   [[ "$output" != *$'\033'* ]] || fail "$label: an escape character reached the output" "$output"
   [[ "$output" != *'warning:'* ]] || fail "$label: UFW is off, so nothing to warn about" "$output"
   expect_in_row "$output" "$hostile_port" 127.0.0.1 '\u{1b}[2J' "$label"
@@ -67,7 +75,8 @@ expect_unreachable_note() {
   local label=$1 owner=$2 output
   shift 2
   output=$("$@" scan 2>&1) || fail "$label: the scan failed" "$output"
-  [[ $(grep -c '^note: ' <<<"$output") == 1 ]] || fail "$label: expected one note" "$output"
+  [[ $(grep '^note: ' <<<"$output" | grep -vc '^note: UDP') == 1 ]] ||
+    fail "$label: expected one note besides the UDP one" "$output"
   grep -q '^note: could not ask Docker' <<<"$output" || fail "$label: wrong note" "$output"
   [[ "$output" != *'(container '* ]] || fail "$label: showed a container" "$output"
   expect_in_row "$output" "$local_port" 127.0.0.1 "$owner" "$label"
@@ -102,6 +111,8 @@ expect_bypass_warning() {
   grep -qx "warning: UFW is active, but it does not apply to these Docker ports: $all_port" \
     <<<"$output" || fail "$label: wrong UFW warning" "$output"
   expect_in_row "$output" "$all_port" 0.0.0.0 'Docker port: UFW does not apply' "$label"
+  [[ $(udp_row "$output" "$all_port") == *'Docker port: UFW does not apply'* ]] ||
+    fail "$label: the UDP port got no warning" "$output"
   [[ $(row "$output" "$local_port" 127.0.0.1) != *'UFW'* ]] || fail "$label: flagged a loopback port" "$output"
   [[ "${output,,}" != *protected* ]] || fail "$label: claimed protection" "$output"
   if [[ -n "$chain_line" ]]; then
@@ -146,7 +157,8 @@ fi
 
 docker run -d --rm --name reachmap-test-local -p "127.0.0.1:$local_port:80" \
   --label com.docker.compose.service=web "$image" sleep 300 >/dev/null
-docker run -d --rm --name reachmap-test-all -p "$all_port:80" "$image" sleep 300 >/dev/null
+docker run -d --rm --name reachmap-test-all -p "$all_port:80" -p "$all_port:80/udp" \
+  "$image" sleep 300 >/dev/null
 docker run -d --rm --name reachmap-test-hostile -p "127.0.0.1:$hostile_port:80" \
   --label "com.docker.compose.service=$(printf 'evil\033[2J')" "$image" sleep 300 >/dev/null
 

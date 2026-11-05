@@ -1,4 +1,4 @@
-//! Linux sources: the kernel's TCP socket tables in `/proc`, the interface
+//! Linux sources: the kernel's socket tables in `/proc`, the interface
 //! list from iproute2's `ip` and the containers from `docker`. The first two
 //! need no root; every user sees all sockets and interfaces of the current
 //! network namespace. The open files of other users' processes, under
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::TableSource;
-use crate::socket::AddressFamily;
+use crate::socket::{AddressFamily, Protocol};
 
 // The `/proc/net/tcp` parser decodes addresses as little-endian words, which
 // is how the kernel prints them on little-endian hosts. Refuse to build
@@ -73,21 +73,26 @@ pub(super) const IPTABLES_ARGS: &[&str] = &["-w", "2", "-S", "DOCKER-USER"];
 /// healthy host; a hung Docker daemon must not hang the scan.
 pub(super) const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// `/proc/net/tcp` (required) and `/proc/net/tcp6`. The IPv6 table is
-/// optional: it does not exist when IPv6 is disabled in the kernel, which
-/// means there are no IPv6 sockets. It is also absent when `/proc/net` is
-/// not mounted, but then `/proc/net/tcp` is missing too and reading fails.
-pub(super) fn tcp_sources() -> [TableSource; 2] {
+/// The tables of each protocol: `/proc/net/tcp` and `/proc/net/udp` (required),
+/// `/proc/net/tcp6` and `/proc/net/udp6`. The IPv6 tables are optional: they do
+/// not exist when IPv6 is disabled in the kernel, which means there are no IPv6
+/// sockets. They are also absent when `/proc/net` is not mounted, but then the
+/// IPv4 tables are missing too and reading fails.
+pub(super) fn socket_sources() -> [TableSource; 4] {
     [
-        TableSource {
-            family: AddressFamily::Ipv4,
-            path: PathBuf::from("/proc/net/tcp"),
-            optional: false,
-        },
-        TableSource {
-            family: AddressFamily::Ipv6,
-            path: PathBuf::from("/proc/net/tcp6"),
-            optional: true,
-        },
+        table(Protocol::Tcp, AddressFamily::Ipv4, "/proc/net/tcp"),
+        table(Protocol::Tcp, AddressFamily::Ipv6, "/proc/net/tcp6"),
+        table(Protocol::Udp, AddressFamily::Ipv4, "/proc/net/udp"),
+        table(Protocol::Udp, AddressFamily::Ipv6, "/proc/net/udp6"),
     ]
+}
+
+/// One table. Only the IPv6 tables may be missing.
+fn table(protocol: Protocol, family: AddressFamily, path: &str) -> TableSource {
+    TableSource {
+        family,
+        protocol,
+        path: PathBuf::from(path),
+        optional: family == AddressFamily::Ipv6,
+    }
 }

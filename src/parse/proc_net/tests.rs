@@ -1,4 +1,4 @@
-//! Unit tests for the `/proc/net/tcp` parser: decoding and every error kind.
+//! Unit tests for the `/proc/net/{tcp,udp}` parser: decoding and every error kind.
 
 use super::*;
 
@@ -12,7 +12,7 @@ fn file_with_row(local: &str, state: &str, inode: &str) -> String {
 }
 
 fn error_kind(text: &str, family: AddressFamily) -> ParseErrorKind {
-    match parse_proc_net_tcp(text, family) {
+    match parse_proc_net(text, family, Protocol::Tcp) {
         Err(error) => {
             assert_eq!(error.line, 2, "the bad row is line 2");
             error.kind
@@ -24,7 +24,7 @@ fn error_kind(text: &str, family: AddressFamily) -> ParseErrorKind {
 #[test]
 fn decodes_an_ipv4_listen_row() {
     let text = file_with_row("0100007F:0CEA", "0A", "23456");
-    let sockets = parse_proc_net_tcp(&text, AddressFamily::Ipv4).unwrap();
+    let sockets = parse_proc_net(&text, AddressFamily::Ipv4, Protocol::Tcp).unwrap();
     assert_eq!(
         sockets,
         vec![ListeningSocket {
@@ -38,10 +38,36 @@ fn decodes_an_ipv4_listen_row() {
 }
 
 #[test]
+fn an_unconnected_udp_socket_is_kept_and_a_tcp_state_is_not() {
+    let udp = |state| {
+        parse_proc_net(
+            &file_with_row("0100007F:0035", state, "9"),
+            AddressFamily::Ipv4,
+            Protocol::Udp,
+        )
+        .unwrap()
+    };
+
+    assert_eq!(udp("07")[0].protocol, Protocol::Udp);
+    assert_eq!(udp("07")[0].port, 53);
+    assert_eq!(udp("01"), []);
+    assert_eq!(udp("0A"), []);
+}
+
+#[test]
+fn a_closed_tcp_socket_is_not_listening() {
+    let text = file_with_row("0100007F:0035", "07", "9");
+
+    let sockets = parse_proc_net(&text, AddressFamily::Ipv4, Protocol::Tcp).unwrap();
+
+    assert_eq!(sockets, []);
+}
+
+#[test]
 fn decodes_an_ipv6_address_word_by_word() {
     // 2001:db8::1 as four little-endian words.
     let text = file_with_row("B80D0120000000000000000001000000:01BB", "0A", "7");
-    let sockets = parse_proc_net_tcp(&text, AddressFamily::Ipv6).unwrap();
+    let sockets = parse_proc_net(&text, AddressFamily::Ipv6, Protocol::Tcp).unwrap();
     let expected: Ipv6Addr = "2001:db8::1".parse().unwrap();
     assert_eq!(sockets[0].address, IpAddr::V6(expected));
     assert_eq!(sockets[0].port, 443);
@@ -51,7 +77,7 @@ fn decodes_an_ipv6_address_word_by_word() {
 fn skips_rows_that_are_not_listening() {
     let text = file_with_row("0100007F:0CEA", "01", "0");
     assert_eq!(
-        parse_proc_net_tcp(&text, AddressFamily::Ipv4),
+        parse_proc_net(&text, AddressFamily::Ipv4, Protocol::Tcp),
         Ok(Vec::new())
     );
 }
@@ -60,10 +86,13 @@ fn skips_rows_that_are_not_listening() {
 fn header_only_and_blank_lines_give_no_sockets() {
     let text = format!("{HEADER}\n\n   \n");
     assert_eq!(
-        parse_proc_net_tcp(&text, AddressFamily::Ipv4),
+        parse_proc_net(&text, AddressFamily::Ipv4, Protocol::Tcp),
         Ok(Vec::new())
     );
-    assert_eq!(parse_proc_net_tcp("", AddressFamily::Ipv4), Ok(Vec::new()));
+    assert_eq!(
+        parse_proc_net("", AddressFamily::Ipv4, Protocol::Tcp),
+        Ok(Vec::new())
+    );
 }
 
 #[test]
@@ -151,7 +180,7 @@ fn a_bad_inode_is_an_error() {
 #[test]
 fn accepts_lowercase_hex_and_the_extreme_values() {
     let text = file_with_row("0100007f:0000", "0a", &u64::MAX.to_string());
-    let sockets = parse_proc_net_tcp(&text, AddressFamily::Ipv4).unwrap();
+    let sockets = parse_proc_net(&text, AddressFamily::Ipv4, Protocol::Tcp).unwrap();
     assert_eq!(sockets[0].port, 0);
     assert_eq!(sockets[0].inode, u64::MAX);
 }
@@ -160,7 +189,7 @@ fn accepts_lowercase_hex_and_the_extreme_values() {
 fn accepts_windows_line_endings() {
     let text = file_with_row("0100007F:0CEA", "0A", "1").replace('\n', "\r\n");
     assert_eq!(
-        parse_proc_net_tcp(&text, AddressFamily::Ipv4)
+        parse_proc_net(&text, AddressFamily::Ipv4, Protocol::Tcp)
             .unwrap()
             .len(),
         1
@@ -171,7 +200,7 @@ fn accepts_windows_line_endings() {
 fn skips_non_listening_ipv6_rows() {
     let text = file_with_row("00000000000000000000000001000000:0277", "01", "0");
     assert_eq!(
-        parse_proc_net_tcp(&text, AddressFamily::Ipv6),
+        parse_proc_net(&text, AddressFamily::Ipv6, Protocol::Tcp),
         Ok(Vec::new())
     );
 }

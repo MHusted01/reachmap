@@ -67,7 +67,7 @@ fn join_without_ufw(
         open_files,
         host,
         published,
-        Ok(OptionsByInode::new()),
+        OptionsReport::default(),
         &firewall(UfwState::Inactive),
     )
 }
@@ -76,7 +76,7 @@ fn join_without_ufw(
 fn join_with_options(
     sockets: Vec<ListeningSocket>,
     published: Vec<PublishedPort>,
-    options: Result<OptionsByInode, SocketOptionsError>,
+    options: OptionsReport,
 ) -> ScanReport {
     join(
         sockets,
@@ -86,6 +86,14 @@ fn join_with_options(
         options,
         &firewall(UfwState::Inactive),
     )
+}
+
+/// What the kernel reported when nothing failed.
+fn reported(by_inode: OptionsByInode) -> OptionsReport {
+    OptionsReport {
+        by_inode,
+        error: None,
+    }
 }
 
 fn options(bound_device: Option<u32>, ipv6_only: bool) -> SocketOptions {
@@ -231,6 +239,7 @@ fn unknown_interfaces_give_unknown_verdicts_and_keep_the_error() {
 
 fn published(port: u16, name: &str) -> PublishedPort {
     PublishedPort {
+        protocol: Protocol::Tcp,
         address: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
         port,
         container: Container {
@@ -315,6 +324,7 @@ fn unreadable_ip_output_asks_for_a_bug_report() {
 
 fn published_on(address: &str, port: u16) -> PublishedPort {
     PublishedPort {
+        protocol: Protocol::Tcp,
         address: address.parse().unwrap(),
         port,
         container: Container {
@@ -343,7 +353,7 @@ fn active_ufw_flags_published_rows_and_only_those() {
             published_on("0.0.0.0", 9000),
             published_on("127.0.0.1", 9100),
         ]),
-        Ok(OptionsByInode::new()),
+        OptionsReport::default(),
         &firewall(UfwState::Active),
     );
 
@@ -384,7 +394,7 @@ fn unknown_docker_under_active_ufw_ends_up_in_the_warnings() {
         &open_files(false),
         Ok(lan_host()),
         Err(docker_not_reachable()),
-        Ok(OptionsByInode::new()),
+        OptionsReport::default(),
         &firewall(UfwState::Active),
     );
 
@@ -440,7 +450,7 @@ fn a_socket_the_kernel_reports_on_is_checked() {
     let report = join_with_options(
         vec![socket(22, 100)],
         Vec::new(),
-        Ok(HashMap::from([(100, options(None, false))])),
+        reported(HashMap::from([(100, options(None, false))])),
     );
 
     assert_eq!(report.ports[0].verdict.reason, all_ipv4(true));
@@ -451,7 +461,7 @@ fn a_bound_device_narrows_the_verdict_to_its_interface() {
     let report = join_with_options(
         vec![socket(22, 100)],
         Vec::new(),
-        Ok(HashMap::from([(100, options(Some(1), false))])),
+        reported(HashMap::from([(100, options(Some(1), false))])),
     );
 
     assert_eq!(
@@ -472,7 +482,7 @@ fn a_socket_the_kernel_did_not_report_stays_unchecked() {
     let report = join_with_options(
         vec![socket(22, 100), socket(23, 200)],
         Vec::new(),
-        Ok(HashMap::from([(100, options(None, false))])),
+        reported(HashMap::from([(100, options(None, false))])),
     );
 
     assert_eq!(report.ports[1].verdict.reason, all_ipv4(false));
@@ -483,7 +493,7 @@ fn a_device_no_interface_has_leaves_the_socket_unchecked() {
     let report = join_with_options(
         vec![socket(22, 100)],
         Vec::new(),
-        Ok(HashMap::from([(100, options(Some(9), false))])),
+        reported(HashMap::from([(100, options(Some(9), false))])),
     );
 
     assert_eq!(report.ports[0].verdict.reason, all_ipv4(false));
@@ -496,10 +506,42 @@ fn without_options_verdicts_stay_unchecked_and_the_error_is_kept_without_a_warni
     let report = join_with_options(
         vec![socket(22, 100)],
         Vec::new(),
-        Err(SocketOptionsError::Reply(refused)),
+        OptionsReport {
+            by_inode: OptionsByInode::new(),
+            error: Some(SocketOptionsError::Reply {
+                protocol: Protocol::Tcp,
+                source: refused,
+            }),
+        },
     );
 
     assert_eq!(report.ports[0].verdict.reason, all_ipv4(false));
+    assert!(report.socket_options_error.is_some());
+    assert!(report.warnings.is_empty());
+}
+
+#[test]
+fn a_udp_failure_leaves_tcp_checked_and_udp_unchecked() {
+    let udp = ListeningSocket {
+        protocol: Protocol::Udp,
+        ..socket(53, 200)
+    };
+    let refused = SockDiagError::Refused(io::Error::from_raw_os_error(2));
+
+    let report = join_with_options(
+        vec![socket(22, 100), udp],
+        Vec::new(),
+        OptionsReport {
+            by_inode: HashMap::from([(100, options(None, false))]),
+            error: Some(SocketOptionsError::Reply {
+                protocol: Protocol::Udp,
+                source: refused,
+            }),
+        },
+    );
+
+    assert_eq!(report.ports[0].verdict.reason, all_ipv4(true));
+    assert_eq!(report.ports[1].verdict.reason, all_ipv4(false));
     assert!(report.socket_options_error.is_some());
     assert!(report.warnings.is_empty());
 }
@@ -514,7 +556,7 @@ fn an_ipv6_only_socket_does_not_take_the_name_of_a_port_published_on_ipv4() {
     let report = join_with_options(
         vec![unrelated],
         vec![published(8080, "web")],
-        Ok(HashMap::from([(100, options(None, true))])),
+        reported(HashMap::from([(100, options(None, true))])),
     );
 
     let kinds: Vec<Listener> = report.ports.iter().map(|row| row.listener).collect();
@@ -523,12 +565,82 @@ fn an_ipv6_only_socket_does_not_take_the_name_of_a_port_published_on_ipv4() {
     assert_eq!(report.ports[1].service.to_string(), "sshd (812)");
 }
 
+fn udp_socket(port: u16, inode: u64) -> ListeningSocket {
+    ListeningSocket {
+        protocol: Protocol::Udp,
+        ..socket(port, inode)
+    }
+}
+
+#[test]
+fn a_host_udp_socket_is_not_credited_to_a_container_publishing_tcp() {
+    let report = join_without_ufw(
+        vec![udp_socket(8080, 100)],
+        &open_files(false),
+        Ok(lan_host()),
+        Ok(vec![published(8080, "web")]),
+    );
+
+    let rows: Vec<(Protocol, String)> = report
+        .ports
+        .iter()
+        .map(|row| (row.endpoint.protocol, row.service.to_string()))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (Protocol::Tcp, "container web".to_string()),
+            (Protocol::Udp, "sshd (812)".to_string()),
+        ]
+    );
+}
+
+#[test]
+fn a_published_udp_port_past_active_ufw_gets_the_warning() {
+    let port = PublishedPort {
+        protocol: Protocol::Udp,
+        ..published(5353, "dns")
+    };
+
+    let report = join(
+        vec![udp_socket(5353, 100)],
+        &open_files(false),
+        Ok(lan_host()),
+        Ok(vec![port]),
+        OptionsReport::default(),
+        &firewall(UfwState::Active),
+    );
+
+    assert_eq!(report.ports[0].service.to_string(), "container dns");
+    assert_eq!(report.ports[0].warning, Some(Warning::UfwBypassed));
+    assert_eq!(
+        report.warnings,
+        [ScanWarning::UfwBypassed {
+            ports: BTreeSet::from([5353]),
+        }]
+    );
+}
+
+#[test]
+fn udp_sockets_alone_raise_no_warning_so_the_exit_status_stays_zero() {
+    let report = join(
+        vec![udp_socket(53, 100)],
+        &open_files(false),
+        Ok(lan_host()),
+        Ok(Vec::new()),
+        OptionsReport::default(),
+        &firewall(UfwState::Active),
+    );
+
+    assert!(report.warnings.is_empty());
+}
+
 #[test]
 fn a_docker_forward_has_no_socket_to_check() {
     let report = join_with_options(
         Vec::new(),
         vec![published(8080, "web")],
-        Ok(OptionsByInode::new()),
+        OptionsReport::default(),
     );
 
     assert_eq!(report.ports[0].verdict.reason, all_ipv4(false));

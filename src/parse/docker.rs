@@ -12,12 +12,10 @@ use thiserror::Error;
 use crate::docker::PublishedPort;
 use crate::sanitize::sanitize;
 use crate::service::Container;
+use crate::socket::Protocol;
 
 /// The label Docker Compose puts on a container to name its service.
 const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
-
-/// How `docker inspect` ends the keys of TCP ports, as in `80/tcp`.
-const TCP_SUFFIX: &str = "/tcp";
 
 /// Why Docker's output could not be understood.
 #[derive(Debug, Error)]
@@ -83,7 +81,7 @@ pub fn parse_container_ids(text: &str) -> Result<Vec<&str>, DockerParseError> {
         .collect()
 }
 
-/// The TCP ports published by the containers in `docker inspect` JSON, in the
+/// The TCP and UDP ports published by the containers in `docker inspect` JSON, in the
 /// order of the containers and, within one, of the container ports as text.
 pub fn parse_docker_inspect(json: &str) -> Result<Vec<PublishedPort>, DockerParseError> {
     let containers: Vec<RawContainer> = serde_json::from_str(json)?;
@@ -94,25 +92,36 @@ pub fn parse_docker_inspect(json: &str) -> Result<Vec<PublishedPort>, DockerPars
     Ok(per_container.into_iter().flatten().collect())
 }
 
-/// The published TCP ports of one container.
+/// The published TCP and UDP ports of one container.
 fn published_ports(raw: &RawContainer) -> Result<Vec<PublishedPort>, DockerParseError> {
     let container = container_of(raw);
     raw.network_settings
         .ports
         .iter()
         .flatten()
-        .filter(|(port, _)| port.ends_with(TCP_SUFFIX))
-        .flat_map(|(_, bindings)| bindings.iter().flatten())
+        .filter_map(|(port, bindings)| Some((protocol_of(port)?, bindings.as_ref()?)))
+        .flat_map(|(protocol, bindings)| bindings.iter().map(move |binding| (protocol, binding)))
         // No host port means nothing is published (yet).
-        .filter(|binding| !binding.host_port.is_empty())
-        .map(|binding| {
+        .filter(|(_, binding)| !binding.host_port.is_empty())
+        .map(|(protocol, binding)| {
             Ok(PublishedPort {
+                protocol,
                 address: host_address(&binding.host_ip)?,
                 port: host_port(&binding.host_port)?,
                 container: container.clone(),
             })
         })
         .collect()
+}
+
+/// The protocol of a container port as `docker inspect` names it, as in
+/// `80/tcp`. `None` for one reachmap does not list, such as `sctp`.
+fn protocol_of(port: &str) -> Option<Protocol> {
+    match port.rsplit_once('/')?.1 {
+        "tcp" => Some(Protocol::Tcp),
+        "udp" => Some(Protocol::Udp),
+        _ => None,
+    }
 }
 
 /// The names of a container, cleaned for printing. Docker stores the name

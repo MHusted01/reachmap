@@ -478,3 +478,31 @@ fn displays_each_reason() {
         "could not list interfaces"
     );
 }
+
+#[test]
+fn a_multicast_address_is_unknown_and_says_why() {
+    for address in ["239.255.255.250", "ff02::fb"] {
+        let verdict = classify(address.parse().unwrap(), None, Some(&[]));
+
+        assert_eq!(verdict.reach, Reach::Unknown, "{address}");
+        assert_eq!(verdict.reason, Reason::Multicast, "{address}");
+    }
+}
+
+#[test]
+fn a_multicast_address_needs_no_interface_facts() {
+    let verdict = classify("239.255.255.250".parse().unwrap(), None, None);
+
+    assert_eq!(verdict.reason, Reason::Multicast);
+    assert_eq!(
+        verdict.reason.to_string(),
+        "multicast address, group membership not checked"
+    );
+}
+
+#[test]
+fn a_multicast_address_seen_through_an_ipv6_socket_counts_too() {
+    let verdict = classify("::ffff:239.255.255.250".parse().unwrap(), None, Some(&[]));
+
+    assert_eq!(verdict.reason, Reason::Multicast);
+}

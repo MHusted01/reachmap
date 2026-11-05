@@ -123,6 +123,32 @@ fn scan_finds_a_socket_the_test_is_listening_on_with_its_process_and_reach() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn scan_lists_a_udp_socket_with_its_owner_and_the_note() {
+    let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let port = socket.local_addr().unwrap().port();
+
+    let out = run(&["scan"]);
+
+    let output = stdout(&out);
+    let row = output
+        .lines()
+        .find(|line| {
+            line.split_whitespace()
+                .take(3)
+                .eq([port.to_string().as_str(), "udp", "127.0.0.1"])
+        })
+        .unwrap_or_else(|| panic!("port {port} missing from:\n{output}"));
+    let pid = format!("({})", std::process::id());
+    assert!(row.contains(&pid), "no pid {pid} in row: {row:?}");
+    let notes = output
+        .lines()
+        .filter(|line| line.starts_with("note: UDP"))
+        .count();
+    assert_eq!(notes, 1, "output was:\n{output}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn scan_json_is_one_document_with_the_socket_the_test_is_listening_on() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

@@ -60,9 +60,11 @@ impl DockerError {
     }
 }
 
-/// A TCP port on the host that Docker forwards to a running container.
+/// A port on the host that Docker forwards to a running container.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublishedPort {
+    /// Transport protocol.
+    pub protocol: Protocol,
     /// The host address, e.g. `127.0.0.1`, or `0.0.0.0` and `::` for all.
     pub address: IpAddr,
     /// The port on the host.
@@ -76,7 +78,7 @@ impl PublishedPort {
     pub fn endpoint(&self) -> Endpoint {
         Endpoint {
             port: self.port,
-            protocol: Protocol::Tcp,
+            protocol: self.protocol,
             address: self.address,
         }
     }
@@ -108,7 +110,7 @@ pub fn publisher_of<'a>(
     published: &'a [PublishedPort],
     socket: &ListeningSocket,
 ) -> Option<&'a PublishedPort> {
-    let on_this_port = || published.iter().filter(|p| p.port == socket.port);
+    let on_this_port = || published.iter().filter(|p| same_port(socket, p));
     on_this_port()
         .find(|p| same_address(socket.address, p.address))
         .or_else(|| on_this_port().find(|p| covers(socket, p.address)))
@@ -121,10 +123,15 @@ pub fn without_socket<'a>(
 ) -> impl Iterator<Item = &'a PublishedPort> {
     published.iter().filter(|p| {
         !sockets.iter().any(|socket| {
-            socket.port == p.port
+            same_port(socket, p)
                 && (same_address(socket.address, p.address) || covers(socket, p.address))
         })
     })
+}
+
+/// Port numbers of TCP and UDP are separate: `53/tcp` says nothing about `53/udp`.
+fn same_port(socket: &ListeningSocket, published: &PublishedPort) -> bool {
+    socket.port == published.port && socket.protocol == published.protocol
 }
 
 /// `::ffff:127.0.0.1` in a socket table is the same address as `127.0.0.1`.
@@ -162,6 +169,7 @@ mod tests {
 
     fn published(address: &str, port: u16, name: &str) -> PublishedPort {
         PublishedPort {
+            protocol: Protocol::Tcp,
             address: address.parse().unwrap(),
             port,
             container: container(name),
@@ -176,6 +184,71 @@ mod tests {
             inode: 1,
             options: None,
         }
+    }
+
+    fn udp_socket(address: &str, port: u16) -> ListeningSocket {
+        ListeningSocket {
+            protocol: Protocol::Udp,
+            ..socket(address, port)
+        }
+    }
+
+    fn udp_published(address: &str, port: u16, name: &str) -> PublishedPort {
+        PublishedPort {
+            protocol: Protocol::Udp,
+            ..published(address, port, name)
+        }
+    }
+
+    #[test]
+    fn a_socket_of_another_protocol_serves_no_published_port() {
+        let tcp_port = [published("0.0.0.0", 53, "dns")];
+        let udp_port = [udp_published("0.0.0.0", 53, "dns")];
+
+        assert_eq!(publisher_of(&tcp_port, &udp_socket("0.0.0.0", 53)), None);
+        assert_eq!(publisher_of(&udp_port, &socket("0.0.0.0", 53)), None);
+    }
+
+    #[test]
+    fn a_dual_stack_socket_covers_only_ports_of_its_own_protocol() {
+        let tcp_port = [published("0.0.0.0", 53, "dns")];
+        let udp_port = [udp_published("0.0.0.0", 53, "dns")];
+
+        assert_eq!(publisher_of(&tcp_port, &udp_socket("::", 53)), None);
+        assert_eq!(
+            publisher_of(&udp_port, &udp_socket("::", 53)),
+            Some(&udp_port[0])
+        );
+    }
+
+    #[test]
+    fn a_udp_socket_serves_the_udp_port_on_the_same_number() {
+        let ports = [
+            published("0.0.0.0", 53, "tcp-dns"),
+            udp_published("0.0.0.0", 53, "udp-dns"),
+        ];
+
+        assert_eq!(
+            publisher_of(&ports, &udp_socket("0.0.0.0", 53)),
+            Some(&ports[1])
+        );
+    }
+
+    #[test]
+    fn a_socket_of_another_protocol_leaves_a_published_port_without_socket() {
+        let ports = [udp_published("0.0.0.0", 53, "dns")];
+        let tcp_only = [socket("0.0.0.0", 53)];
+        let with_udp = [udp_socket("0.0.0.0", 53)];
+
+        assert_eq!(without_socket(&ports, &tcp_only).count(), 1);
+        assert_eq!(without_socket(&ports, &with_udp).count(), 0);
+    }
+
+    #[test]
+    fn a_published_port_keeps_its_protocol_in_the_endpoint() {
+        let endpoint = udp_published("0.0.0.0", 53, "dns").endpoint();
+
+        assert_eq!(endpoint.protocol_name(), "udp");
     }
 
     fn failure_status() -> ExitStatus {

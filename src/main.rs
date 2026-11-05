@@ -20,7 +20,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// List the TCP sockets listening on this host (Linux only for now)
+    /// List the TCP and UDP sockets listening on this host (Linux only for now)
     Scan {
         /// Print the findings as JSON instead of a table
         #[arg(long)]

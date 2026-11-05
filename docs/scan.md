@@ -1,9 +1,9 @@
 # reachmap scan
 
 `reachmap scan` lists every TCP socket on this host that is waiting for
-connections (the LISTEN state) and every port Docker publishes, sorted by port,
-with the program or container behind it and the networks it can be reached
-from.
+connections (the LISTEN state), every UDP socket that can receive from any peer
+(see [UDP](#udp)) and every port Docker publishes, sorted by port, with the
+program or container behind it and the networks it can be reached from.
 
 ```
 $ sudo reachmap scan
@@ -11,6 +11,7 @@ PORT  PROTO  ADDRESS          SERVICE                     REACHABLE FROM        
 22    tcp    0.0.0.0          sshd (812)                  this host, Docker, tailnet, LAN  all IPv4 addresses
 22    tcp6   ::               sshd (812)                  this host, tailnet, LAN          all IPv6 addresses
 53    tcp    127.0.0.53       systemd-resolve (640)       this host                        loopback address
+53    udp    127.0.0.53       systemd-resolve (640)       this host                        loopback address
 631   tcp6   ::1              cupsd (1033)                this host                        loopback address
 3000  tcp    127.0.0.1        web (container shop-web-1)  this host                        loopback address
 3306  tcp    127.0.0.1        mysqld (1201)               this host                        loopback address
@@ -18,14 +19,16 @@ PORT  PROTO  ADDRESS          SERVICE                     REACHABLE FROM        
 9000  tcp    0.0.0.0          container metrics           this host, Docker, tailnet, LAN  all IPv4 addresses
 9100  tcp    100.101.102.103  node_exporter (902)         tailnet                          only on tailscale0
 9200  tcp    0.0.0.0          grafana (1544)              tailnet                          only on tailscale0
+
+note: UDP has no connection handshake, so a connect probe cannot confirm that UDP rows are reachable
 ```
 
 ## Columns
 
 | Column  | Meaning |
 |---------|---------|
-| PORT    | The TCP port the service listens on. |
-| PROTO   | `tcp` for IPv4, `tcp6` for IPv6. |
+| PORT    | The TCP or UDP port the service listens on. |
+| PROTO   | `tcp` or `udp` for IPv4, `tcp6` or `udp6` for IPv6. |
 | ADDRESS | The local address the socket is bound to (see below). |
 | SERVICE | The program that has the socket open, as `name (pid)`, or the Docker container the port is published for (see below). |
 | REACHABLE FROM | The networks whose clients can connect (see below). |
@@ -86,6 +89,7 @@ connections on:
 | `all IPv4 addresses (bound device not checked)` | Like `all IPv4 addresses`, but the socket's options are unknown (see below). |
 | `all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)` | Like `all IPv6 and IPv4 addresses`, but the socket's options are unknown (see below). |
 | `no interface has this address` | Bound to an address that no interface has (for example, an interface that went away). REACHABLE FROM is `unknown`. |
+| `multicast address, group membership not checked` | A UDP socket bound to a multicast group, such as `239.255.255.250`. It receives what is sent to the group, and reachmap does not read which groups this host joined. REACHABLE FROM is `unknown`. Needs no interface facts. |
 | `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or an IPv6-only `::` on a host without IPv6 addresses, or `::` on a host without any). REACHABLE FROM is `unknown`. |
 | `bound to eth1, which has no address it can use` | Bound to a device without a suitable address, such as a VRF device whose addresses are on other interfaces. REACHABLE FROM is `unknown`. |
 | `...; no host socket, Docker forwards this port` | Docker publishes the port but no socket listens on the host (see [Docker](#docker)). The first part is the usual reason for the published address. |
@@ -97,7 +101,7 @@ firewall in front of the host drops the traffic. reachmap cannot see those, so
 it never calls such a socket safe.
 
 **Socket options.** Two options narrow who can connect but are not visible in
-`/proc/net/tcp`, so reachmap asks the kernel for them through netlink
+the kernel's socket tables, so reachmap asks the kernel for them through netlink
 `sock_diag`, the interface `ss` uses. This needs no root and only reads.
 
 - A socket can be bound to one device (`SO_BINDTODEVICE`); `ss` shows this as
@@ -110,8 +114,9 @@ it never calls such a socket safe.
 
 **What "not checked" means.** When the kernel gives no answer for a socket,
 reachmap assumes the wider case, so REACHABLE FROM may list more networks than
-can actually connect, never fewer. If the request fails, a note on stderr says
-why and the scan continues; the exit code does not change. Docker-forwarded
+can actually connect, never fewer. If a request fails, a note on stderr says
+why and the scan continues; the exit code does not change. TCP is asked first,
+so when only the UDP request fails, TCP rows keep their facts. Docker-forwarded
 ports without a host socket always show this wording, as there is no socket
 to ask about.
 
@@ -145,11 +150,29 @@ Names come from other programs and may hold anything, so characters that could
 change how the terminal shows the output, such as escape sequences and line
 breaks, are printed as visible text, e.g. `\u{1b}`.
 
+## UDP
+
+UDP has no LISTEN state and no connections. reachmap lists the sockets that are
+not connected to one peer, as `ss -uln` does, because those can receive from
+anyone. A connected socket only accepts its peer, so it is left out. Three things
+follow:
+
+- **Not every row is a server.** A client that sent a datagram without connecting
+  looks exactly like a server to the kernel, so short-lived rows on high port
+  numbers are common. reachmap lists them: they do receive traffic.
+- **A row means the socket accepts traffic, not that anything answers.** Without
+  a handshake, a service can stay silent, so a connect probe cannot confirm
+  a UDP row. The note under the table says so. It is not a warning, so it does
+  not change the exit status.
+- **Some sockets belong to the kernel.** Tunnels such as VXLAN and kernel
+  WireGuard hold a socket that no process has open, so SERVICE stays `unknown`,
+  also with `sudo`.
+
 ## Docker
 
 reachmap asks Docker for the running containers with `docker ps -q` and
-`docker inspect`, and matches their published TCP ports to the sockets on this
-host by address and port. The socket's row then shows the container instead of
+`docker inspect`, and matches their published TCP and UDP ports to the sockets on
+this host by protocol, address and port. The socket's row then shows the container instead of
 the process holding it, which is `docker-proxy` or, with `userland-proxy: false`,
 `dockerd`. This needs no root as long as you can use `docker`, and only reads.
 
@@ -184,8 +207,8 @@ ran here, as ports without a host socket.
 
 - **Linux only for now.** On other systems `scan` prints
   `reachmap scan is Linux only for now` and exits with status 1.
-- **Root shows more.** The sockets come from `/proc/net/tcp` and
-  `/proc/net/tcp6`, which every user can read. Finding the process behind a
+- **Root shows more.** The sockets come from `/proc/net/tcp`, `/proc/net/udp`
+  and their IPv6 twins `tcp6` and `udp6`, which every user can read. Finding the process behind a
   socket means reading `/proc/<pid>/fd`, which only works for your own
   processes unless you run `scan` with `sudo`. reachmap only reads; it never
   changes anything, with or without root.
@@ -210,9 +233,10 @@ ran here, as ports without a host socket.
   that exists, and looks `ip` up through `PATH` only if none does. Without
   it, the scan still lists every socket, prints a warning, and shows
   REACHABLE FROM as `unknown` for all but loopback addresses.
-- **TCP only.** UDP is planned for v0.2, for Docker's published ports too.
-- When IPv6 is disabled in the kernel, `/proc/net/tcp6` does not exist and
-  only IPv4 sockets are listed.
+- **TCP and UDP only.** Other protocols, such as a port Docker publishes as
+  `sctp`, are not listed.
+- When IPv6 is disabled in the kernel, `/proc/net/tcp6` and `/proc/net/udp6` do
+  not exist and only IPv4 sockets are listed.
 
 ## JSON
 

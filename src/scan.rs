@@ -16,12 +16,14 @@ use crate::docker::{self, DockerError, PublishedPort};
 use crate::firewall::{self, DockerUserChain, Firewall, UfwState};
 use crate::network::HostInterfaces;
 use crate::parse::ip_addr::parse_ip_addr;
-use crate::parse::proc_net::{ParseError, parse_proc_net_tcp};
+use crate::parse::proc_net::{ParseError, parse_proc_net};
 use crate::parse::proc_pid::owners_by_inode;
 use crate::reach::{SocketScope, Verdict, classify};
 use crate::service::{Service, UnknownReason, service_of};
 use crate::socket::{Endpoint, ListeningSocket, sort_by_port};
-use crate::socket_options::{OptionsByInode, SocketOptionsError, read_socket_options};
+use crate::socket_options::{
+    OptionsByInode, OptionsReport, SocketOptionsError, read_socket_options,
+};
 use crate::warning::{ScanWarning, Warning, docker_ufw_bypass, summarise};
 
 /// Where users report problems reachmap cannot handle.
@@ -131,17 +133,17 @@ pub struct ScanReport {
     /// Set when Docker could not be asked; published ports then show the
     /// process that holds their socket, and those without one are missing.
     pub docker_error: Option<DockerError>,
-    /// Set when the kernel's socket options could not be read; verdicts then
-    /// assume the widest case and say what was not checked.
+    /// Set when some socket options could not be read; the verdicts of those
+    /// sockets then assume the widest case and say what was not checked.
     pub socket_options_error: Option<SocketOptionsError>,
     /// The summary under the table. Any entry makes the scan exit with 1.
     pub warnings: Vec<ScanWarning>,
 }
 
-/// Reads this host's TCP tables, socket options, processes, interfaces, Docker
+/// Reads this host's socket tables, socket options, processes, interfaces, Docker
 /// containers and firewall facts and returns its ports, sorted by port number.
 pub fn scan() -> Result<ScanReport, ScanError> {
-    let tables = collect::read_tcp_tables()?;
+    let tables = collect::read_socket_tables()?;
     let sockets = parse_tables(&tables)?;
     let options = read_socket_options();
     let open_files = collect::read_open_files()?;
@@ -192,9 +194,11 @@ pub fn parse_tables(tables: &[RawTable]) -> Result<Vec<ListeningSocket>, ScanErr
     let mut sockets = Vec::new();
     for table in tables {
         let parsed =
-            parse_proc_net_tcp(&table.text, table.family).map_err(|source| ScanError::Parse {
-                path: table.path.clone(),
-                source,
+            parse_proc_net(&table.text, table.family, table.protocol).map_err(|source| {
+                ScanError::Parse {
+                    path: table.path.clone(),
+                    source,
+                }
             })?;
         sockets.extend(parsed);
     }
@@ -211,7 +215,7 @@ pub fn join(
     open_files: &ProcessFds,
     host: Result<HostInterfaces, InterfacesError>,
     published: Result<Vec<PublishedPort>, DockerError>,
-    options: Result<OptionsByInode, SocketOptionsError>,
+    options: OptionsReport,
     firewall: &Firewall,
 ) -> ScanReport {
     let owners = owners_by_inode(open_files.links());
@@ -222,10 +226,13 @@ pub fn join(
     };
     let (host, interfaces_error) = split(host);
     let (published, docker_error) = split(published);
-    let (options, socket_options_error) = split(options);
+    let OptionsReport {
+        by_inode,
+        error: socket_options_error,
+    } = options;
     let addresses = host.as_ref().map(|host| host.addresses.as_slice());
     let published = published.unwrap_or_default();
-    let sockets = with_options(sockets, options.unwrap_or_default());
+    let sockets = with_options(sockets, by_inode);
 
     let on_sockets = sockets.iter().map(|socket| {
         let publisher = docker::publisher_of(&published, socket);

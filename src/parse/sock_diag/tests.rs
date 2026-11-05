@@ -52,7 +52,7 @@ fn assert_malformed(bytes: &[u8]) {
 
 #[test]
 fn the_request_asks_for_listening_tcp_sockets_of_one_family() {
-    let request = dump_request(AddressFamily::Ipv6);
+    let request = dump_request(Protocol::Tcp, AddressFamily::Ipv6);
 
     let mut expected = Vec::new();
     expected.extend(72u32.to_ne_bytes());
@@ -64,7 +64,18 @@ fn the_request_asks_for_listening_tcp_sockets_of_one_family() {
     expected.extend(0x400u32.to_ne_bytes());
     expected.resize(REQUEST_LEN, 0);
     assert_eq!(request.as_slice(), expected);
-    assert_eq!(dump_request(AddressFamily::Ipv4)[HEADER_LEN], 2);
+    assert_eq!(
+        dump_request(Protocol::Tcp, AddressFamily::Ipv4)[HEADER_LEN],
+        2
+    );
+}
+
+#[test]
+fn the_request_for_udp_asks_for_unconnected_sockets() {
+    let request = dump_request(Protocol::Udp, AddressFamily::Ipv4);
+
+    assert_eq!(request[HEADER_LEN..REQUEST_STATES_OFFSET], [2, 17, 0, 0]);
+    assert_eq!(request[REQUEST_STATES_OFFSET..][..4], 0x80u32.to_ne_bytes());
 }
 
 #[test]

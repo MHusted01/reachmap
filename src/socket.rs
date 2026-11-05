@@ -12,18 +12,35 @@ use serde::Serialize;
 pub enum Protocol {
     /// Transmission Control Protocol.
     Tcp,
+    /// User Datagram Protocol.
+    Udp,
+}
+
+impl Protocol {
+    /// The kernel's state for a socket that takes traffic from any peer, from
+    /// `include/net/tcp_states.h`. TCP calls it LISTEN. UDP has no such state:
+    /// the closest is a socket that is not connected to one peer, which the
+    /// kernel marks with `TCP_CLOSE`. A client that sent without connecting
+    /// is in that state too.
+    pub const fn open_state(self) -> u8 {
+        match self {
+            Protocol::Tcp => 0x0A,
+            Protocol::Udp => 0x07,
+        }
+    }
 }
 
 impl fmt::Display for Protocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Protocol::Tcp => "tcp",
+            Protocol::Udp => "udp",
         })
     }
 }
 
-/// IP version of a kernel socket table: `/proc/net/tcp` holds IPv4 sockets,
-/// `/proc/net/tcp6` IPv6 sockets.
+/// IP version of a kernel socket table: `/proc/net/tcp` and `/proc/net/udp`
+/// hold IPv4 sockets, `/proc/net/tcp6` and `/proc/net/udp6` IPv6 sockets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AddressFamily {
@@ -47,7 +64,8 @@ pub struct Endpoint {
 }
 
 impl Endpoint {
-    /// The name `ss` and `netstat` use: `tcp` for IPv4, `tcp6` for IPv6.
+    /// The name `ss` and `netstat` use: `tcp` or `udp` for IPv4, `tcp6` or
+    /// `udp6` for IPv6.
     pub fn protocol_name(&self) -> String {
         match self.address {
             IpAddr::V4(_) => self.protocol.to_string(),
@@ -56,19 +74,20 @@ impl Endpoint {
     }
 }
 
-/// What the kernel's socket diagnostics report beyond `/proc/net/tcp`.
+/// What the kernel's socket diagnostics report beyond its socket tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SocketOptions {
     /// Index of the interface the socket is bound to (`SO_BINDTODEVICE`, or
     /// the scope of a link-local address), if any. Such a socket only accepts
     /// traffic arriving on that interface.
     pub bound_device: Option<u32>,
-    /// Whether a `tcp6` socket refuses IPv4 (`IPV6_V6ONLY`). Always false for
+    /// Whether an IPv6 socket refuses IPv4 (`IPV6_V6ONLY`). Always false for
     /// an IPv4 socket.
     pub ipv6_only: bool,
 }
 
-/// One socket in the LISTEN state: a service waiting for connections.
+/// One socket that takes traffic from any peer: a TCP socket in the LISTEN
+/// state, or a UDP socket that is not connected (see [`Protocol::open_state`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListeningSocket {
     /// Transport protocol.
@@ -148,6 +167,25 @@ mod tests {
     fn protocol_name_adds_6_for_ipv6_addresses() {
         assert_eq!(socket(ANY_V4, 22).endpoint().protocol_name(), "tcp");
         assert_eq!(socket(ANY_V6, 22).endpoint().protocol_name(), "tcp6");
+        let udp = |address| ListeningSocket {
+            protocol: Protocol::Udp,
+            ..socket(address, 53)
+        };
+        assert_eq!(udp(ANY_V4).endpoint().protocol_name(), "udp");
+        assert_eq!(udp(ANY_V6).endpoint().protocol_name(), "udp6");
+    }
+
+    #[test]
+    fn tcp_sorts_before_udp_on_the_same_port() {
+        let udp = ListeningSocket {
+            protocol: Protocol::Udp,
+            ..socket(ANY_V4, 53)
+        };
+
+        let sorted = sort_by_port(vec![udp, socket(ANY_V6, 53)]);
+
+        let protocols: Vec<Protocol> = sorted.iter().map(|s| s.protocol).collect();
+        assert_eq!(protocols, [Protocol::Tcp, Protocol::Udp]);
     }
 
     #[test]
