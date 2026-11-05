@@ -1,7 +1,8 @@
 # JSON output
 
 `reachmap scan --json` prints the same findings as the table, as one JSON
-document on standard output, for scripts and other tools.
+document on standard output, for scripts and other tools. For example, the
+ports the LAN can reach on the host from [the scan page](scan.md):
 
 ```
 $ sudo reachmap scan --json | jq -r '.ports[] | select(.reach.networks // [] | index("lan")) | .port'
