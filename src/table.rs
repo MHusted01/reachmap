@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::scan::{Listener, ScannedPort};
+use crate::scan::{Listener, ScanReport, ScannedPort};
 
 /// Printed instead of an empty table.
 pub const NO_SOCKETS: &str = "No listening TCP sockets found.";
@@ -51,21 +51,51 @@ impl fmt::Display for Table<'_> {
     }
 }
 
+/// Displays a scan as the user sees it on standard output: the table, then a
+/// blank line and the warnings, if there are any.
+#[derive(Debug, Clone, Copy)]
+pub struct Report<'a>(pub &'a ScanReport);
+
+impl fmt::Display for Report<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ScanReport {
+            ports, warnings, ..
+        } = self.0;
+        write!(f, "{}", Table(ports))?;
+        if !warnings.is_empty() {
+            writeln!(f)?;
+        }
+        warnings
+            .iter()
+            .try_for_each(|warning| writeln!(f, "warning: {warning}"))
+    }
+}
+
 /// The text of each column for one port.
 fn cells(scanned: &ScannedPort) -> [String; COLUMNS] {
     let endpoint = &scanned.endpoint;
-    let reason = &scanned.verdict.reason;
     [
         endpoint.port.to_string(),
         endpoint.protocol_name(),
         endpoint.address.to_string(),
         scanned.service.to_string(),
         scanned.verdict.reach.to_string(),
-        match scanned.listener {
-            Listener::HostSocket => reason.to_string(),
-            Listener::DockerForward => format!("{reason}; {NO_HOST_SOCKET}"),
-        },
+        why(scanned),
     ]
+}
+
+/// The verdict's reason, followed by what else explains the row.
+fn why(scanned: &ScannedPort) -> String {
+    let forward = match scanned.listener {
+        Listener::HostSocket => None,
+        Listener::DockerForward => Some(NO_HOST_SOCKET.to_string()),
+    };
+    let warning = scanned.warning.map(|warning| warning.to_string());
+    std::iter::once(scanned.verdict.reason.to_string())
+        .chain(forward)
+        .chain(warning)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Writes one line. Every column but the last is padded to its width; the
@@ -89,6 +119,8 @@ mod tests {
     use crate::reach::classify;
     use crate::service::{Container, Process, Service, UnknownReason};
     use crate::socket::{Endpoint, Protocol};
+    use crate::warning::{ScanWarning, Warning};
+    use std::collections::BTreeSet;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -118,6 +150,7 @@ mod tests {
             listener: Listener::HostSocket,
             service,
             verdict: classify(address, Some(&host())),
+            warning: None,
         }
     }
 
@@ -191,6 +224,63 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
             "PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM  WHY\n\
              8080  tcp    127.0.0.1  web (container shop-web-1)  this host       \
              loopback address; no host socket, Docker forwards this port\n"
+        );
+    }
+
+    #[test]
+    fn a_warning_on_a_port_is_shown_in_why() {
+        let container = Service::Container(Container {
+            name: "shop-web-1".to_string(),
+            compose_service: None,
+        });
+        let rows = [ScannedPort {
+            listener: Listener::DockerForward,
+            warning: Some(Warning::UfwBypassed),
+            ..row(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 8080, container)
+        }];
+        let output = Table(&rows).to_string();
+        assert!(
+            output.ends_with(
+                "only on enp1s0; no host socket, Docker forwards this port; \
+                 Docker port: UFW does not apply\n"
+            ),
+            "output was: {output}"
+        );
+    }
+
+    fn report(warnings: Vec<ScanWarning>) -> ScanReport {
+        ScanReport {
+            ports: vec![row(LOCAL_V4, 22, process("sshd", 1))],
+            interfaces_error: None,
+            docker_error: None,
+            warnings,
+        }
+    }
+
+    #[test]
+    fn a_report_without_warnings_is_just_the_table() {
+        let report = report(Vec::new());
+        assert_eq!(
+            Report(&report).to_string(),
+            Table(&report.ports).to_string()
+        );
+    }
+
+    #[test]
+    fn warnings_follow_the_table_after_a_blank_line() {
+        let report = report(vec![
+            ScanWarning::UfwBypassed {
+                ports: BTreeSet::from([8080]),
+            },
+            ScanWarning::DockerUserRules,
+        ]);
+        assert_eq!(
+            Report(&report).to_string(),
+            format!(
+                "{}\nwarning: UFW is active, but it does not apply to these Docker ports: 8080\n\
+                 warning: DOCKER-USER has rules, so filtering may apply, not verified\n",
+                Table(&report.ports)
+            )
         );
     }
 

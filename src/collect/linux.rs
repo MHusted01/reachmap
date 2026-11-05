@@ -48,6 +48,26 @@ pub(super) const DOCKER_PS_ARGS: &[&str] = &["ps", "-q"];
 /// Makes `docker` print details of the containers named after these arguments.
 pub(super) const DOCKER_INSPECT_ARGS: &[&str] = &["inspect", "--type", "container"];
 
+/// UFW's configuration file.
+pub(super) const UFW_CONF: &str = "/etc/ufw/ufw.conf";
+
+/// Where distributions install `iptables`, tried in order. Only root can write
+/// to these directories.
+pub(super) const IPTABLES_PATHS: &[&str] = &[
+    "/usr/sbin/iptables",
+    "/sbin/iptables",
+    "/usr/bin/iptables",
+    "/bin/iptables",
+];
+
+/// The name to look up through `PATH` when `iptables` is in none of
+/// [`IPTABLES_PATHS`].
+pub(super) const IPTABLES_PROGRAM: &str = "iptables";
+
+/// Makes `iptables` print the rules of the `DOCKER-USER` chain, waiting up to
+/// two seconds if another program holds its lock.
+pub(super) const IPTABLES_ARGS: &[&str] = &["-w", "2", "-S", "DOCKER-USER"];
+
 /// How long a command may run. All of them answer in well under a second on a
 /// healthy host; a hung Docker daemon must not hang the scan.
 pub(super) const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
