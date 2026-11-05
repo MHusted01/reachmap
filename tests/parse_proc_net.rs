@@ -67,7 +67,7 @@ fn parse_tables_merges_both_tables_sorted_by_port_ipv4_first() {
     let rows: Vec<(u16, String)> = parse_tables(&tables)
         .unwrap()
         .iter()
-        .map(|s| (s.port, s.protocol_name()))
+        .map(|s| (s.port, s.endpoint().protocol_name()))
         .collect();
 
     let ports: Vec<u16> = rows.iter().map(|row| row.0).collect();

@@ -1,0 +1,50 @@
+[
+  {
+    "Id": "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888",
+    "Name": "/shop-web-1",
+    "State": { "Status": "running", "Running": true },
+    "Config": {
+      "Image": "example/web:1.0",
+      "ExposedPorts": { "443/tcp": {}, "80/tcp": {}, "9000/tcp": {} },
+      "Labels": {
+        "com.docker.compose.project": "shop",
+        "com.docker.compose.service": "web"
+      }
+    },
+    "NetworkSettings": {
+      "Ports": {
+        "443/tcp": [
+          { "HostIp": "0.0.0.0", "HostPort": "8443" },
+          { "HostIp": "::", "HostPort": "8443" }
+        ],
+        "53/udp": [
+          { "HostIp": "0.0.0.0", "HostPort": "5353" }
+        ],
+        "80/tcp": [
+          { "HostIp": "127.0.0.1", "HostPort": "8080" }
+        ],
+        "9000/tcp": null
+      }
+    }
+  },
+  {
+    "Id": "1111aaaa2222bbbb3333cccc4444dddd5555eeee6666ffff7777aaaa8888bbbb",
+    "Name": "/metrics",
+    "State": { "Status": "running", "Running": true },
+    "Config": { "Image": "example/metrics:2.3", "Labels": null },
+    "NetworkSettings": {
+      "Ports": {
+        "9100/tcp": [
+          { "HostIp": "::1", "HostPort": "9100" }
+        ]
+      }
+    }
+  },
+  {
+    "Id": "2222bbbb3333cccc4444dddd5555eeee6666ffff7777aaaa8888bbbb9999cccc",
+    "Name": "/worker",
+    "State": { "Status": "running", "Running": true },
+    "Config": { "Image": "example/worker:0.9", "Labels": {} },
+    "NetworkSettings": { "Ports": {} }
+  }
+]

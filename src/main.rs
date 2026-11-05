@@ -35,19 +35,25 @@ fn run_scan() -> ExitCode {
         Ok(report) => {
             if let Some(error) = &report.interfaces_error {
                 eprintln!("warning: {}", render_chain(error));
-                if let Some(hint) = error.hint() {
-                    eprintln!("hint: {hint}");
-                }
+                print_hint(error.hint());
             }
-            write_stdout(&Table(&report.sockets))
+            if let Some(error) = &report.docker_error {
+                eprintln!("note: {}", render_chain(error));
+                print_hint(error.hint());
+            }
+            write_stdout(&Table(&report.ports))
         }
         Err(error) => {
             eprintln!("error: {}", render_chain(&error));
-            if let Some(hint) = error.hint() {
-                eprintln!("hint: {hint}");
-            }
+            print_hint(error.hint());
             ExitCode::FAILURE
         }
+    }
+}
+
+fn print_hint(hint: Option<String>) {
+    if let Some(hint) = hint {
+        eprintln!("hint: {hint}");
     }
 }
 

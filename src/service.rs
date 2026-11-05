@@ -13,6 +13,24 @@ pub struct Process {
     pub name: String,
 }
 
+/// A running Docker container. Both names are sanitised when parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Container {
+    /// The container's name, e.g. `shop-web-1`.
+    pub name: String,
+    /// Its service in a Compose project, e.g. `web`.
+    pub compose_service: Option<String>,
+}
+
+impl fmt::Display for Container {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.compose_service {
+            Some(service) => write!(f, "{service} (container {})", self.name),
+            None => write!(f, "container {}", self.name),
+        }
+    }
+}
+
 /// Why the program behind a socket is not known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnknownReason {
@@ -31,6 +49,8 @@ pub enum UnknownReason {
 pub enum Service {
     /// The process that has the socket open.
     Process(Process),
+    /// The Docker container the port is published for.
+    Container(Container),
     /// No owner was found.
     Unknown(UnknownReason),
 }
@@ -39,6 +59,7 @@ impl fmt::Display for Service {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Service::Process(Process { pid, name }) => write!(f, "{name} ({pid})"),
+            Service::Container(container) => container.fmt(f),
             Service::Unknown(UnknownReason::NeedsRoot) => {
                 f.write_str("unknown (run with sudo for details)")
             }
@@ -72,6 +93,24 @@ mod tests {
     fn displays_a_process_as_name_and_pid() {
         let service = Service::Process(process(812, "sshd"));
         assert_eq!(service.to_string(), "sshd (812)");
+    }
+
+    #[test]
+    fn displays_a_compose_container_as_service_and_name() {
+        let service = Service::Container(Container {
+            name: "shop-web-1".to_string(),
+            compose_service: Some("web".to_string()),
+        });
+        assert_eq!(service.to_string(), "web (container shop-web-1)");
+    }
+
+    #[test]
+    fn displays_a_plain_container_by_name() {
+        let service = Service::Container(Container {
+            name: "metrics".to_string(),
+            compose_service: None,
+        });
+        assert_eq!(service.to_string(), "container metrics");
     }
 
     #[test]

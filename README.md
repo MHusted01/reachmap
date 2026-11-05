@@ -19,8 +19,8 @@ PORT   SERVICE               REACHABLE FROM     WHY
 
 > **Status:** early development. The example shows the planned v0.1 output.
 > Today `reachmap scan` lists listening TCP sockets with their bind address,
-> the process behind each, and the networks (this host, Docker, tailnet, LAN,
-> internet) it can be reached from, before firewall rules
+> the process or Docker container behind each, and the networks (this host,
+> Docker, tailnet, LAN, internet) it can be reached from, before firewall rules
 > ([details](docs/scan.md)); follow the
 > [v0.1 milestone](https://github.com/MHusted01/reachmap/milestones) for progress.
 

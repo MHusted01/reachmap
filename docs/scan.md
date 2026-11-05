@@ -1,19 +1,22 @@
 # reachmap scan
 
 `reachmap scan` lists every TCP socket on this host that is waiting for
-connections (the LISTEN state), sorted by port, with the program behind it and
-the networks it can be reached from.
+connections (the LISTEN state) and every port Docker publishes, sorted by port,
+with the program or container behind it and the networks it can be reached
+from.
 
 ```
 $ sudo reachmap scan
-PORT  PROTO  ADDRESS          SERVICE                REACHABLE FROM                   WHY
-22    tcp    0.0.0.0          sshd (812)             this host, Docker, tailnet, LAN  all IPv4 addresses (bound device not checked)
-22    tcp6   ::               sshd (812)             this host, Docker, tailnet, LAN  all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)
-53    tcp    127.0.0.53       systemd-resolve (640)  this host                        loopback address
-631   tcp6   ::1              cupsd (1033)           this host                        loopback address
-3306  tcp    127.0.0.1        mysqld (1201)          this host                        loopback address
-8080  tcp    192.168.1.20     python3 (4410)         LAN                              only on enp1s0
-9100  tcp    100.101.102.103  node_exporter (902)    tailnet                          only on tailscale0
+PORT  PROTO  ADDRESS          SERVICE                     REACHABLE FROM                   WHY
+22    tcp    0.0.0.0          sshd (812)                  this host, Docker, tailnet, LAN  all IPv4 addresses (bound device not checked)
+22    tcp6   ::               sshd (812)                  this host, Docker, tailnet, LAN  all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)
+53    tcp    127.0.0.53       systemd-resolve (640)       this host                        loopback address
+631   tcp6   ::1              cupsd (1033)                this host                        loopback address
+3000  tcp    127.0.0.1        web (container shop-web-1)  this host                        loopback address
+3306  tcp    127.0.0.1        mysqld (1201)               this host                        loopback address
+8080  tcp    192.168.1.20     python3 (4410)              LAN                              only on enp1s0
+9000  tcp    0.0.0.0          container metrics           this host, Docker, tailnet, LAN  all IPv4 addresses (bound device not checked)
+9100  tcp    100.101.102.103  node_exporter (902)         tailnet                          only on tailscale0
 ```
 
 ## Columns
@@ -23,7 +26,7 @@ PORT  PROTO  ADDRESS          SERVICE                REACHABLE FROM             
 | PORT    | The TCP port the service listens on. |
 | PROTO   | `tcp` for IPv4, `tcp6` for IPv6. |
 | ADDRESS | The local address the socket is bound to (see below). |
-| SERVICE | The program that has the socket open, as `name (pid)` (see below). |
+| SERVICE | The program that has the socket open, as `name (pid)`, or the Docker container the port is published for (see below). |
 | REACHABLE FROM | The networks whose clients can connect (see below). |
 | WHY | The fact behind REACHABLE FROM, including what was not checked. |
 
@@ -80,6 +83,7 @@ connections on:
 | `all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)` | Bound to `::`: every network with any address on this host. |
 | `no interface has this address` | Bound to an address that no interface has (for example, an interface that went away). REACHABLE FROM is `unknown`. |
 | `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or `::` on a host without any). REACHABLE FROM is `unknown`. |
+| `...; no host socket, Docker forwards this port` | Docker publishes the port but no socket listens on the host (see [Docker](#docker)). The first part is the usual reason for the published address. |
 | `could not list interfaces` | `ip -j addr` failed; a warning on stderr says why. REACHABLE FROM is `unknown`, except for loopback addresses. |
 
 **Internet means "not filtered by this host's address".** A public address
@@ -101,8 +105,7 @@ case, so REACHABLE FROM may list more networks than can actually connect,
 never fewer.
 
 **Not yet a firewall verdict.** REACHABLE FROM says who could connect if no
-firewall interferes. UFW and Docker's published ports are checked in later
-versions.
+firewall interferes. UFW is checked in a later version.
 
 ## Reading the service
 
@@ -120,8 +123,44 @@ yet. The same applies to per-user `systemd --user` instances.
 | SERVICE | Meaning |
 |---------|---------|
 | `sshd (812)` | Process 812, named `sshd`, has the socket open. |
+| `web (container shop-web-1)` | Docker publishes the port for container `shop-web-1`, service `web` of a Compose project. |
+| `container metrics` | Docker publishes the port for container `metrics`, which is not part of a Compose project. |
 | `unknown (run with sudo for details)` | Some processes belong to other users and could not be inspected; run `sudo reachmap scan` to see them. |
 | `unknown` | No visible process holds the socket. This happens for sockets the kernel opens itself (for example NFS), for a process that exited during the scan, and for processes hidden by `hidepid` (see below). |
+
+Names come from other programs and may hold anything, so characters that could
+change how the terminal shows the output, such as escape sequences and line
+breaks, are printed as visible text, e.g. `\u{1b}`.
+
+## Docker
+
+reachmap asks Docker for the running containers with `docker ps -q` and
+`docker inspect`, and matches their published TCP ports to the sockets on this
+host by address and port. The socket's row then shows the container instead of
+the process holding it, which is `docker-proxy` or, with `userland-proxy: false`,
+`dockerd`. This needs no root as long as you can use `docker`, and only reads.
+
+A published port that no socket listens on still gets a row, marked in WHY,
+with the verdict for the published address. A port that is only exposed
+(`EXPOSE`, or `expose:` in Compose) is not reachable from the host's networks
+and gets no row. Containers on the host network (`network_mode: host`) publish
+nothing: their sockets show up as ordinary processes.
+
+When Docker cannot be asked, the scan continues and prints one `note:` on
+stderr. Sockets of published ports then show `docker-proxy`, `dockerd` or
+`unknown`, and ports without a socket are missing:
+
+| Note | Meaning |
+|------|---------|
+| `Docker was not found` | There is no `docker` command. |
+| `could not ask Docker for its containers` | `docker` failed or did not finish within 5 seconds; the note ends with the reason, for example that the daemon is not running. If you lack access to Docker's socket, a hint suggests `sudo`. |
+| `could not understand Docker's output` | Likely a reachmap bug or a new Docker format; a hint says where to report it. |
+
+reachmap runs the first of `/usr/bin/docker`, `/usr/local/bin/docker`,
+`/bin/docker` and `/snap/bin/docker` that exists, and looks `docker` up through
+`PATH` only if none does. `docker` follows `DOCKER_HOST` and the current Docker
+context. If they point at another machine, its containers are listed as if they
+ran here, as ports without a host socket.
 
 ## Requirements and limits
 
@@ -138,16 +177,15 @@ yet. The same applies to per-user `systemd --user` instances.
   so their sockets show `unknown` without the sudo hint. Running with `sudo`
   still finds them.
 - **One network namespace.** `scan` sees the sockets of the namespace it runs
-  in. Docker containers on their own network have separate sockets; ports
-  that Docker publishes show up through `docker-proxy` on the host. Container
-  details arrive in a later version.
+  in. Docker containers on their own network have separate sockets, so only
+  their published ports appear (see [Docker](#docker)).
 - **Interfaces need `ip`.** The interface list comes from `ip -j addr`
   (package `iproute2`, installed on nearly every Linux distribution). reachmap
   runs the first of `/usr/sbin/ip`, `/usr/bin/ip`, `/sbin/ip` and `/bin/ip`
   that exists, and looks `ip` up through `PATH` only if none does. Without
   it, the scan still lists every socket, prints a warning, and shows
   REACHABLE FROM as `unknown` for all but loopback addresses.
-- **TCP only.** UDP is planned for v0.2.
+- **TCP only.** UDP is planned for v0.2, for Docker's published ports too.
 - When IPv6 is disabled in the kernel, `/proc/net/tcp6` does not exist and
   only IPv4 sockets are listed.
 

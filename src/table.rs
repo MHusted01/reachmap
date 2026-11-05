@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use crate::scan::ScannedSocket;
+use crate::scan::{Listener, ScannedPort};
 
 /// Printed instead of an empty table.
 pub const NO_SOCKETS: &str = "No listening TCP sockets found.";
@@ -23,10 +23,13 @@ const HEADERS: [&str; COLUMNS] = [
 /// Space between columns.
 const GAP: &str = "  ";
 
-/// Displays scanned sockets as an aligned table, one row per socket in the
-/// order given, every line ending in a newline. Use it with `{}` or `to_string()`.
+/// Added to WHY for a published port that no socket listens on.
+const NO_HOST_SOCKET: &str = "no host socket, Docker forwards this port";
+
+/// Displays scanned ports as an aligned table, one row per port in the order
+/// given, every line ending in a newline. Use it with `{}` or `to_string()`.
 #[derive(Debug, Clone, Copy)]
-pub struct Table<'a>(pub &'a [ScannedSocket]);
+pub struct Table<'a>(pub &'a [ScannedPort]);
 
 impl fmt::Display for Table<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -48,16 +51,20 @@ impl fmt::Display for Table<'_> {
     }
 }
 
-/// The text of each column for one socket.
-fn cells(scanned: &ScannedSocket) -> [String; COLUMNS] {
-    let socket = &scanned.socket;
+/// The text of each column for one port.
+fn cells(scanned: &ScannedPort) -> [String; COLUMNS] {
+    let endpoint = &scanned.endpoint;
+    let reason = &scanned.verdict.reason;
     [
-        socket.port.to_string(),
-        socket.protocol_name(),
-        socket.address.to_string(),
+        endpoint.port.to_string(),
+        endpoint.protocol_name(),
+        endpoint.address.to_string(),
         scanned.service.to_string(),
         scanned.verdict.reach.to_string(),
-        scanned.verdict.reason.to_string(),
+        match scanned.listener {
+            Listener::HostSocket => reason.to_string(),
+            Listener::DockerForward => format!("{reason}; {NO_HOST_SOCKET}"),
+        },
     ]
 }
 
@@ -80,8 +87,8 @@ mod tests {
     use super::*;
     use crate::network::HostAddress;
     use crate::reach::classify;
-    use crate::service::{Process, Service, UnknownReason};
-    use crate::socket::{ListeningSocket, Protocol};
+    use crate::service::{Container, Process, Service, UnknownReason};
+    use crate::socket::{Endpoint, Protocol};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     const LOCAL_V4: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
@@ -101,14 +108,14 @@ mod tests {
         .to_vec()
     }
 
-    fn row(address: IpAddr, port: u16, service: Service) -> ScannedSocket {
-        ScannedSocket {
-            socket: ListeningSocket {
+    fn row(address: IpAddr, port: u16, service: Service) -> ScannedPort {
+        ScannedPort {
+            endpoint: Endpoint {
+                port,
                 protocol: Protocol::Tcp,
                 address,
-                port,
-                inode: 1,
             },
+            listener: Listener::HostSocket,
             service,
             verdict: classify(address, Some(&host())),
         }
@@ -166,6 +173,24 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
             "PORT   PROTO  ADDRESS    SERVICE         REACHABLE FROM  WHY\n\
              22     tcp    127.0.0.1  sshd (1)        this host       loopback address\n\
              41641  tcp    127.0.0.1  tailscaled (2)  this host       loopback address\n"
+        );
+    }
+
+    #[test]
+    fn a_published_port_without_a_socket_is_marked_in_why() {
+        let container = Service::Container(Container {
+            name: "shop-web-1".to_string(),
+            compose_service: Some("web".to_string()),
+        });
+        let rows = [ScannedPort {
+            listener: Listener::DockerForward,
+            ..row(LOCAL_V4, 8080, container)
+        }];
+        assert_eq!(
+            Table(&rows).to_string(),
+            "PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM  WHY\n\
+             8080  tcp    127.0.0.1  web (container shop-web-1)  this host       \
+             loopback address; no host socket, Docker forwards this port\n"
         );
     }
 
