@@ -238,9 +238,9 @@ when you share the port on purpose. Serve alone is no warning.
 - **`tailscale` fails.** For example when `tailscaled` is stopped. The scan
   continues with a note on stderr and a warning that it is unknown what is
   shared, so it exits with 1. Rows keep the reach of their socket.
-- **Some targets have no row.** A file, a text, a redirect, a Unix socket, a
-  host name other than `localhost` and a URL without a port have no address to
-  match, and an address on another machine has no socket here. Funnel ports are
+- **Some targets have no row.** A file, a text, a redirect, a Unix socket and
+  a host name other than `localhost` have no address to match, and an address
+  on another machine has no socket here. Funnel ports are
   still listed in the warning; a port shared with the tailnet alone does not
   show.
 - **The shared port itself may have no row.** Tailscale can accept the

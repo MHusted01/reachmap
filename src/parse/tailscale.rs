@@ -16,6 +16,12 @@ use crate::tailscale::{SharedPort, Sharing};
 /// either loopback address, so a target with this name counts as both.
 const LOCALHOST: &str = "localhost";
 
+/// The port of an `http` URL that names none.
+const HTTP_PORT: u16 = 80;
+
+/// The port of an `https` URL that names none.
+const HTTPS_PORT: u16 = 443;
+
 /// Why Tailscale's output could not be understood.
 #[derive(Debug, Error)]
 pub enum TailscaleParseError {
@@ -128,10 +134,31 @@ fn port_of(host_port: &str) -> Result<u16, TailscaleParseError> {
 /// The addresses behind a URL such as `http://127.0.0.1:3000/app`. A target
 /// without a scheme and host, such as `unix:/run/app.sock`, has none.
 fn proxy_addresses(url: &str) -> Vec<SocketAddr> {
-    url.split_once("://")
-        .and_then(|(_, rest)| rest.split(['/', '?', '#']).next())
-        .map(socket_addresses)
-        .unwrap_or_default()
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return Vec::new();
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    match default_port(scheme) {
+        Some(port) if !has_port(host_port) => socket_addresses(&format!("{host_port}:{port}")),
+        _ => socket_addresses(host_port),
+    }
+}
+
+/// The port a URL with this scheme connects to when it names none.
+fn default_port(scheme: &str) -> Option<u16> {
+    match scheme {
+        "http" => Some(HTTP_PORT),
+        "https" | "https+insecure" => Some(HTTPS_PORT),
+        _ => None,
+    }
+}
+
+/// Whether `host_port` ends in a port. The colons of `[::1]` do not count.
+fn has_port(host_port: &str) -> bool {
+    host_port
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| port.parse::<u16>().is_ok())
 }
 
 /// Where a connection to `address` ends up: on Linux, connecting to `0.0.0.0`

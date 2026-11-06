@@ -144,10 +144,38 @@ fn funnel_on_one_name_counts_for_the_whole_port() {
 }
 
 #[test]
-fn proxy_targets_without_an_address_and_port_have_no_target() {
+fn a_proxy_target_without_a_port_uses_the_port_of_its_scheme() {
+    assert_eq!(
+        proxy_targets("http://192.0.2.10"),
+        targets(&["192.0.2.10:80"])
+    );
+    assert_eq!(
+        proxy_targets("https://127.0.0.1/app"),
+        targets(&["127.0.0.1:443"])
+    );
+    assert_eq!(
+        proxy_targets("https+insecure://[::1]"),
+        targets(&["[::1]:443"])
+    );
+    assert_eq!(
+        proxy_targets("http://localhost"),
+        targets(&["127.0.0.1:80", "[::1]:80"])
+    );
+}
+
+#[test]
+fn a_user_in_a_proxy_target_is_left_out() {
+    assert_eq!(
+        proxy_targets("http://user:secret@127.0.0.1:3000"),
+        targets(&["127.0.0.1:3000"])
+    );
+}
+
+#[test]
+fn proxy_targets_that_name_no_address_have_no_target() {
     for proxy in [
         "https://db.example.com:5432",
-        "http://192.0.2.10",
+        "https://db.example.com",
         "unix:/run/app.sock",
     ] {
         assert_eq!(proxy_targets(proxy), BTreeSet::new(), "{proxy}");
