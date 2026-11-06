@@ -202,6 +202,10 @@ fn print_collector_errors(report: &ScanReport) {
         eprintln!("note: {}", render_chain(error));
         print_hint(error.hint());
     }
+    if let Some(error) = &report.tailscale_error {
+        eprintln!("note: {}", render_chain(error));
+        print_hint(error.hint());
+    }
 }
 
 /// Prints the finished scan in the chosen format and returns `status`.

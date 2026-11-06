@@ -9,4 +9,5 @@ pub mod proc_net;
 pub mod proc_pid;
 pub mod proc_self;
 pub mod sock_diag;
+pub mod tailscale;
 pub mod ufw;

@@ -175,6 +175,7 @@ impl From<&ScanReport> for Snapshot {
                 report.socket_options_error.is_some(),
                 Collector::SocketOptions,
             ),
+            (report.tailscale_error.is_some(), Collector::Tailscale),
         ];
         Snapshot {
             rows: grouped(

@@ -279,6 +279,7 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
             interfaces_error: None,
             docker_error: None,
             socket_options_error: None,
+            tailscale_error: None,
             warnings,
         }
     }

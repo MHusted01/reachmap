@@ -43,6 +43,8 @@ pub enum Collector {
     Docker,
     /// The kernel's socket options.
     SocketOptions,
+    /// What Tailscale shares.
+    Tailscale,
 }
 
 impl fmt::Display for Collector {
@@ -51,6 +53,7 @@ impl fmt::Display for Collector {
             Collector::Interfaces => "interfaces",
             Collector::Docker => "Docker",
             Collector::SocketOptions => "socket options",
+            Collector::Tailscale => "Tailscale",
         })
     }
 }
@@ -79,6 +82,10 @@ pub fn render(report: &ScanReport) -> Result<String, serde_json::Error> {
         .socket_options_error
         .as_ref()
         .map(|error| CollectorError::new(Collector::SocketOptions, error, error.hint()));
+    let tailscale = report
+        .tailscale_error
+        .as_ref()
+        .map(|error| CollectorError::new(Collector::Tailscale, error, error.hint()));
     let document = JsonReport {
         schema_version: SCHEMA_VERSION,
         ports: &report.ports,
@@ -87,6 +94,7 @@ pub fn render(report: &ScanReport) -> Result<String, serde_json::Error> {
             .into_iter()
             .chain(docker)
             .chain(socket_options)
+            .chain(tailscale)
             .collect(),
     };
     serde_json::to_string_pretty(&document).map(|text| text + "\n")

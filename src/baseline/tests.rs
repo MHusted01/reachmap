@@ -8,7 +8,9 @@ use super::*;
 use crate::docker::DockerError;
 use crate::json::render;
 use crate::network::Network;
+use crate::parse::tailscale::TailscaleParseError;
 use crate::reach::{Coverage, Reason, Verdict};
+use crate::tailscale::TailscaleError;
 
 const ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
 
@@ -271,6 +273,9 @@ fn a_saved_scan_reads_back_as_the_scan_it_came_from() {
         interfaces_error: None,
         docker_error: Some(DockerError::NotInstalled),
         socket_options_error: None,
+        tailscale_error: Some(TailscaleError::Parse(TailscaleParseError::HostPort(
+            "host".to_string(),
+        ))),
         warnings: Vec::new(),
     };
 

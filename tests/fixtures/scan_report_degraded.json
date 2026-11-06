@@ -19,7 +19,11 @@
       "warning": null
     }
   ],
-  "warnings": [],
+  "warnings": [
+    {
+      "kind": "tailscale_unknown"
+    }
+  ],
   "collector_errors": [
     {
       "collector": "interfaces",
@@ -35,6 +39,11 @@
       "collector": "socket_options",
       "message": "could not read socket options: could not open the kernel's socket diagnostics: not supported",
       "hint": null
+    },
+    {
+      "collector": "tailscale",
+      "message": "could not ask Tailscale what it shares, so that reach is not shown: `tailscale serve status --json` failed with exit status: 0: Failed to connect to local Tailscale daemon",
+      "hint": "tailscaled is not running; start it to see what Tailscale shares"
     }
   ]
 }

@@ -1,0 +1,70 @@
+{
+  "TCP": {
+    "443": {
+      "HTTPS": true
+    },
+    "5432": {
+      "TCPForward": "127.0.0.1:5432"
+    },
+    "6379": {
+      "TCPForward": "localhost:6379",
+      "TerminateTLS": "host.example.ts.net"
+    },
+    "8443": {
+      "HTTPS": true
+    }
+  },
+  "Web": {
+    "host.example.ts.net:443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:3000"
+        },
+        "/docs": {
+          "Path": "/srv/docs"
+        }
+      }
+    },
+    "host.example.ts.net:8443": {
+      "Handlers": {
+        "/": {
+          "Proxy": "https+insecure://localhost:9443/app"
+        }
+      }
+    }
+  },
+  "Services": {
+    "svc:metrics": {
+      "TCP": {
+        "9100": {
+          "TCPForward": "127.0.0.1:9100"
+        }
+      }
+    }
+  },
+  "AllowFunnel": {
+    "host.example.ts.net:443": true,
+    "host.example.ts.net:8443": false
+  },
+  "Foreground": {
+    "a1b2c3": {
+      "TCP": {
+        "10000": {
+          "HTTPS": true
+        }
+      },
+      "Web": {
+        "host.example.ts.net:10000": {
+          "Handlers": {
+            "/": {
+              "Proxy": "http://[::1]:4000"
+            }
+          }
+        }
+      },
+      "AllowFunnel": {
+        "host.example.ts.net:10000": true
+      }
+    }
+  }
+}

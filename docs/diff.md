@@ -59,10 +59,21 @@ shows as one `new` and one `removed` row, next to each other.
 Sockets can share a port, protocol and address, for example with `SO_REUSEPORT`.
 Identical rows count once, so eight workers instead of four change nothing.
 
+## Tailscale
+
+`diff` compares rows, so a port that Tailscale starts to share shows as a change
+when it adds a network to a row. Two cases do not show:
+
+- A row that already lists those networks. The same reach for another reason is
+  no new exposure, so WHY is not compared.
+- A shared port with no row, such as a Funnel port that serves a file. `scan`
+  still lists every Funnel port in its warning, so run `scan` too if that
+  matters to you.
+
 ## Missing facts
 
-A scan finishes without Docker, the interface list or the socket options. That
-must not read as "nothing changed", so:
+A scan finishes without Docker, the interface list, the socket options or
+Tailscale. That must not read as "nothing changed", so:
 
 - A Docker-forwarded port without a host socket is only known from Docker. When
   Docker could not be asked, such a row is `unverified`, not `removed`.
@@ -163,7 +174,7 @@ appear without a new version. Treat an unknown `kind` as a difference.
 |-------|------|---------|
 | `schema_version` | number | The version of this document, counted apart from the scan's. |
 | `differences` | array | One object per difference, by port, then protocol, then address. |
-| `baseline_collector_errors` | array of strings | The facts the baseline lacks: `interfaces`, `docker`, `socket_options`, or `unknown` for a value this version cannot read. |
+| `baseline_collector_errors` | array of strings | The facts the baseline lacks: `interfaces`, `docker`, `socket_options`, `tailscale`, or `unknown` for a value this version cannot read. |
 | `current_collector_errors` | array of strings | The same for the current scan. |
 | `privileges_differ` | boolean | Only one of the scans could inspect every process, so owners can differ for that reason alone. |
 

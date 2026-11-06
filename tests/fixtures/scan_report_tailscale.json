@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 22,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 812,
+        "name": "sshd"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host",
+          "docker",
+          "tailnet",
+          "lan",
+          "internet"
+        ]
+      },
+      "reason": {
+        "kind": "tailscale_shared",
+        "served_on": [],
+        "funnel_on": [
+          443
+        ],
+        "direct": {
+          "kind": "all_addresses",
+          "covers": "ipv4",
+          "checked": false
+        }
+      },
+      "warning": null
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "tailscale_funnel",
+      "ports": [
+        443
+      ]
+    }
+  ],
+  "collector_errors": []
+}

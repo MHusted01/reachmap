@@ -284,3 +284,22 @@ fn no_text_ever_claims_protection() {
         }
     }
 }
+
+#[test]
+fn funnel_ports_are_named() {
+    let warning = ScanWarning::TailscaleFunnel {
+        ports: BTreeSet::from([443, 8443]),
+    };
+    assert_eq!(
+        warning.to_string(),
+        "Tailscale Funnel shares these ports with the internet: 443, 8443"
+    );
+}
+
+#[test]
+fn a_tailscale_that_could_not_be_asked_is_unknown_not_fine() {
+    assert_eq!(
+        ScanWarning::TailscaleUnknown.to_string(),
+        "Tailscale could not be asked, so it is unknown which ports it shares"
+    );
+}
