@@ -161,6 +161,7 @@ mod tests {
         .map(|(interface, ip)| HostAddress {
             interface: interface.to_string(),
             ip: ip.parse().unwrap(),
+            broadcast: None,
         })
         .to_vec()
     }

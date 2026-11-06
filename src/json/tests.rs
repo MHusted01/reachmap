@@ -113,6 +113,12 @@ fn every_reason_has_a_kind() {
             },
             json!({"kind": "all_addresses", "covers": "ipv6", "checked": true}),
         ),
+        (
+            Reason::Broadcast {
+                interfaces: BTreeSet::from(["eth0".to_string()]),
+            },
+            json!({"kind": "broadcast", "interfaces": ["eth0"]}),
+        ),
         (Reason::NotOnHost, json!({"kind": "not_on_host"})),
         (
             Reason::NoAddresses {
