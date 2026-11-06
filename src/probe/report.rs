@@ -104,7 +104,7 @@ fn comparison_notes(comparison: &Comparison) -> impl Iterator<Item = String> {
     let ports = |ports: &BTreeSet<u16>| joined(ports.iter().map(u16::to_string));
     let unknown = (!comparison.unknown_ports.is_empty()).then(|| {
         format!(
-            "the scan has no verdict for these ports, so only the probe result counts: {}",
+            "the scan has no verdict for these ports from at least one network, so only the probe result counts there: {}",
             ports(&comparison.unknown_ports)
         )
     });

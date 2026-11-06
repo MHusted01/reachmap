@@ -42,7 +42,8 @@ pub struct Comparison {
     pub guessed: bool,
     /// The differences, most serious first, then by port.
     pub differences: Vec<Difference>,
-    /// Probed ports the scan has no verdict for: only the probe result counts.
+    /// Probed ports the scan has no verdict for from at least one network of
+    /// `from`: there, only the probe result counts.
     pub unknown_ports: BTreeSet<u16>,
     /// Ports of rows that are not TCP, left out of the comparison.
     pub skipped_ports: BTreeSet<u16>,

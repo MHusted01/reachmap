@@ -88,7 +88,7 @@ PORT  FROM  DIFFERENCE
 8080  LAN   did not connect, but the scan says this network can reach it; a firewall can cause that
 
 note: no answer means the connection timed out; a firewall and a host that is down look the same from here
-note: the scan has no verdict for these ports, so only the probe result counts: 3000
+note: the scan has no verdict for these ports from at least one network, so only the probe result counts there: 3000
 note: rows that are not TCP are left out, because a connect probe cannot confirm them: 53, 5353
 ```
 
@@ -232,7 +232,7 @@ as it is. Without `--scan` the field is left out.
 | `differences[].kind` | string | `unexpected_connection` when it connected although the scan says the network cannot reach the port, `missing_connection` when it did not connect although the scan says the network can. |
 | `differences[].port` | number | The TCP port. |
 | `differences[].from` | string | The network this difference is about. |
-| `unknown_ports` | array of numbers | Probed ports the scan has no verdict for. |
+| `unknown_ports` | array of numbers | Probed ports the scan has no verdict for from at least one network in `from`. Such a port can have a difference from another network. |
 | `skipped_ports` | array of numbers | Ports of rows that are not TCP, left out of the comparison. A port can be in this list and be probed, if it has a TCP row as well. |
 
 Networks use the names in [the scan's JSON](json.md). Treat an unknown

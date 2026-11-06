@@ -149,7 +149,7 @@ PORT  FROM  DIFFERENCE
 8080  LAN   did not connect, but the scan says this network can reach it; a firewall can cause that
 
 note: no answer means the connection timed out; a firewall and a host that is down look the same from here
-note: the scan has no verdict for these ports, so only the probe result counts: 3000
+note: the scan has no verdict for these ports from at least one network, so only the probe result counts there: 3000
 note: rows that are not TCP are left out, because a connect probe cannot confirm them: 53, 5353
 ";
     assert_eq!(Report(&compared(differences())).to_string(), expected);
