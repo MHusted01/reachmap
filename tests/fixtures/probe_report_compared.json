@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "host": "10.0.0.10",
+  "results": [
+    {
+      "port": 22,
+      "address": "10.0.0.10",
+      "result": {
+        "kind": "open"
+      }
+    },
+    {
+      "port": 3000,
+      "address": "10.0.0.10",
+      "result": {
+        "kind": "closed"
+      }
+    },
+    {
+      "port": 5432,
+      "address": "10.0.0.10",
+      "result": {
+        "kind": "open"
+      }
+    },
+    {
+      "port": 8080,
+      "address": "10.0.0.10",
+      "result": {
+        "kind": "no_answer"
+      }
+    }
+  ],
+  "comparison": {
+    "from": [
+      "lan"
+    ],
+    "guessed": true,
+    "differences": [
+      {
+        "kind": "unexpected_connection",
+        "port": 5432,
+        "from": "lan"
+      },
+      {
+        "kind": "missing_connection",
+        "port": 8080,
+        "from": "lan"
+      }
+    ],
+    "unknown_ports": [
+      3000
+    ],
+    "skipped_ports": [
+      53,
+      5353
+    ]
+  }
+}

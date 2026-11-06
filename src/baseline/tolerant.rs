@@ -17,7 +17,7 @@ pub enum Tolerant<T> {
 
 impl<T> Tolerant<T> {
     /// The value, if this version understands it.
-    pub(super) fn known(self) -> Option<T> {
+    pub(crate) fn known(self) -> Option<T> {
         match self {
             Tolerant::Known(value) => Some(value),
             Tolerant::Unknown => None,

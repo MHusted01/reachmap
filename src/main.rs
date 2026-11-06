@@ -8,20 +8,26 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use reachmap::baseline::{self, Snapshot};
 use reachmap::diff::report::{Report as DiffTable, render_json as render_diff_json};
 use reachmap::diff::{Diff, DiffError, compare};
 use reachmap::errors::render_chain;
+use reachmap::network::Network;
 use reachmap::parse::probe_args::{PortList, parse_timeout};
 use reachmap::probe::report::{Report as ProbeTable, render_json};
-use reachmap::probe::{DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT, ProbeOptions};
+use reachmap::probe::{
+    DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT, ProbeError, ProbeOptions, ProbeReport,
+};
 use reachmap::scan::ScanReport;
 use reachmap::table::Report;
 
 /// `reachmap diff`'s status when nothing could be compared, as for `diff(1)`.
 /// Status 1 means differences, so a failure must not look like one.
 const COULD_NOT_COMPARE: u8 = 2;
+
+/// The status of arguments that make no sense, the same as clap's.
+const BAD_ARGUMENTS: u8 = 2;
 
 /// Shows which services on a host can be reached, from where, and why.
 #[derive(Parser)]
@@ -43,9 +49,11 @@ enum Command {
     Probe {
         /// The host to connect to: a name or an IP address
         host: String,
-        /// The ports to try, for example 22,80,8000-8100
-        #[arg(long)]
-        ports: PortList,
+        #[command(flatten)]
+        target: ProbeTarget,
+        /// With --scan: the network this machine is on, if the host's address suggests the wrong one
+        #[arg(long, value_name = "NETWORK", conflicts_with = "ports")]
+        from: Option<Network>,
         /// Seconds to wait for each connection
         #[arg(long, default_value = DEFAULT_TIMEOUT, value_parser = parse_timeout)]
         timeout: Duration,
@@ -68,13 +76,26 @@ enum Command {
     },
 }
 
+/// What `reachmap probe` connects to: clap requires exactly one of the two.
+#[derive(Args)]
+#[group(required = true, multiple = false)]
+struct ProbeTarget {
+    /// The ports to try, for example 22,80,8000-8100
+    #[arg(long)]
+    ports: Option<PortList>,
+    /// A saved `reachmap scan --json` to take the TCP ports from and compare with
+    #[arg(long, value_name = "FILE")]
+    scan: Option<PathBuf>,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Scan { json } => run_scan(json),
         Command::Probe {
             host,
-            ports,
+            target,
+            from,
             timeout,
             concurrency,
             json,
@@ -83,7 +104,19 @@ fn main() -> ExitCode {
                 timeout,
                 concurrency,
             };
-            run_probe(&host, &ports, options, json)
+            match (target.ports, target.scan) {
+                (Some(ports), _) => {
+                    finish_probe(reachmap::probe::probe(&host, &ports, options), json)
+                }
+                (None, Some(scan)) => finish_probe(
+                    reachmap::probe::probe_against_scan(&host, &scan, from, options),
+                    json,
+                ),
+                (None, None) => {
+                    eprintln!("error: name the ports with --ports or a file with --scan");
+                    BAD_ARGUMENTS.into()
+                }
+            }
         }
         Command::Diff {
             baseline,
@@ -142,17 +175,17 @@ fn print_diff(diff: &Diff, json: bool) -> ExitCode {
     }
 }
 
-/// Probes `host`. A closed port is a result, not a failure, so the status only
-/// reports ports that could not be tested.
-fn run_probe(host: &str, ports: &PortList, options: ProbeOptions, json: bool) -> ExitCode {
-    let report = match reachmap::probe::probe(host, ports, options) {
+/// Prints a probe. A closed port is a result, not a failure, so the status only
+/// reports ports that could not be tested and differences from a saved scan.
+fn finish_probe(result: Result<ProbeReport, ProbeError>, json: bool) -> ExitCode {
+    let report = match result {
         Ok(report) => report,
         Err(error) => {
             eprintln!("error: {}", render_chain(&error));
             return ExitCode::FAILURE;
         }
     };
-    let status = if report.all_tested() {
+    let status = if report.is_clean() {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE

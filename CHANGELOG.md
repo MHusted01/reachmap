@@ -8,6 +8,12 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap probe <host> --scan scan.json [--from <network>]` takes the TCP ports
+  from a saved `reachmap scan --json`, probes them and reports where the two
+  disagree: a connection the scan rules out, or none where the scan expects one.
+  Either sets exit status 1, and `--json` gains a `comparison` object. The network
+  is worked out from the address the probe connects to, and `--from` overrides it
+  ([#41](https://github.com/MHusted01/reachmap/issues/41)).
 - `reachmap scan` recognises a socket bound to a subnet's broadcast address, as
   Samba's `nmbd` does. The row used to say that no interface has the address and
   show `unknown`; WHY now names the interface, REACHABLE FROM shows its network,

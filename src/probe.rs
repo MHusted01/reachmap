@@ -2,16 +2,20 @@
 //! from this machine, and reports what happened to each.
 //!
 //! This is the only part of reachmap that sends traffic. A probe connects and
-//! closes straight away, without sending data. [`Outcome`] and the formatting
-//! in [`report`] are pure; `connect` holds the code that touches the network.
+//! closes straight away, without sending data. [`Outcome`], the formatting in
+//! [`report`] and the comparison with a saved scan in [`claims`] and [`compare`]
+//! are pure; `connect` holds the code that touches the network.
 
 mod address;
+pub mod claims;
+pub mod compare;
 mod connect;
 pub mod report;
 
 use std::fmt;
 use std::io::{self, ErrorKind};
 use std::num::NonZeroUsize;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -22,7 +26,10 @@ use tokio::task::JoinError;
 
 pub use address::ProbedAddress;
 
+use crate::baseline::LoadError;
+use crate::network::Network;
 use crate::parse::probe_args::PortList;
+use crate::probe::compare::Comparison;
 use crate::sanitize::sanitize;
 
 /// The default of `--timeout`, in seconds.
@@ -103,6 +110,8 @@ pub struct ProbeReport {
     pub host: String,
     /// One entry per address and port, by port, then address.
     pub results: Vec<ProbedPort>,
+    /// How the results compare with a saved scan, if one was given.
+    pub comparison: Option<Comparison>,
 }
 
 impl ProbeReport {
@@ -113,6 +122,16 @@ impl ProbeReport {
             .results
             .iter()
             .any(|probed| matches!(probed.result, Outcome::Failed { .. }))
+    }
+
+    /// Whether nothing needs attention: every port was tested, and the results
+    /// agree with the saved scan, if there is one.
+    pub fn is_clean(&self) -> bool {
+        self.all_tested()
+            && self
+                .comparison
+                .as_ref()
+                .is_none_or(|comparison| comparison.differences.is_empty())
     }
 }
 
@@ -156,6 +175,15 @@ pub enum ProbeError {
     /// A connection task stopped without a result.
     #[error("a connection attempt stopped unexpectedly")]
     Task(#[source] JoinError),
+    /// The saved scan could not be used.
+    #[error(transparent)]
+    Scan(#[from] LoadError),
+    /// The saved scan lists no port a connection could test.
+    #[error("{} has no TCP ports to probe", path.display())]
+    NoTcpPorts {
+        /// The file.
+        path: PathBuf,
+    },
 }
 
 /// Connects to `ports` on every address of `host`.
@@ -179,6 +207,28 @@ pub fn probe(
     report
 }
 
+/// Connects to the TCP ports of the saved scan at `scan` and compares the
+/// results with it. `from` is the network this machine is on; without it, the
+/// addresses of `host` suggest one. The file is read first, so a bad one sends
+/// no traffic.
+pub fn probe_against_scan(
+    host: &str,
+    scan: &Path,
+    from: Option<Network>,
+    options: ProbeOptions,
+) -> Result<ProbeReport, ProbeError> {
+    let claims = claims::load(scan)?;
+    let ports = claims.ports().ok_or_else(|| ProbeError::NoTcpPorts {
+        path: scan.to_path_buf(),
+    })?;
+    let report = probe(host, &ports, options)?;
+    let comparison = compare::compare(&claims, &report.results, from);
+    Ok(ProbeReport {
+        comparison: Some(comparison),
+        ..report
+    })
+}
+
 /// Resolves `host` and connects to every target.
 async fn run(
     host: &str,
@@ -195,12 +245,15 @@ async fn run(
     Ok(ProbeReport {
         host: sanitize(host),
         results,
+        comparison: None,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::probe::compare::{Difference, Disagreement};
+    use std::collections::BTreeSet;
     use std::net::{IpAddr, Ipv4Addr, TcpListener};
 
     fn outcome_of(kind: ErrorKind) -> Outcome {
@@ -283,6 +336,7 @@ mod tests {
                 address: IpAddr::from(Ipv4Addr::LOCALHOST).into(),
                 result,
             }],
+            comparison: None,
         }
     }
 
@@ -304,6 +358,70 @@ mod tests {
             message: "too many open files".to_string(),
         };
         assert!(!report_of(failed).all_tested());
+    }
+
+    #[test]
+    fn a_probe_without_a_comparison_is_clean_when_every_port_was_tested() {
+        assert!(report_of(Outcome::Closed).is_clean());
+        let failed = Outcome::Failed {
+            message: "too many open files".to_string(),
+        };
+        assert!(!report_of(failed).is_clean());
+    }
+
+    fn comparison_of(differences: Vec<Difference>) -> Comparison {
+        Comparison {
+            from: BTreeSet::from([Network::Lan]),
+            guessed: true,
+            differences,
+            unknown_ports: BTreeSet::new(),
+            skipped_ports: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_comparison_without_differences_is_clean() {
+        let report = ProbeReport {
+            comparison: Some(comparison_of(vec![])),
+            ..report_of(Outcome::Open)
+        };
+        assert!(report.is_clean());
+    }
+
+    #[test]
+    fn a_difference_is_not_clean() {
+        for kind in [
+            Disagreement::UnexpectedConnection,
+            Disagreement::MissingConnection,
+        ] {
+            let difference = Difference {
+                kind,
+                port: 80,
+                from: Network::Lan,
+            };
+            let report = ProbeReport {
+                comparison: Some(comparison_of(vec![difference])),
+                ..report_of(Outcome::Open)
+            };
+            assert!(!report.is_clean(), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_scan_without_tcp_ports_is_an_error_naming_the_file() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/probe_scan_udp.json");
+        let error = probe_against_scan("127.0.0.1", &path, None, options()).unwrap_err();
+        assert!(matches!(error, ProbeError::NoTcpPorts { .. }), "{error}");
+        assert!(error.to_string().contains("probe_scan_udp.json"), "{error}");
+    }
+
+    #[test]
+    fn probes_the_ports_of_a_scan_and_compares() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/diff_baseline.json");
+        let report = probe_against_scan("127.0.0.1", &path, None, options()).unwrap();
+        let comparison = report.comparison.unwrap();
+        assert_eq!(comparison.from, BTreeSet::from([Network::ThisHost]));
+        assert!(comparison.guessed);
     }
 
     #[test]

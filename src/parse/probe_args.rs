@@ -31,6 +31,13 @@ pub enum PortListError {
 }
 
 impl PortList {
+    /// The list of `ports`, without port 0, which cannot be connected to.
+    /// `None` when no port is left, because a list is never empty.
+    pub fn from_ports(ports: impl IntoIterator<Item = u16>) -> Option<Self> {
+        let ports: BTreeSet<u16> = ports.into_iter().filter(|&port| port != 0).collect();
+        (!ports.is_empty()).then_some(PortList(ports))
+    }
+
     /// The ports in ascending order.
     pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
         self.0.iter().copied()
@@ -98,6 +105,24 @@ mod tests {
 
     fn ports(text: &str) -> Result<Vec<u16>, PortListError> {
         text.parse::<PortList>().map(|list| list.iter().collect())
+    }
+
+    #[test]
+    fn a_list_can_be_built_from_ports_sorted_and_without_duplicates() {
+        let list = PortList::from_ports([443, 22, 443]).unwrap();
+        assert_eq!(list.iter().collect::<Vec<_>>(), [22, 443]);
+    }
+
+    #[test]
+    fn port_zero_is_left_out_of_a_built_list() {
+        let list = PortList::from_ports([0, 22]).unwrap();
+        assert_eq!(list.iter().collect::<Vec<_>>(), [22]);
+    }
+
+    #[test]
+    fn a_list_without_ports_cannot_be_built() {
+        assert_eq!(PortList::from_ports([]), None);
+        assert_eq!(PortList::from_ports([0]), None);
     }
 
     fn invalid(text: &str) -> PortListError {

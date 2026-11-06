@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 
 /// One address assigned to one of this host's network interfaces, e.g.
@@ -33,21 +34,49 @@ pub struct HostInterfaces {
 
 /// Where a client must be to reach an address of this host. Ordered from the
 /// narrowest to the widest audience, so a sorted set reads naturally.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, ValueEnum,
+)]
 #[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
 pub enum Network {
     /// Only programs on this host, through the loopback interface.
+    #[value(help = "This host, through the loopback interface")]
     ThisHost,
     /// Containers on this host's Docker networks, recognized by interface
     /// name (see [`HostAddress::network`]).
+    #[value(help = "A container on the host's Docker networks")]
     Docker,
     /// Devices on the Tailscale network (the tailnet).
+    #[value(help = "A device on the Tailscale network")]
     Tailnet,
     /// Devices on the local network: private and link-local addresses.
+    #[value(help = "A device on the local network")]
     Lan,
     /// Anyone on the internet, unless a router or firewall in front of this
     /// host filters the traffic. reachmap cannot see such filters.
+    #[value(help = "Anywhere else on the internet")]
     Internet,
+}
+
+impl Network {
+    /// The network a client is probably on when it connects to `ip`, an
+    /// address of another host. Only the address is known here, so unlike
+    /// [`HostAddress::network`] this has no interface to go by:
+    /// `100.64.0.0/10` counts as the tailnet although ISPs use it too, and a
+    /// VPN can make any of these wrong.
+    pub fn of_target(ip: IpAddr) -> Self {
+        let ip = ip.to_canonical();
+        if ip.is_loopback() {
+            Network::ThisHost
+        } else if is_tailscale_ipv4(ip) || is_tailscale_ipv6(ip) {
+            Network::Tailnet
+        } else if is_private_or_link_local(ip) {
+            Network::Lan
+        } else {
+            Network::Internet
+        }
+    }
 }
 
 impl fmt::Display for Network {
@@ -117,6 +146,23 @@ const VETH_PREFIX: &str = "veth";
 /// Tailscale's alone, so it identifies the tailnet on any interface.
 const TAILSCALE_IPV6_PREFIX: Ipv6Addr = Ipv6Addr::new(0xfd7a, 0x115c, 0xa1e0, 0, 0, 0, 0, 0);
 const TAILSCALE_IPV6_PREFIX_LEN: u32 = 48;
+
+/// The range Tailscale gives out, `100.64.0.0/10`. ISPs use it for carrier-grade
+/// NAT too, so it only suggests the tailnet.
+const TAILSCALE_IPV4_PREFIX: Ipv4Addr = Ipv4Addr::new(100, 64, 0, 0);
+const TAILSCALE_IPV4_PREFIX_LEN: u32 = 10;
+
+/// Whether `ip` is in the range Tailscale gives out.
+fn is_tailscale_ipv4(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            (u32::from(ip) ^ u32::from(TAILSCALE_IPV4_PREFIX))
+                >> (u32::BITS - TAILSCALE_IPV4_PREFIX_LEN)
+                == 0
+        }
+        IpAddr::V6(_) => false,
+    }
+}
 
 /// Whether `ip` is in Tailscale's IPv6 prefix.
 fn is_tailscale_ipv6(ip: IpAddr) -> bool {
@@ -249,6 +295,56 @@ mod tests {
     fn public_addresses_are_the_internet() {
         for ip in ["203.0.113.7", "172.32.0.1", "8.8.8.8", "2001:db8::7"] {
             assert_eq!(on("enp1s0", ip), Network::Internet, "{ip}");
+        }
+    }
+
+    fn target(ip: &str) -> Network {
+        Network::of_target(ip.parse().unwrap())
+    }
+
+    #[test]
+    fn a_loopback_target_is_this_host() {
+        for ip in ["127.0.0.1", "::1", "::ffff:127.0.0.1"] {
+            assert_eq!(target(ip), Network::ThisHost, "{ip}");
+        }
+    }
+
+    #[test]
+    fn a_target_in_tailscale_ranges_is_the_tailnet() {
+        for ip in [
+            "100.64.0.0",
+            "100.101.102.103",
+            "100.127.255.255",
+            "::ffff:100.101.102.103",
+            "fd7a:115c:a1e0::1",
+        ] {
+            assert_eq!(target(ip), Network::Tailnet, "{ip}");
+        }
+    }
+
+    #[test]
+    fn a_target_just_outside_the_tailscale_range_is_not_the_tailnet() {
+        assert_eq!(target("100.63.255.255"), Network::Internet);
+        assert_eq!(target("100.128.0.0"), Network::Internet);
+    }
+
+    #[test]
+    fn a_private_or_link_local_target_is_the_lan() {
+        for ip in [
+            "10.0.0.5",
+            "192.168.1.20",
+            "169.254.1.1",
+            "fe80::1",
+            "fd12::1",
+        ] {
+            assert_eq!(target(ip), Network::Lan, "{ip}");
+        }
+    }
+
+    #[test]
+    fn any_other_target_is_the_internet() {
+        for ip in ["203.0.113.7", "2001:db8::7"] {
+            assert_eq!(target(ip), Network::Internet, "{ip}");
         }
     }
 
