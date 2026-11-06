@@ -6,6 +6,8 @@
 // Test helpers may panic: a failed test should stop loudly.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::collections::BTreeSet;
+use std::env;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
@@ -53,6 +55,16 @@ print(*[s.getsockname()[1] for s in sockets], flush=True)
 sys.stdin.read()
 "#;
 
+/// Opens a UDP socket on a free port of the address it is given, prints the
+/// port, and stays until its standard input closes.
+const BROADCAST_LISTENER: &str = r#"
+import socket, sys
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind((sys.argv[1], 0))
+print(s.getsockname()[1], flush=True)
+sys.stdin.read()
+"#;
+
 /// The listeners. Closing their standard input ends them.
 struct Listeners {
     child: Child,
@@ -62,8 +74,14 @@ struct Listeners {
 
 impl Listeners {
     fn start() -> Self {
+        Self::run(LISTENERS, &[])
+    }
+
+    /// Runs `program`, which prints its ports, with these arguments.
+    fn run(program: &str, args: &[&str]) -> Self {
         let mut child = Command::new("python3")
-            .args(["-c", LISTENERS])
+            .args(["-c", program])
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -118,6 +136,39 @@ fn reason<'a>(report: &'a Value, protocol: &str, port: u64) -> &'a Value {
     }
 }
 
+/// A broadcast address of this host and the interfaces that have it, read
+/// from `ip` itself rather than through reachmap.
+fn host_broadcast() -> Option<(String, BTreeSet<String>)> {
+    let out = Command::new("ip")
+        .args(["-j", "addr"])
+        .output()
+        .expect("ip runs");
+    let links: Value = serde_json::from_slice(&out.stdout).expect("ip printed JSON");
+    let with_broadcast = |link: &'_ Value| -> Vec<(String, String)> {
+        let name = link["ifname"].as_str().unwrap().to_string();
+        link["addr_info"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|addr| addr["broadcast"].as_str())
+            .map(|broadcast| (broadcast.to_string(), name.clone()))
+            .collect()
+    };
+    let pairs: Vec<(String, String)> = links
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(with_broadcast)
+        .collect();
+    let (broadcast, _) = pairs.first()?;
+    let interfaces = pairs
+        .iter()
+        .filter(|(other, _)| other == broadcast)
+        .map(|(_, name)| name.clone())
+        .collect();
+    Some((broadcast.clone(), interfaces))
+}
+
 /// Asserts what the kernel reported on four sockets of one protocol.
 fn assert_kernel_facts(report: &Value, protocol: &str, ports: &[u64]) {
     let [plain, on_lo, dual_stack, ipv6_only] = ports[..] else {
@@ -165,4 +216,33 @@ fn verdicts_use_what_the_kernel_reports_about_real_sockets() {
         &json!({"kind": "multicast"})
     );
     assert_eq!(rows(&report, "udp", *connected), Vec::<&Value>::new());
+}
+
+#[test]
+fn a_real_socket_on_a_broadcast_address_names_its_interface() {
+    let Some((broadcast, interfaces)) = host_broadcast() else {
+        // A skip must not hide in CI, where the test would stop testing anything.
+        assert!(
+            env::var_os("CI").is_none(),
+            "expected an interface with a broadcast address in CI"
+        );
+        eprintln!("skipped: no interface on this host has a broadcast address");
+        return;
+    };
+    let listener = Listeners::run(BROADCAST_LISTENER, &[&broadcast]);
+    let [port] = listener.ports[..] else {
+        panic!("expected one port, got {:?}", listener.ports);
+    };
+
+    let report = scan();
+
+    assert_eq!(
+        reason(&report, "udp", port),
+        &json!({"kind": "broadcast", "interfaces": interfaces})
+    );
+    let [row] = rows(&report, "udp", port)[..] else {
+        panic!("expected one row on port {port}");
+    };
+    assert_eq!(row["address"], broadcast.as_str());
+    assert_eq!(row["reach"]["kind"], "from", "{row}");
 }

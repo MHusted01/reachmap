@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 5137,
+      "protocol": "udp",
+      "address": "192.168.1.255",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 640,
+        "name": "nmbd"
+      },
+      "reach": {
+        "kind": "unknown"
+      },
+      "reason": {
+        "kind": "not_on_host"
+      },
+      "warning": null
+    }
+  ],
+  "warnings": [],
+  "collector_errors": []
+}
