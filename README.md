@@ -23,8 +23,9 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 > before firewall rules, and warns when Docker-published ports skip an active
 > UFW ([details](docs/scan.md)). `reachmap scan --json` prints the same findings
 > for scripts ([fields](docs/json.md)). `reachmap probe` tries to connect to a
-> host's TCP ports from another machine ([details](docs/probe.md)). `reachmap diff`
-> reports what changed since a saved scan ([details](docs/diff.md)).
+> host's TCP ports from another machine, and can report where that disagrees with
+> a saved scan ([details](docs/probe.md)). `reachmap diff` reports what changed
+> since a saved scan ([details](docs/diff.md)).
 
 ## Install
 

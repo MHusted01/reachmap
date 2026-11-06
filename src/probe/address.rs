@@ -13,6 +13,13 @@ pub struct ProbedAddress {
     scope: u32,
 }
 
+impl ProbedAddress {
+    /// The address without its scope.
+    pub fn ip(&self) -> IpAddr {
+        self.ip
+    }
+}
+
 impl From<IpAddr> for ProbedAddress {
     fn from(ip: IpAddr) -> Self {
         ProbedAddress { ip, scope: 0 }
@@ -53,6 +60,11 @@ mod tests {
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV6};
 
     const LINK_LOCAL: Ipv6Addr = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1);
+
+    #[test]
+    fn the_ip_leaves_out_the_scope() {
+        assert_eq!(scoped(3).ip(), IpAddr::V6(LINK_LOCAL));
+    }
 
     fn scoped(scope: u32) -> ProbedAddress {
         SocketAddr::V6(SocketAddrV6::new(LINK_LOCAL, 22, 0, scope)).into()

@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 5353,
+      "protocol": "udp",
+      "reach": {
+        "kind": "from",
+        "networks": ["lan"]
+      },
+      "reason": {
+        "kind": "all_addresses"
+      }
+    }
+  ],
+  "collector_errors": []
+}

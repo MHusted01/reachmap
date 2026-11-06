@@ -325,14 +325,21 @@ fn read_limited(reader: impl Read, limit: u64) -> io::Result<Option<String>> {
         .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
 }
 
+/// Refuses a document this version of reachmap cannot read.
+pub(crate) fn check_version(text: &str) -> Result<(), ParseError> {
+    let Header { schema_version } = serde_json::from_str(text)?;
+    if schema_version == SCHEMA_VERSION {
+        Ok(())
+    } else {
+        Err(ParseError::UnsupportedVersion {
+            found: schema_version,
+        })
+    }
+}
+
 /// Reads the text of a saved scan. Pure, so it is tested on any OS.
 pub fn parse(text: &str) -> Result<Snapshot, ParseError> {
-    let Header { schema_version } = serde_json::from_str(text)?;
-    if schema_version != SCHEMA_VERSION {
-        return Err(ParseError::UnsupportedVersion {
-            found: schema_version,
-        });
-    }
+    check_version(text)?;
     let saved: SavedScan = serde_json::from_str(text)?;
     let needs_root = saved.ports.iter().any(|port| match &port.service {
         Tolerant::Known(service) => lacks_privileges(service),
@@ -351,6 +358,14 @@ pub fn parse(text: &str) -> Result<Snapshot, ParseError> {
 
 /// Reads a saved scan from `path`.
 pub fn load(path: &Path) -> Result<Snapshot, LoadError> {
+    load_with(path, parse)
+}
+
+/// Reads the file at `path` and hands its text to `parse`.
+pub(crate) fn load_with<T>(
+    path: &Path,
+    parse: impl FnOnce(&str) -> Result<T, ParseError>,
+) -> Result<T, LoadError> {
     let read_error = |source| LoadError::Read {
         path: path.to_path_buf(),
         source,
