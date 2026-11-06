@@ -396,7 +396,7 @@ fn diff_tells_a_share_from_a_socket_on_the_same_address() {
 
     let diff = compare(&Snapshot::from(&before), &Snapshot::from(&after));
 
-    // Both rows of the shared address are kept apart, so only the share goes.
+    // The share goes from both Tailscale addresses, and the socket's row stays.
     assert_eq!(diff.differences.len(), 2);
     assert!(diff.differences.iter().all(|difference| matches!(
         &difference.change,
