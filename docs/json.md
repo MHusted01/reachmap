@@ -22,9 +22,9 @@ baseline.
 
 `schema_version` is `1`. It goes up when a change would break an existing
 script: a field is removed or renamed, or a value changes meaning. New fields,
-new `kind` values and new `protocol` values can appear without a new version, so
-ignore what you do not know, and treat an unknown `kind` as unknown rather than
-as fine.
+new `kind` values, new `listener` values and new `protocol` values can appear
+without a new version, so ignore what you do not know, and treat an unknown
+`kind` or `listener` as unknown rather than as fine.
 
 Every field listed here is always present; a missing value is `null`, not an
 absent key.
@@ -95,7 +95,7 @@ with the document.
 | `port` | number | The TCP or UDP port. |
 | `protocol` | string | `tcp` or `udp`. The table's `tcp6` is `tcp` with an IPv6 `address`, and `udp6` is `udp` with one. A connect probe cannot confirm a `udp` row; see [UDP](scan.md#udp). |
 | `address` | string | The local address, e.g. `0.0.0.0` or `::1`. |
-| `listener` | string | `host_socket`, or `docker_forward` when Docker publishes the port and no socket listens on the host. |
+| `listener` | string | `host_socket`, `docker_forward` when Docker publishes the port and no socket listens on the host, or `tailscale_share` when Tailscale shares the port and it forwards to no port with a row. |
 | `service` | object | Who the connections end up with. |
 | `reach` | object | Which networks can connect. |
 | `reason` | object | Why. |
@@ -107,6 +107,7 @@ with the document.
 |--------|--------------|---------|
 | `process` | `pid` (number), `name` (string) | The process that has the socket open. |
 | `container` | `name` (string), `compose_service` (string or null) | The Docker container the port is published for. |
+| `tailscale` | | Tailscale accepts the connections, and no port with a row is behind it. |
 | `unknown` | `reason` (string) | No owner was found. `needs_root`: some processes could not be inspected or may be hidden by `hidepid`, so run with sudo. `no_process`: no process holds the socket. |
 
 ### `reach`
@@ -136,6 +137,7 @@ nothing upstream filters it. reachmap cannot see such filters. Like the table,
 | `no_addresses_on_device` | `interface` (string) | Bound to a device that has no address the socket can use. |
 | `interfaces_unknown` | | The interfaces could not be listed. |
 | `tailscale_shared` | `served_on`, `funnel_on` (arrays of numbers), `direct` (object) | Tailscale forwards connections to this socket. `served_on` lists the ports shared with the tailnet, `funnel_on` those shared with the internet; one of them can be empty. `direct` is the socket's own `reason`, any `kind` in this table. See [Tailscale](scan.md#tailscale). |
+| `tailscale_accepts` | `sharing` (string) | Tailscale shares this port and forwards to no port with a row. `sharing` is `tailnet` for Serve and `funnel` for Funnel. See [Tailscale](scan.md#tailscale). |
 
 `covers` is `ipv4` (`0.0.0.0`), `ipv6` (an IPv6-only `::`) or `ipv4_and_ipv6`
 (any other `::`). A socket bound to a device has the `on_interfaces` reason.
@@ -159,8 +161,9 @@ overstates the risk.
 | `docker_unknown` | `ufw_reason` (string or null) | Docker could not be asked, so ports that bypass UFW may be missing. `ufw_reason` says why UFW's state is unknown too, when it is. |
 | `docker_user_rules` | | `DOCKER-USER` has rules that may filter these ports. Not verified. |
 | `docker_user_unchecked` | `reason` (string) | `DOCKER-USER` could not be read. |
-| `tailscale_funnel` | `ports` (array of numbers) | Tailscale Funnel shares these ports with the internet. They are the ports clients connect to, which may have no row. |
+| `tailscale_funnel` | `ports` (array of numbers) | Tailscale Funnel shares these ports with the internet. They are the ports clients connect to, which may have no row of their own. |
 | `tailscale_unknown` | | Tailscale could not be asked, so it may share ports that do not show. |
+| `tailscale_no_row` | `ports` (array of numbers) | Tailscale shares these ports with the tailnet, and no row shows them, because no Tailscale address of this host is known. |
 
 The `reason` strings are for people; their wording can change.
 

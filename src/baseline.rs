@@ -77,6 +77,8 @@ pub enum Owner {
     },
     /// A Docker container.
     Container(Container),
+    /// Tailscale itself.
+    Tailscale,
     /// No owner was found, or the document names one this version cannot read.
     Unknown,
 }
@@ -86,6 +88,7 @@ impl fmt::Display for Owner {
         match self {
             Owner::Process { name } => f.write_str(name),
             Owner::Container(container) => container.fmt(f),
+            Owner::Tailscale => f.write_str("Tailscale"),
             Owner::Unknown => f.write_str("unknown"),
         }
     }
@@ -103,6 +106,7 @@ impl From<&Service> for Owner {
                 name: sanitize(&container.name),
                 compose_service: container.compose_service.as_deref().map(sanitize),
             }),
+            Service::Tailscale => Owner::Tailscale,
             Service::Unknown { .. } => Owner::Unknown,
         }
     }

@@ -352,3 +352,20 @@ fn an_endless_file_is_too_large() {
         "/dev/zero is over 64 MiB, too large to be a scan"
     );
 }
+
+#[test]
+fn reads_a_row_tailscale_accepts() {
+    let row = row_with(
+        r#""tcp""#,
+        r#""tailscale_share""#,
+        r#"{"kind": "tailscale"}"#,
+        r#"{"kind": "from", "networks": ["tailnet"]}"#,
+        "null",
+    );
+
+    let snapshot = parse(&document(&row)).unwrap();
+
+    let exposure = only_exposure(&snapshot);
+    assert_eq!(exposure.listener, Tolerant::Known(Listener::TailscaleShare));
+    assert_eq!(exposure.service, Owner::Tailscale);
+}

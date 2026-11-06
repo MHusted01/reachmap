@@ -106,8 +106,9 @@ Some ports only show the probe result, and a note lists them:
 - A port Tailscale forwards to, from `tailnet` and `internet`. Clients there use
   the port Tailscale shares, usually another one, so the row cannot say whether
   its own port answers them. From other networks the row counts as usual. The
-  port Tailscale shares has no row, so it is not probed. See
-  [Tailscale](scan.md#tailscale).
+  port Tailscale shares has no row, so it is not probed. A shared port that
+  forwards to no row has a row of its own, which is probed and counts as usual.
+  See [Tailscale](scan.md#tailscale).
 
 UDP rows are left out, because a connect probe cannot confirm them. The port of
 a `failed` attempt is not called a difference either, unless another address of

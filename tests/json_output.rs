@@ -16,6 +16,7 @@ use reachmap::collect::{CollectError, ProcessFds, RawProcess, RawTable};
 use reachmap::docker::DockerError;
 use reachmap::firewall::{DockerUserChain, Firewall};
 use reachmap::json::render;
+use reachmap::network::{HostAddress, HostInterfaces};
 use reachmap::parse::docker::parse_docker_inspect;
 use reachmap::parse::ip_addr::parse_ip_addr;
 use reachmap::parse::iptables::parse_docker_user;
@@ -127,6 +128,48 @@ fn a_scan_with_a_funnel_matches_the_snapshot() {
     let json = render(&report).unwrap();
     assert_eq!(json, include_str!("fixtures/scan_report_tailscale.json"));
     // `diff` must be able to read a saved scan with the nested reason.
+    assert!(parse(&json).is_ok());
+}
+
+#[test]
+fn a_scan_with_a_share_without_a_row_matches_the_snapshot() {
+    let firewall = Firewall {
+        ufw: parse_ufw_conf(UFW_DISABLED),
+        docker_user: None,
+    };
+    let shared = parse_serve_status(
+        r#"{
+            "TCP": {"443": {"HTTPS": true}},
+            "Web": {"host.example.ts.net:443": {"Handlers": {"/": {"Path": "/srv/site"}}}},
+            "AllowFunnel": {"host.example.ts.net:443": true}
+        }"#,
+    )
+    .unwrap();
+    let host = HostInterfaces {
+        addresses: vec![HostAddress {
+            interface: "tailscale0".to_string(),
+            ip: "100.64.0.1".parse().unwrap(),
+            broadcast: None,
+        }],
+        ..HostInterfaces::default()
+    };
+
+    let report = join(
+        Vec::new(),
+        &open_files(),
+        Ok(host),
+        Ok(Vec::new()),
+        Ok(shared),
+        OptionsReport::default(),
+        &firewall,
+    );
+
+    let json = render(&report).unwrap();
+    assert_eq!(
+        json,
+        include_str!("fixtures/scan_report_tailscale_share.json")
+    );
+    // `diff` must be able to read a saved scan with the new values.
     assert!(parse(&json).is_ok());
 }
 

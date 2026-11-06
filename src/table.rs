@@ -108,7 +108,7 @@ fn cells(scanned: &ScannedPort) -> [String; COLUMNS] {
 /// The verdict's reason, followed by what else explains the row.
 fn why(scanned: &ScannedPort) -> String {
     let forward = match scanned.listener {
-        Listener::HostSocket => None,
+        Listener::HostSocket | Listener::TailscaleShare => None,
         Listener::DockerForward => Some(NO_HOST_SOCKET.to_string()),
     };
     let warning = scanned.warning.map(|warning| warning.to_string());
@@ -142,6 +142,7 @@ mod tests {
     use crate::reach::classify;
     use crate::service::{Container, Process, Service, UnknownReason};
     use crate::socket::Endpoint;
+    use crate::tailscale::{SharedPort, Sharing};
     use crate::warning::{ScanWarning, Warning};
     use std::collections::BTreeSet;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -185,6 +186,33 @@ mod tests {
             pid,
             name: name.to_string(),
         })
+    }
+
+    #[test]
+    fn a_row_tailscale_accepts_names_tailscale_and_nothing_else() {
+        let share = SharedPort {
+            port: 443,
+            sharing: Sharing::Tailnet,
+            targets: BTreeSet::new(),
+        };
+        let row = ScannedPort {
+            endpoint: share.endpoint_on(IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1))),
+            listener: Listener::TailscaleShare,
+            service: Service::Tailscale,
+            verdict: share.verdict(),
+            warning: None,
+        };
+        assert_eq!(
+            cells(&row),
+            [
+                "443",
+                "tcp",
+                "100.64.0.1",
+                "Tailscale",
+                "tailnet",
+                "accepted by Tailscale Serve; no listening port behind it",
+            ]
+        );
     }
 
     #[test]

@@ -7,6 +7,7 @@
 
 use std::fmt;
 use std::io::ErrorKind;
+use std::net::IpAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -15,7 +16,7 @@ use thiserror::Error;
 use crate::collect::{self, CollectError, ProcessFds, RawTable};
 use crate::docker::{self, DockerError, PublishedPort};
 use crate::firewall::{self, DockerUserChain, Firewall, UfwState};
-use crate::network::HostInterfaces;
+use crate::network::{HostAddress, HostInterfaces};
 use crate::parse::ip_addr::parse_ip_addr;
 use crate::parse::proc_net::{ParseError, parse_proc_net};
 use crate::parse::proc_pid::owners_by_inode;
@@ -26,7 +27,9 @@ use crate::socket_options::{
     OptionsByInode, OptionsReport, SocketOptionsError, read_socket_options,
 };
 use crate::tailscale::{self, SharedPort, TailscaleError};
-use crate::warning::{ScanWarning, Warning, docker_ufw_bypass, summarise, tailscale_warning};
+use crate::warning::{
+    ScanWarning, Warning, docker_ufw_bypass, summarise, tailscale_no_row, tailscale_warning,
+};
 
 /// Where users report problems reachmap cannot handle.
 pub(crate) const ISSUES_URL: &str = "https://github.com/MHusted01/reachmap/issues";
@@ -103,6 +106,9 @@ pub enum Listener {
     /// Docker publishes the port, but no socket listens on the host: only its
     /// firewall rules forward the traffic.
     DockerForward,
+    /// Tailscale shares the port and forwards to no port with a row, so only
+    /// its serve config shows it.
+    TailscaleShare,
 }
 
 impl fmt::Display for Listener {
@@ -110,6 +116,7 @@ impl fmt::Display for Listener {
         f.write_str(match self {
             Listener::HostSocket => "host socket",
             Listener::DockerForward => "Docker forward",
+            Listener::TailscaleShare => "Tailscale share",
         })
     }
 }
@@ -223,9 +230,11 @@ pub fn parse_tables(tables: &[RawTable]) -> Result<Vec<ListeningSocket>, ScanErr
 
 /// Pairs each socket with its container or else the process that has it open,
 /// adds the published ports without a socket, gives each its verdict and
-/// warning, and widens the verdicts of what Tailscale shares. When no process holds a socket, the reason depends on whether some
-/// processes could not be inspected or may be hidden: then root might find the
-/// owner. A socket the kernel reported no options for stays unchecked.
+/// warning, widens the verdicts of what Tailscale shares, and adds the shared
+/// ports that forward to no row. When no process holds a socket, the reason
+/// depends on whether some processes could not be inspected or may be hidden:
+/// then root might find the owner. A socket the kernel reported no options for
+/// stays unchecked.
 pub fn join(
     sockets: Vec<ListeningSocket>,
     open_files: &ProcessFds,
@@ -280,10 +289,15 @@ pub fn join(
             ..port
         })
         .collect();
+    let endpoints: Vec<Endpoint> = ports.iter().map(|port| port.endpoint).collect();
+    let unjoined = tailscale::without_row(&shared, &endpoints);
+    let tailnet = tailnet_addresses(addresses);
+    ports.extend(share_rows(&unjoined, &tailnet));
     ports.sort_by_key(|port| port.endpoint);
     let warnings = summarise(&ports, docker_error.as_ref(), firewall)
         .into_iter()
         .chain(tailscale_warning(&shared, tailscale_error.as_ref()))
+        .chain(tailscale_no_row(&unjoined, &tailnet))
         .collect();
     ScanReport {
         ports,
@@ -293,6 +307,30 @@ pub fn join(
         tailscale_error,
         warnings,
     }
+}
+
+/// The addresses clients on the tailnet connect to, if the interfaces are known.
+fn tailnet_addresses(addresses: Option<&[HostAddress]>) -> Vec<IpAddr> {
+    addresses
+        .unwrap_or_default()
+        .iter()
+        .filter(|address| address.is_tailnet_address())
+        .map(|address| address.ip)
+        .collect()
+}
+
+/// A row for each of `shared` on each of `addresses`. The serve config names no
+/// address, so these are the addresses of this host that Tailscale accepts on.
+fn share_rows(shared: &[&SharedPort], addresses: &[IpAddr]) -> impl Iterator<Item = ScannedPort> {
+    shared.iter().flat_map(move |port| {
+        addresses.iter().map(move |&address| ScannedPort {
+            endpoint: port.endpoint_on(address),
+            listener: Listener::TailscaleShare,
+            service: Service::Tailscale,
+            verdict: port.verdict(),
+            warning: None,
+        })
+    })
 }
 
 /// Gives each socket the options the kernel reported for its inode.

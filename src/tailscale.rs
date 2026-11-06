@@ -3,9 +3,11 @@
 //! program on loopback, so that program's socket says nothing about them.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 
+use serde::Serialize;
 use thiserror::Error;
 
 use crate::collect::{self, CollectError};
@@ -49,7 +51,8 @@ impl TailscaleError {
 }
 
 /// Who Tailscale shares a port with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Sharing {
     /// Devices on the tailnet: `tailscale serve`.
     Tailnet,
@@ -64,6 +67,15 @@ impl Sharing {
             Sharing::Tailnet => &[Network::Tailnet],
             Sharing::Funnel => &[Network::Tailnet, Network::Internet],
         }
+    }
+}
+
+impl fmt::Display for Sharing {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Sharing::Tailnet => "Serve",
+            Sharing::Funnel => "Funnel",
+        })
     }
 }
 
@@ -88,6 +100,27 @@ impl SharedPort {
             && self.targets.iter().any(|target| {
                 target.port() == endpoint.port && accepts(endpoint.address, target.ip())
             })
+    }
+
+    /// Where clients connect to this port on `address`.
+    pub fn endpoint_on(&self, address: IpAddr) -> Endpoint {
+        Endpoint {
+            port: self.port,
+            protocol: Protocol::Tcp,
+            address,
+        }
+    }
+
+    /// Where this port can be reached from, when it forwards to no row.
+    pub fn verdict(&self) -> Verdict {
+        Verdict {
+            reach: Reach::From {
+                networks: self.sharing.networks().iter().copied().collect(),
+            },
+            reason: Reason::TailscaleAccepts {
+                sharing: self.sharing,
+            },
+        }
     }
 }
 
@@ -116,6 +149,16 @@ fn shared_ports(
         }
         Err(error) => Err(TailscaleError::Collect(error)),
     }
+}
+
+/// The shared ports that forward to none of `rows`: a file, a text, a redirect,
+/// a Unix socket, another host or a program that is not running. No row shows
+/// these ports, so they need one of their own.
+pub fn without_row<'a>(shared: &'a [SharedPort], rows: &[Endpoint]) -> Vec<&'a SharedPort> {
+    shared
+        .iter()
+        .filter(|port| !rows.iter().any(|row| port.forwards_to(*row)))
+        .collect()
 }
 
 /// Adds what Tailscale shares to the verdict of `endpoint`. An unknown reach
@@ -353,5 +396,69 @@ mod tests {
     #[test]
     fn other_failures_have_no_hint() {
         assert_eq!(command_failed("something else").hint(), None);
+    }
+
+    #[test]
+    fn only_a_share_that_forwards_to_no_row_is_without_a_row() {
+        let shares = [
+            shared(443, Sharing::Funnel, "127.0.0.1:3000"),
+            shared(8443, Sharing::Tailnet, "127.0.0.1:4000"),
+        ];
+        let rows = [endpoint("127.0.0.1", 3000)];
+        assert_eq!(without_row(&shares, &rows), [&shares[1]]);
+    }
+
+    #[test]
+    fn a_share_with_no_target_is_without_a_row() {
+        let share = SharedPort {
+            port: 443,
+            sharing: Sharing::Tailnet,
+            targets: BTreeSet::new(),
+        };
+        let shares = [share];
+        let rows = [endpoint("127.0.0.1", 443)];
+        assert_eq!(without_row(&shares, &rows), [&shares[0]]);
+    }
+
+    #[test]
+    fn a_udp_row_is_not_what_a_share_forwards_to() {
+        let shares = [shared(443, Sharing::Tailnet, "127.0.0.1:3000")];
+        let udp = Endpoint {
+            protocol: Protocol::Udp,
+            ..endpoint("127.0.0.1", 3000)
+        };
+        assert_eq!(without_row(&shares, &[udp]), [&shares[0]]);
+    }
+
+    #[test]
+    fn serve_alone_reaches_the_tailnet() {
+        let verdict = shared(8443, Sharing::Tailnet, "127.0.0.1:3000").verdict();
+        assert_eq!(verdict.reach, networks([Network::Tailnet]));
+        assert_eq!(
+            verdict.reason.to_string(),
+            "accepted by Tailscale Serve; no listening port behind it"
+        );
+    }
+
+    #[test]
+    fn funnel_reaches_the_tailnet_and_the_internet() {
+        let verdict = shared(443, Sharing::Funnel, "127.0.0.1:3000").verdict();
+        assert_eq!(
+            verdict.reach,
+            networks([Network::Tailnet, Network::Internet])
+        );
+        assert_eq!(
+            verdict.reason.to_string(),
+            "accepted by Tailscale Funnel; no listening port behind it"
+        );
+    }
+
+    #[test]
+    fn a_shared_port_is_a_tcp_endpoint_on_the_address() {
+        let share = shared(443, Sharing::Tailnet, "127.0.0.1:3000");
+        assert_eq!(
+            share.endpoint_on("100.64.0.1".parse().unwrap()),
+            endpoint("100.64.0.1", 443)
+        );
     }
 }

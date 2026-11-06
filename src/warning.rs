@@ -5,6 +5,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +59,12 @@ pub enum ScanWarning {
     },
     /// Tailscale could not be asked, so it may share ports that do not show.
     TailscaleUnknown,
+    /// Tailscale shares these ports with the tailnet, and no row shows them,
+    /// because no Tailscale address of this host is known.
+    TailscaleNoRow {
+        /// The port numbers clients connect to.
+        ports: BTreeSet<u16>,
+    },
 }
 
 /// The warning for one published port, if it deserves one. Every address but
@@ -107,6 +114,18 @@ pub fn tailscale_warning(
         .map(|port| port.port)
         .collect();
     (!ports.is_empty()).then_some(ScanWarning::TailscaleFunnel { ports })
+}
+
+/// The line for the tailnet ports that cannot get a row, if any: without a
+/// Tailscale address they would not show at all. Funnel ports have their own
+/// line whether they have a row or not.
+pub fn tailscale_no_row(without_row: &[&SharedPort], addresses: &[IpAddr]) -> Option<ScanWarning> {
+    let ports: BTreeSet<u16> = without_row
+        .iter()
+        .filter(|port| port.sharing == Sharing::Tailnet)
+        .map(|port| port.port)
+        .collect();
+    (addresses.is_empty() && !ports.is_empty()).then_some(ScanWarning::TailscaleNoRow { ports })
 }
 
 /// The line for the rows that carry a warning, if any does.
@@ -204,6 +223,12 @@ impl fmt::Display for ScanWarning {
             ScanWarning::TailscaleUnknown => {
                 f.write_str("Tailscale could not be asked, so it is unknown which ports it shares")
             }
+            ScanWarning::TailscaleNoRow { ports } => write!(
+                f,
+                "Tailscale shares these ports with the tailnet, but no Tailscale address is \
+                 known to show them on: {}",
+                joined(ports)
+            ),
         }
     }
 }
