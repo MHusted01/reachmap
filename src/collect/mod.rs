@@ -231,6 +231,26 @@ pub fn inspect_containers(_ids: &[&str]) -> Result<String, CollectError> {
     })
 }
 
+/// Reads what Tailscale shares: the JSON `tailscale serve status --json`
+/// prints. Needs no root.
+#[cfg(target_os = "linux")]
+pub fn read_serve_status() -> Result<String, CollectError> {
+    let program = command::locate(linux::TAILSCALE_PATHS, linux::TAILSCALE_PROGRAM);
+    command::run(
+        program,
+        linux::TAILSCALE_SERVE_STATUS_ARGS,
+        linux::COMMAND_TIMEOUT,
+    )
+}
+
+/// Reads what Tailscale shares. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn read_serve_status() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
 /// Reads UFW's configuration file. Every user can read it on a default
 /// install.
 #[cfg(target_os = "linux")]

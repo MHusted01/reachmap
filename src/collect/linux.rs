@@ -3,7 +3,8 @@
 //! need no root; every user sees all sockets and interfaces of the current
 //! network namespace. The open files of other users' processes, under
 //! `/proc/<pid>/fd`, do need root, and with `hidepid` those processes are not
-//! listed at all without it. `docker` needs access to its socket.
+//! listed at all without it. `docker` needs access to its socket. `tailscale`
+//! needs no root to read its serve config.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -48,6 +49,22 @@ pub(super) const DOCKER_PS_ARGS: &[&str] = &["ps", "-q"];
 
 /// Makes `docker` print details of the containers named after these arguments.
 pub(super) const DOCKER_INSPECT_ARGS: &[&str] = &["inspect", "--type", "container"];
+
+/// Where Tailscale's command-line client is installed, tried in order. Only
+/// root can write to these directories.
+pub(super) const TAILSCALE_PATHS: &[&str] = &[
+    "/usr/bin/tailscale",
+    "/usr/local/bin/tailscale",
+    "/bin/tailscale",
+    "/snap/bin/tailscale",
+];
+
+/// The name to look up through `PATH` when `tailscale` is in none of
+/// [`TAILSCALE_PATHS`].
+pub(super) const TAILSCALE_PROGRAM: &str = "tailscale";
+
+/// Makes `tailscale` print its serve config as JSON.
+pub(super) const TAILSCALE_SERVE_STATUS_ARGS: &[&str] = &["serve", "status", "--json"];
 
 /// UFW's configuration file.
 pub(super) const UFW_CONF: &str = "/etc/ufw/ufw.conf";

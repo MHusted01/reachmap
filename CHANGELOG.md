@@ -8,6 +8,13 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan` reads `tailscale serve status --json`. A row that Tailscale
+  forwards to gains `tailnet`, and with Funnel also `internet`, and WHY says so.
+  Every Funnel port is a warning, so the scan exits with 1, and a `tailscale`
+  that cannot be asked is reported as unknown. `--json` has the new reason
+  `tailscale_shared`, the warnings `tailscale_funnel` and `tailscale_unknown` and
+  the collector `tailscale`
+  ([#12](https://github.com/MHusted01/reachmap/issues/12)).
 - `reachmap diff <baseline> [<current>]` compares a saved `reachmap scan --json`
   with a fresh scan, or with a second file, and reports new, removed, changed and
   unverified rows, with `--json` for scripts. It exits with 0 when nothing needs

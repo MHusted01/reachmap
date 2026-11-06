@@ -1,6 +1,7 @@
 //! Warnings about ports a firewall does not cover. Docker forwards a published
 //! port before UFW's rules are consulted, so UFW never applies to one. See
-//! `docs/docker-and-ufw.md`.
+//! `docs/docker-and-ufw.md`. Tailscale Funnel gets a warning too, as it puts
+//! a port on the internet whatever the socket behind it is bound to.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::docker::{DockerError, PublishedPort};
 use crate::firewall::{DockerUserChain, Firewall, UfwState};
 use crate::scan::ScannedPort;
+use crate::tailscale::{SharedPort, Sharing, TailscaleError};
 
 /// What is wrong with one published port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -49,6 +51,13 @@ pub enum ScanWarning {
         /// Why not.
         reason: String,
     },
+    /// Tailscale Funnel shares these ports with the internet.
+    TailscaleFunnel {
+        /// The port numbers clients connect to.
+        ports: BTreeSet<u16>,
+    },
+    /// Tailscale could not be asked, so it may share ports that do not show.
+    TailscaleUnknown,
 }
 
 /// The warning for one published port, if it deserves one. Every address but
@@ -81,6 +90,23 @@ pub fn summarise(
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// The line for what Tailscale shares with the internet, if anything. Not
+/// knowing is a warning too: it never reads as "no Funnel".
+pub fn tailscale_warning(
+    shared: &[SharedPort],
+    error: Option<&TailscaleError>,
+) -> Option<ScanWarning> {
+    if error.is_some() {
+        return Some(ScanWarning::TailscaleUnknown);
+    }
+    let ports: BTreeSet<u16> = shared
+        .iter()
+        .filter(|port| port.sharing == Sharing::Funnel)
+        .map(|port| port.port)
+        .collect();
+    (!ports.is_empty()).then_some(ScanWarning::TailscaleFunnel { ports })
 }
 
 /// The line for the rows that carry a warning, if any does.
@@ -169,6 +195,14 @@ impl fmt::Display for ScanWarning {
             }
             ScanWarning::DockerUserUnchecked { reason } => {
                 write!(f, "DOCKER-USER rules were not checked: {reason}")
+            }
+            ScanWarning::TailscaleFunnel { ports } => write!(
+                f,
+                "Tailscale Funnel shares these ports with the internet: {}",
+                joined(ports)
+            ),
+            ScanWarning::TailscaleUnknown => {
+                f.write_str("Tailscale could not be asked, so it is unknown which ports it shares")
             }
         }
     }

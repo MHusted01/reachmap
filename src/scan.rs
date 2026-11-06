@@ -1,6 +1,6 @@
 //! `reachmap scan`: read the kernel's socket tables and socket options, the
-//! open files of every process, the host's interfaces, Docker's published ports
-//! and the firewall facts, and turn them into one sorted list of ports with the program or
+//! open files of every process, the host's interfaces, Docker's published ports,
+//! what Tailscale shares and the firewall facts, and turn them into one sorted list of ports with the program or
 //! container behind each, where it can be reached from, and what deserves a
 //! warning. Data flows one way: [`crate::collect`] reads, [`crate::parse`]
 //! decodes, this module joins them.
@@ -25,7 +25,8 @@ use crate::socket::{Endpoint, ListeningSocket, sort_by_port};
 use crate::socket_options::{
     OptionsByInode, OptionsReport, SocketOptionsError, read_socket_options,
 };
-use crate::warning::{ScanWarning, Warning, docker_ufw_bypass, summarise};
+use crate::tailscale::{self, SharedPort, TailscaleError};
+use crate::warning::{ScanWarning, Warning, docker_ufw_bypass, summarise, tailscale_warning};
 
 /// Where users report problems reachmap cannot handle.
 pub(crate) const ISSUES_URL: &str = "https://github.com/MHusted01/reachmap/issues";
@@ -146,12 +147,16 @@ pub struct ScanReport {
     /// Set when some socket options could not be read; the verdicts of those
     /// sockets then assume the widest case and say what was not checked.
     pub socket_options_error: Option<SocketOptionsError>,
+    /// Set when Tailscale could not be asked; rows then show the reach of
+    /// their socket alone.
+    pub tailscale_error: Option<TailscaleError>,
     /// The summary under the table. Any entry makes the scan exit with 1.
     pub warnings: Vec<ScanWarning>,
 }
 
 /// Reads this host's socket tables, socket options, processes, interfaces, Docker
-/// containers and firewall facts and returns its ports, sorted by port number.
+/// containers, Tailscale's shared ports and firewall facts and returns its ports,
+/// sorted by port number.
 pub fn scan() -> Result<ScanReport, ScanError> {
     let tables = collect::read_socket_tables()?;
     let sockets = parse_tables(&tables)?;
@@ -168,6 +173,7 @@ pub fn scan() -> Result<ScanReport, ScanError> {
         &open_files,
         read_host_interfaces(),
         published,
+        tailscale::read_shared_ports(),
         options,
         &firewall,
     ))
@@ -216,8 +222,8 @@ pub fn parse_tables(tables: &[RawTable]) -> Result<Vec<ListeningSocket>, ScanErr
 }
 
 /// Pairs each socket with its container or else the process that has it open,
-/// adds the published ports without a socket, and gives each its verdict and
-/// warning. When no process holds a socket, the reason depends on whether some
+/// adds the published ports without a socket, gives each its verdict and
+/// warning, and widens the verdicts of what Tailscale shares. When no process holds a socket, the reason depends on whether some
 /// processes could not be inspected or may be hidden: then root might find the
 /// owner. A socket the kernel reported no options for stays unchecked.
 pub fn join(
@@ -225,6 +231,7 @@ pub fn join(
     open_files: &ProcessFds,
     host: Result<HostInterfaces, InterfacesError>,
     published: Result<Vec<PublishedPort>, DockerError>,
+    tailscale: Result<Vec<SharedPort>, TailscaleError>,
     options: OptionsReport,
     firewall: &Firewall,
 ) -> ScanReport {
@@ -236,12 +243,14 @@ pub fn join(
     };
     let (host, interfaces_error) = split(host);
     let (published, docker_error) = split(published);
+    let (shared, tailscale_error) = split(tailscale);
     let OptionsReport {
         by_inode,
         error: socket_options_error,
     } = options;
     let addresses = host.as_ref().map(|host| host.addresses.as_slice());
     let published = published.unwrap_or_default();
+    let shared = shared.unwrap_or_default();
     let sockets = with_options(sockets, by_inode);
 
     let on_sockets = sockets.iter().map(|socket| {
@@ -264,14 +273,24 @@ pub fn join(
         verdict: classify(port.address, None, addresses),
         warning: docker_ufw_bypass(port, &firewall.ufw),
     });
-    let mut ports: Vec<ScannedPort> = on_sockets.chain(forwarded).collect();
+    let mut ports: Vec<ScannedPort> = on_sockets
+        .chain(forwarded)
+        .map(|port| ScannedPort {
+            verdict: tailscale::widen(port.verdict, port.endpoint, &shared),
+            ..port
+        })
+        .collect();
     ports.sort_by_key(|port| port.endpoint);
-    let warnings = summarise(&ports, docker_error.as_ref(), firewall);
+    let warnings = summarise(&ports, docker_error.as_ref(), firewall)
+        .into_iter()
+        .chain(tailscale_warning(&shared, tailscale_error.as_ref()))
+        .collect();
     ScanReport {
         ports,
         interfaces_error,
         docker_error,
         socket_options_error,
+        tailscale_error,
         warnings,
     }
 }

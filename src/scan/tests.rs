@@ -10,6 +10,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+mod tailscale;
+
 fn socket(port: u16, inode: u64) -> ListeningSocket {
     ListeningSocket {
         protocol: Protocol::Tcp,
@@ -67,6 +69,7 @@ fn join_without_ufw(
         open_files,
         host,
         published,
+        Ok(Vec::new()),
         OptionsReport::default(),
         &firewall(UfwState::Inactive),
     )
@@ -83,6 +86,7 @@ fn join_with_options(
         &open_files(false),
         Ok(lan_host()),
         Ok(published),
+        Ok(Vec::new()),
         options,
         &firewall(UfwState::Inactive),
     )
@@ -353,6 +357,7 @@ fn active_ufw_flags_published_rows_and_only_those() {
             published_on("0.0.0.0", 9000),
             published_on("127.0.0.1", 9100),
         ]),
+        Ok(Vec::new()),
         OptionsReport::default(),
         &firewall(UfwState::Active),
     );
@@ -394,6 +399,7 @@ fn unknown_docker_under_active_ufw_ends_up_in_the_warnings() {
         &open_files(false),
         Ok(lan_host()),
         Err(docker_not_reachable()),
+        Ok(Vec::new()),
         OptionsReport::default(),
         &firewall(UfwState::Active),
     );
@@ -607,6 +613,7 @@ fn a_published_udp_port_past_active_ufw_gets_the_warning() {
         &open_files(false),
         Ok(lan_host()),
         Ok(vec![port]),
+        Ok(Vec::new()),
         OptionsReport::default(),
         &firewall(UfwState::Active),
     );
@@ -627,6 +634,7 @@ fn udp_sockets_alone_raise_no_warning_so_the_exit_status_stays_zero() {
         vec![udp_socket(53, 100)],
         &open_files(false),
         Ok(lan_host()),
+        Ok(Vec::new()),
         Ok(Vec::new()),
         OptionsReport::default(),
         &firewall(UfwState::Active),

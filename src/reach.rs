@@ -118,6 +118,16 @@ pub enum Reason {
     },
     /// The host's interfaces could not be listed.
     InterfacesUnknown,
+    /// Tailscale forwards connections to this socket, on top of what the
+    /// socket's own address allows.
+    TailscaleShared {
+        /// The ports Tailscale shares with the tailnet.
+        served_on: BTreeSet<u16>,
+        /// The ports Tailscale shares with the internet through Funnel.
+        funnel_on: BTreeSet<u16>,
+        /// The reason the socket has by itself.
+        direct: Box<Reason>,
+    },
 }
 
 /// Where a socket can be reached from, with the reason.
@@ -166,6 +176,25 @@ impl fmt::Display for Reason {
                 write!(f, "bound to {interface}, which has no address it can use")
             }
             Reason::InterfacesUnknown => f.write_str("could not list interfaces"),
+            Reason::TailscaleShared {
+                served_on,
+                funnel_on,
+                direct,
+            } => {
+                write!(f, "{direct}; shared by Tailscale ")?;
+                if !served_on.is_empty() {
+                    f.write_str("Serve on ")?;
+                    write_joined(f, served_on)?;
+                }
+                if !served_on.is_empty() && !funnel_on.is_empty() {
+                    f.write_str(" and ")?;
+                }
+                if !funnel_on.is_empty() {
+                    f.write_str("Funnel on ")?;
+                    write_joined(f, funnel_on)?;
+                }
+                Ok(())
+            }
         }
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Layout: [`collect`] reads from the running system, [`parse`] holds pure
 //! parsers (text in, values out), [`scan`] joins the two into [`socket`] and
-//! [`service`] values with the help of [`docker`], [`firewall`] and
+//! [`service`] values with the help of [`docker`], [`firewall`], [`tailscale`] and
 //! [`socket_options`], [`warning`]
 //! decides what deserves attention, and [`table`], [`json`] and [`errors`] format
 //! results for the terminal and for scripts. [`sanitize`] cleans text from other programs before it can
@@ -31,4 +31,5 @@ pub mod service;
 pub mod socket;
 pub mod socket_options;
 pub mod table;
+pub mod tailscale;
 pub mod warning;

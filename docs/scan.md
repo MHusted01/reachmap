@@ -92,6 +92,7 @@ connections on:
 | `multicast address, group membership not checked` | A UDP socket bound to a multicast group, such as `239.255.255.250`. It receives what is sent to the group, and reachmap does not read which groups this host joined. REACHABLE FROM is `unknown`. Needs no interface facts. |
 | `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or an IPv6-only `::` on a host without IPv6 addresses, or `::` on a host without any). REACHABLE FROM is `unknown`. |
 | `bound to eth1, which has no address it can use` | Bound to a device without a suitable address, such as a VRF device whose addresses are on other interfaces. REACHABLE FROM is `unknown`. |
+| `...; shared by Tailscale Funnel on 443` | Tailscale forwards connections to this socket (see [Tailscale](#tailscale)). The first part is the socket's own reason. |
 | `...; no host socket, Docker forwards this port` | Docker publishes the port but no socket listens on the host (see [Docker](#docker)). The first part is the usual reason for the published address. |
 | `could not list interfaces` | `ip -j addr` failed; a warning on stderr says why. REACHABLE FROM is `unknown`, except for loopback addresses. |
 
@@ -205,6 +206,52 @@ reachmap runs the first of `/usr/bin/docker`, `/usr/local/bin/docker`,
 context. If they point at another machine, its containers are listed as if they
 ran here, as ports without a host socket.
 
+## Tailscale
+
+`tailscale serve` shares a program with the tailnet, and `tailscale funnel`
+shares it with the internet. Tailscale accepts these connections itself and
+forwards them, usually to a program on loopback, so the program's socket says
+nothing about them. reachmap therefore asks `tailscale serve status --json`,
+which only reads and needs no root.
+
+A row that Tailscale forwards to gains `tailnet`, and with Funnel also
+`internet (if not filtered upstream)`. WHY keeps the socket's own reason and
+adds the ports clients connect to:
+
+```text
+loopback address; shared by Tailscale Funnel on 443
+all IPv4 addresses; shared by Tailscale Serve on 8443 and Funnel on 443
+```
+
+A row whose reach is `unknown` stays `unknown`, because other networks may
+connect too; WHY still names Tailscale's ports.
+
+A wildcard socket counts when it accepts the target's address. A `::` socket
+counts for IPv4 targets too, even if it is IPv6-only, so a row can list more
+networks than can connect, never fewer.
+
+Every Funnel port is a warning under the table, so the scan exits with 1, also
+when you share the port on purpose. Serve alone is no warning.
+
+- **No `tailscale` command.** Nothing is reported, as a host without it shares
+  nothing.
+- **`tailscale` fails.** For example when `tailscaled` is stopped. The scan
+  continues with a note on stderr and a warning that it is unknown what is
+  shared, so it exits with 1. Rows keep the reach of their socket.
+- **Some targets have no row.** A file, a text, a redirect, a Unix socket, a
+  host name other than `localhost` and a URL without a port have no address to
+  match, and an address on another machine has no socket here. Funnel ports are
+  still listed in the warning; a port shared with the tailnet alone does not
+  show.
+- **The shared port itself may have no row.** Tailscale can accept the
+  connection without a socket in the kernel's tables.
+- **Funnel counts per port.** When one port is shared under two names, or by a
+  Tailscale Service as well, and Funnel is on for one of them, all of them
+  count as Funnel.
+- **Tailscale in a container is not seen.** reachmap asks the `tailscale`
+  command on this host. Tailscale Services in `Tun` mode forward no port that
+  reachmap can name, so they do not show either.
+
 ## Requirements and limits
 
 - **Linux only for now.** On other systems `scan` prints
@@ -235,6 +282,10 @@ ran here, as ports without a host socket.
   that exists, and looks `ip` up through `PATH` only if none does. Without
   it, the scan still lists every socket, prints a warning, and shows
   REACHABLE FROM as `unknown` for all but loopback addresses.
+- **Tailscale needs `tailscale`.** reachmap runs the first of
+  `/usr/bin/tailscale`, `/usr/local/bin/tailscale`, `/bin/tailscale` and
+  `/snap/bin/tailscale` that exists, and looks `tailscale` up through `PATH` only
+  if none does.
 - **TCP and UDP only.** Other protocols, such as a port Docker publishes as
   `sctp`, are not listed.
 - When IPv6 is disabled in the kernel, `/proc/net/tcp6` and `/proc/net/udp6` do
@@ -250,5 +301,5 @@ same exit status. See [JSON output](json.md).
 | Status | Meaning |
 |--------|---------|
 | 0 | The scan finished without warnings (also when nothing is listening). |
-| 1 | The scan finished with [warnings](docker-and-ufw.md#what-reachmap-reports) under the table, or it failed and printed the reason on stderr. |
+| 1 | The scan finished with warnings under the table (see [Docker and UFW](docker-and-ufw.md#what-reachmap-reports) and [Tailscale](#tailscale)), or it failed and printed the reason on stderr. |
 | 2 | Invalid arguments. |

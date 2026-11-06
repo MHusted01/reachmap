@@ -134,6 +134,7 @@ nothing upstream filters it. reachmap cannot see such filters. Like the table,
 | `no_addresses` | `covers` | Bound to a wildcard address, but no interface has an address it covers. |
 | `no_addresses_on_device` | `interface` (string) | Bound to a device that has no address the socket can use. |
 | `interfaces_unknown` | | The interfaces could not be listed. |
+| `tailscale_shared` | `served_on`, `funnel_on` (arrays of numbers), `direct` (object) | Tailscale forwards connections to this socket. `served_on` lists the ports shared with the tailnet, `funnel_on` those shared with the internet; one of them can be empty. `direct` is the socket's own `reason`, any `kind` in this table. See [Tailscale](scan.md#tailscale). |
 
 `covers` is `ipv4` (`0.0.0.0`), `ipv6` (an IPv6-only `::`) or `ipv4_and_ipv6`
 (any other `::`). A socket bound to a device has the `on_interfaces` reason.
@@ -157,12 +158,14 @@ overstates the risk.
 | `docker_unknown` | `ufw_reason` (string or null) | Docker could not be asked, so ports that bypass UFW may be missing. `ufw_reason` says why UFW's state is unknown too, when it is. |
 | `docker_user_rules` | | `DOCKER-USER` has rules that may filter these ports. Not verified. |
 | `docker_user_unchecked` | `reason` (string) | `DOCKER-USER` could not be read. |
+| `tailscale_funnel` | `ports` (array of numbers) | Tailscale Funnel shares these ports with the internet. They are the ports clients connect to, which may have no row. |
+| `tailscale_unknown` | | Tailscale could not be asked, so it may share ports that do not show. |
 
 The `reason` strings are for people; their wording can change.
 
 ## Collector errors
 
-A scan finishes without Docker, the interface list or the socket options. Each collector
+A scan finishes without Docker, the interface list, the socket options or Tailscale. Each collector
 that failed adds one entry, so facts that are missing never look like facts
 that are absent: an empty `ports` list with a `docker` entry here does not mean
 that no port is published. A `socket_options` entry can be partial: sockets the
@@ -170,6 +173,6 @@ kernel did report on keep `checked: true`.
 
 | Field | Type | Meaning |
 |-------|------|---------|
-| `collector` | string | `interfaces`, `docker` or `socket_options`. |
+| `collector` | string | `interfaces`, `docker`, `socket_options` or `tailscale`. |
 | `message` | string | What went wrong, for people. The wording can change. |
 | `hint` | string or null | What to try, for people. |
