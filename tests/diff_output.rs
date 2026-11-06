@@ -10,6 +10,8 @@ use std::process::{Command, Output};
 
 const BASELINE: &str = "tests/fixtures/diff_baseline.json";
 const CURRENT: &str = "tests/fixtures/diff_current.json";
+const BROADCAST_BEFORE: &str = "tests/fixtures/diff_broadcast_before.json";
+const BROADCAST_AFTER: &str = "tests/fixtures/diff_broadcast_after.json";
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reachmap"))
@@ -56,6 +58,26 @@ fn identical_files_as_json_have_an_empty_list() {
     let document: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
 
     assert_eq!(document["differences"], serde_json::json!([]));
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn a_broadcast_row_recognised_since_the_baseline_is_reported_as_changed() {
+    let out = run(&["diff", BROADCAST_BEFORE, BROADCAST_AFTER]);
+
+    assert!(
+        stdout(&out).contains("reachable from: unknown -> LAN"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn a_broadcast_row_is_quiet_once_the_baseline_is_saved_again() {
+    let out = run(&["diff", BROADCAST_AFTER, BROADCAST_AFTER]);
+
+    assert_eq!(stdout(&out), "No differences.\n");
     assert_eq!(out.status.code(), Some(0));
 }
 
