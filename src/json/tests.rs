@@ -119,6 +119,10 @@ fn every_reason_has_a_kind() {
             },
             json!({"kind": "broadcast", "interfaces": ["eth0"]}),
         ),
+        (
+            Reason::LimitedBroadcast,
+            json!({"kind": "limited_broadcast"}),
+        ),
         (Reason::NotOnHost, json!({"kind": "not_on_host"})),
         (
             Reason::NoAddresses {

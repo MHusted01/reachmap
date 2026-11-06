@@ -8,6 +8,14 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan` recognises two kinds of broadcast address that `ip -j addr` does
+  not list. It works out the broadcast address of a subnet configured without
+  `brd`, so such a row names its interface. A socket on `255.255.255.255` shows
+  every network with an IPv4 address and the new reason
+  `limited broadcast address, every IPv4 interface`, `limited_broadcast` in
+  `--json`. Both rows used to show `unknown`, so `reachmap diff` reports them once
+  as changed against a baseline saved before this
+  ([#50](https://github.com/MHusted01/reachmap/issues/50)).
 - `reachmap scan` shows a port Tailscale shares that forwards to no row, such as
   one serving a file, as a row of its own on each Tailscale address of the host,
   so `reachmap diff` reports it and `reachmap probe --scan` checks it. Without a

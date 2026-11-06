@@ -25,10 +25,38 @@ struct AddrInfo {
     /// The address itself, e.g. `"192.168.1.20"`. serde parses the text
     /// into an `IpAddr`.
     local: IpAddr,
+    /// The other end of a point-to-point link, for an address configured
+    /// with `peer`. The link has an `address` key too, holding a MAC address;
+    /// [`Link`] does not read it.
+    address: Option<IpAddr>,
+    /// The length of the subnet prefix, e.g. `24`.
+    prefixlen: Option<u8>,
     /// The broadcast address of the subnet, e.g. `"192.168.1.255"`. Missing
     /// for IPv6 and for addresses configured without one. The link has a
     /// `broadcast` key too, holding a MAC address; [`Link`] does not read it.
     broadcast: Option<Ipv4Addr>,
+}
+
+impl AddrInfo {
+    /// The broadcast address `ip` lists, or failing that, the one the kernel
+    /// adds for the subnet. With a peer, the subnet is the peer's.
+    fn subnet_broadcast(&self) -> Option<Ipv4Addr> {
+        self.broadcast
+            .or_else(|| computed_broadcast(self.address.unwrap_or(self.local), self.prefixlen?))
+    }
+}
+
+/// The first prefix length whose subnet has no broadcast address: the kernel
+/// adds none for `/31` (RFC 3021) and `/32`.
+const FIRST_PREFIX_WITHOUT_BROADCAST: u8 = 31;
+
+/// The address of the subnet of `ip` with every host bit set.
+fn computed_broadcast(ip: IpAddr, prefix: u8) -> Option<Ipv4Addr> {
+    let IpAddr::V4(ip) = ip else {
+        return None;
+    };
+    (prefix < FIRST_PREFIX_WITHOUT_BROADCAST)
+        .then(|| Ipv4Addr::from(u32::from(ip) | (u32::MAX >> prefix)))
 }
 
 /// Turns `ip -j addr` output into one [`HostAddress`] per assigned address,
@@ -48,7 +76,7 @@ pub fn parse_ip_addr(json: &str) -> Result<HostInterfaces, serde_json::Error> {
             addr_info.into_iter().map(move |addr| HostAddress {
                 interface: ifname.clone(),
                 ip: addr.local,
-                broadcast: addr.broadcast,
+                broadcast: addr.subnet_broadcast(),
             })
         })
         .collect();
@@ -160,6 +188,65 @@ mod tests {
         ]}]"#;
 
         assert_eq!(broadcasts(json), [None, None]);
+    }
+
+    #[test]
+    fn a_subnet_without_a_listed_broadcast_address_gets_a_computed_one() {
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [
+            {"family": "inet", "local": "192.0.2.20", "prefixlen": 24},
+            {"family": "inet", "local": "198.51.100.1", "prefixlen": 30},
+            {"family": "inet", "local": "10.1.2.3", "prefixlen": 8}
+        ]}]"#;
+
+        assert_eq!(
+            broadcasts(json),
+            [
+                Some(Ipv4Addr::new(192, 0, 2, 255)),
+                Some(Ipv4Addr::new(198, 51, 100, 3)),
+                Some(Ipv4Addr::new(10, 255, 255, 255))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_listed_broadcast_address_wins_over_the_computed_one() {
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [
+            {"family": "inet", "local": "192.0.2.20", "prefixlen": 24,
+             "broadcast": "192.0.2.127"}
+        ]}]"#;
+
+        assert_eq!(broadcasts(json), [Some(Ipv4Addr::new(192, 0, 2, 127))]);
+    }
+
+    #[test]
+    fn a_prefix_of_31_or_longer_has_no_computed_broadcast_address() {
+        // 33 and up never come from a real `ip`, and must not panic either.
+        for prefix in [31, 32, 33, 255] {
+            let json = format!(
+                r#"[{{"ifindex": 2, "ifname": "eth0", "addr_info":
+                    [{{"family": "inet", "local": "192.0.2.20", "prefixlen": {prefix}}}]}}]"#
+            );
+            assert_eq!(broadcasts(&json), [None], "/{prefix}");
+        }
+    }
+
+    #[test]
+    fn the_subnet_of_a_peer_address_is_the_peers() {
+        // `ip addr add 10.9.0.1 peer 10.9.1.2/24`: the kernel adds the broadcast
+        // route of `address`, and `local` can be outside that subnet.
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [
+            {"family": "inet", "local": "10.9.0.1", "address": "10.9.1.2", "prefixlen": 24}
+        ]}]"#;
+
+        assert_eq!(broadcasts(json), [Some(Ipv4Addr::new(10, 9, 1, 255))]);
+    }
+
+    #[test]
+    fn a_peer_address_that_is_not_an_ip_is_an_error() {
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info":
+            [{"local": "10.9.0.1", "address": "not-an-ip", "prefixlen": 24}]}]"#;
+
+        assert!(parse_ip_addr(json).is_err());
     }
 
     #[test]

@@ -16,9 +16,9 @@ pub struct HostAddress {
     pub interface: String,
     /// The address.
     pub ip: IpAddr,
-    /// The broadcast address of its subnet, if `ip -j addr` prints one. IPv6
-    /// has no broadcast. An address configured without one prints none, even
-    /// though the kernel may still accept broadcasts for its subnet.
+    /// The broadcast address of its subnet: the one `ip -j addr` prints, or
+    /// failing that, the one the kernel adds for the subnet. `None` for IPv6,
+    /// which has no broadcast, and for `/31` and `/32`.
     pub broadcast: Option<Ipv4Addr>,
 }
 
