@@ -8,6 +8,11 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap diff <baseline> [<current>]` compares a saved `reachmap scan --json`
+  with a fresh scan, or with a second file, and reports new, removed, changed and
+  unverified rows, with `--json` for scripts. It exits with 0 when nothing needs
+  attention, 1 when something does and 2 when it could not compare
+  ([#11](https://github.com/MHusted01/reachmap/issues/11)).
 - `reachmap probe <host> --ports 22,80,8000-8100` tries to connect to TCP ports
   from this machine and reports each as open, closed, no answer, unreachable or
   failed. It runs on macOS too, tries every address of a host name, and has

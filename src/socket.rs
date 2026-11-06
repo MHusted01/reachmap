@@ -3,11 +3,11 @@
 use std::fmt;
 use std::net::IpAddr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Transport protocol of a socket. The IP version is not part of it: that
 /// comes from the socket's address (see [`Endpoint::protocol_name`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Protocol {
     /// Transmission Control Protocol.

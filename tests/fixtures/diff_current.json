@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 22,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 4077,
+        "name": "sshd"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": ["this_host", "tailnet", "lan"]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": true
+      },
+      "warning": null
+    },
+    {
+      "port": 5353,
+      "protocol": "udp",
+      "address": "::",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "unknown"
+      },
+      "reason": {
+        "kind": "interfaces_unknown"
+      },
+      "warning": null
+    }
+  ],
+  "warnings": [],
+  "collector_errors": [
+    {
+      "collector": "docker",
+      "message": "could not ask Docker for its containers, so published ports are not shown",
+      "hint": null
+    }
+  ]
+}

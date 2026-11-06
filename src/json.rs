@@ -3,8 +3,9 @@
 //! it, and `tests/json_output.rs` pins it.
 
 use std::error::Error;
+use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::errors::render_chain;
 use crate::scan::{ScanReport, ScannedPort};
@@ -33,12 +34,25 @@ struct CollectorError {
 }
 
 /// The optional collectors a scan can finish without.
-#[derive(Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum Collector {
+pub enum Collector {
+    /// The host's interfaces and their addresses.
     Interfaces,
+    /// Docker's published ports.
     Docker,
+    /// The kernel's socket options.
     SocketOptions,
+}
+
+impl fmt::Display for Collector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Collector::Interfaces => "interfaces",
+            Collector::Docker => "Docker",
+            Collector::SocketOptions => "socket options",
+        })
+    }
 }
 
 impl CollectorError {

@@ -4,13 +4,13 @@ use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::net::IpAddr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::network::{HostAddress, Network};
 use crate::socket::SocketOptions;
 
 /// Which networks can reach a socket.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Reach {
     /// Clients on these networks can connect, or for UDP send to it.

@@ -5,10 +5,11 @@
 //! warning. Data flows one way: [`crate::collect`] reads, [`crate::parse`]
 //! decodes, this module joins them.
 
+use std::fmt;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::collect::{self, CollectError, ProcessFds, RawTable};
@@ -93,7 +94,7 @@ impl InterfacesError {
 }
 
 /// What accepts connections on a port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Listener {
     /// A socket in the kernel's tables.
@@ -101,6 +102,15 @@ pub enum Listener {
     /// Docker publishes the port, but no socket listens on the host: only its
     /// firewall rules forward the traffic.
     DockerForward,
+}
+
+impl fmt::Display for Listener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Listener::HostSocket => "host socket",
+            Listener::DockerForward => "Docker forward",
+        })
+    }
 }
 
 /// A port on this host with what is behind it and where it can be reached

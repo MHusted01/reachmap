@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "differences": [
+    {
+      "port": 22,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "kind": "changed",
+      "was": {
+        "listener": "host_socket",
+        "service": {
+          "kind": "process",
+          "name": "sshd"
+        },
+        "reach": {
+          "kind": "from",
+          "networks": [
+            "this_host",
+            "lan"
+          ]
+        },
+        "warning": null
+      },
+      "now": {
+        "listener": "host_socket",
+        "service": {
+          "kind": "process",
+          "name": "sshd"
+        },
+        "reach": {
+          "kind": "from",
+          "networks": [
+            "this_host",
+            "tailnet",
+            "lan"
+          ]
+        },
+        "warning": null
+      }
+    },
+    {
+      "port": 3306,
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "kind": "removed",
+      "was": {
+        "listener": "host_socket",
+        "service": {
+          "kind": "process",
+          "name": "mysqld"
+        },
+        "reach": {
+          "kind": "from",
+          "networks": [
+            "this_host"
+          ]
+        },
+        "warning": null
+      }
+    },
+    {
+      "port": 5353,
+      "protocol": "udp",
+      "address": "::",
+      "kind": "new",
+      "now": {
+        "listener": "host_socket",
+        "service": {
+          "kind": "unknown"
+        },
+        "reach": {
+          "kind": "unknown"
+        },
+        "warning": null
+      }
+    },
+    {
+      "port": 8443,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "kind": "unverified",
+      "was": {
+        "listener": "docker_forward",
+        "service": {
+          "kind": "container",
+          "name": "shop-web-1",
+          "compose_service": "web"
+        },
+        "reach": {
+          "kind": "from",
+          "networks": [
+            "this_host",
+            "docker",
+            "lan"
+          ]
+        },
+        "warning": "ufw_bypassed"
+      }
+    }
+  ],
+  "baseline_collector_errors": [],
+  "current_collector_errors": [
+    "docker"
+  ],
+  "privileges_differ": true
+}

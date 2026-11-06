@@ -23,7 +23,8 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 > before firewall rules, and warns when Docker-published ports skip an active
 > UFW ([details](docs/scan.md)). `reachmap scan --json` prints the same findings
 > for scripts ([fields](docs/json.md)). `reachmap probe` tries to connect to a
-> host's TCP ports from another machine ([details](docs/probe.md)).
+> host's TCP ports from another machine ([details](docs/probe.md)). `reachmap diff`
+> reports what changed since a saved scan ([details](docs/diff.md)).
 
 ## Install
 
@@ -37,7 +38,7 @@ Prebuilt binaries for Linux and macOS (x86_64 and aarch64) are attached to each
 binaries are static, so they run on any distribution.
 
 `reachmap scan` needs Linux for now; macOS support is planned. `reachmap probe`
-runs on both.
+runs on both, and so does `reachmap diff` when it compares two saved files.
 
 ## Features
 
@@ -46,6 +47,8 @@ runs on both.
 - **Explains itself.** Every verdict says why, so you can check it.
 - **Honest about gaps.** When it cannot know something (for example without
   root), it says so instead of guessing "safe".
+- **Notices changes.** `reachmap diff` compares a host with a saved scan and
+  exits with 1 when something changed, for cron jobs.
 - **No telemetry.** The only network traffic is a probe you start yourself.
 
 Background: [why Docker ports can bypass UFW](docs/docker-and-ufw.md).
