@@ -5,6 +5,7 @@ CLAUDE.local.md
 LEARNING.md
 .claude/
 .agents/
+.codex/
 
 # Build output
 /target/
