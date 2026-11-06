@@ -1,0 +1,343 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 22,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 812,
+        "name": "sshd"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host",
+          "docker",
+          "tailnet",
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": true
+      },
+      "warning": null
+    },
+    {
+      "port": 53,
+      "protocol": "tcp",
+      "address": "127.0.0.53",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host"
+        ]
+      },
+      "reason": {
+        "kind": "loopback"
+      },
+      "warning": null
+    },
+    {
+      "port": 53,
+      "protocol": "udp",
+      "address": "127.0.0.53",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host"
+        ]
+      },
+      "reason": {
+        "kind": "loopback"
+      },
+      "warning": null
+    },
+    {
+      "port": 68,
+      "protocol": "udp",
+      "address": "0.0.0.0",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host",
+          "docker",
+          "tailnet",
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": false
+      },
+      "warning": null
+    },
+    {
+      "port": 514,
+      "protocol": "udp",
+      "address": "192.168.1.20",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "on_interfaces",
+        "interfaces": [
+          "enp1s0"
+        ]
+      },
+      "warning": null
+    },
+    {
+      "port": 1900,
+      "protocol": "udp",
+      "address": "239.255.255.250",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "unknown"
+      },
+      "reason": {
+        "kind": "multicast"
+      },
+      "warning": null
+    },
+    {
+      "port": 3306,
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host"
+        ]
+      },
+      "reason": {
+        "kind": "loopback"
+      },
+      "warning": null
+    },
+    {
+      "port": 5353,
+      "protocol": "udp",
+      "address": "0.0.0.0",
+      "listener": "docker_forward",
+      "service": {
+        "kind": "container",
+        "name": "shop-web-1",
+        "compose_service": "web"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host",
+          "docker",
+          "tailnet",
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": false
+      },
+      "warning": "ufw_bypassed"
+    },
+    {
+      "port": 8080,
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "listener": "docker_forward",
+      "service": {
+        "kind": "container",
+        "name": "shop-web-1",
+        "compose_service": "web"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host"
+        ]
+      },
+      "reason": {
+        "kind": "loopback"
+      },
+      "warning": null
+    },
+    {
+      "port": 8080,
+      "protocol": "tcp",
+      "address": "192.168.1.20",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "on_interfaces",
+        "interfaces": [
+          "enp1s0"
+        ]
+      },
+      "warning": null
+    },
+    {
+      "port": 8443,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "listener": "docker_forward",
+      "service": {
+        "kind": "container",
+        "name": "shop-web-1",
+        "compose_service": "web"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host",
+          "docker",
+          "tailnet",
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": false
+      },
+      "warning": "ufw_bypassed"
+    },
+    {
+      "port": 8443,
+      "protocol": "tcp",
+      "address": "::",
+      "listener": "docker_forward",
+      "service": {
+        "kind": "container",
+        "name": "shop-web-1",
+        "compose_service": "web"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host",
+          "docker",
+          "tailnet",
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4_and_ipv6",
+        "checked": false
+      },
+      "warning": "ufw_bypassed"
+    },
+    {
+      "port": 9100,
+      "protocol": "tcp",
+      "address": "::1",
+      "listener": "docker_forward",
+      "service": {
+        "kind": "container",
+        "name": "metrics",
+        "compose_service": null
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host"
+        ]
+      },
+      "reason": {
+        "kind": "loopback"
+      },
+      "warning": null
+    },
+    {
+      "port": 47918,
+      "protocol": "udp",
+      "address": "0.0.0.0",
+      "listener": "host_socket",
+      "service": {
+        "kind": "unknown",
+        "reason": "needs_root"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host",
+          "docker",
+          "tailnet",
+          "lan"
+        ]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": false
+      },
+      "warning": null
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "ufw_bypassed",
+      "ports": [
+        5353,
+        8443
+      ]
+    },
+    {
+      "kind": "docker_user_rules"
+    }
+  ],
+  "collector_errors": [
+    {
+      "collector": "docker",
+      "message": "Docker was not found, so published ports are not shown",
+      "hint": null
+    }
+  ]
+}

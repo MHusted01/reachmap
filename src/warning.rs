@@ -5,14 +5,14 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::docker::{DockerError, PublishedPort};
 use crate::firewall::{DockerUserChain, Firewall, UfwState};
 use crate::scan::ScannedPort;
 
 /// What is wrong with one published port.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Warning {
     /// UFW is active, and Docker forwards this port past it.

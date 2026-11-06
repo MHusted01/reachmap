@@ -1,0 +1,10 @@
+CHANGE      PORT  PROTO  ADDRESS    DETAIL
+changed     22    tcp    0.0.0.0    reachable from: this host, LAN -> this host, tailnet, LAN
+removed     3306  tcp    127.0.0.1  mysqld; reachable from this host
+new         5353  udp6   ::         unknown; reach unknown
+unverified  8443  tcp    0.0.0.0    web (container shop-web-1); reachable from this host, Docker, LAN; listener: Docker forward; Docker port: UFW does not apply
+
+note: an unverified row is missing now, but this scan could not have seen it, so it may still be there
+note: the current scan has no facts from Docker, so the rows those facts affect cannot be trusted
+note: only one of the two scans could inspect every process, so owners can differ for that reason alone; run both with sudo
+note: a UDP client that sent without connecting looks like a server, so UDP rows on high ports can come and go

@@ -3,10 +3,10 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// A running program, identified by its process ID.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Process {
     /// Process ID.
     pub pid: u32,
@@ -16,7 +16,7 @@ pub struct Process {
 }
 
 /// A running Docker container. Both names are sanitised when parsed.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Container {
     /// The container's name, e.g. `shop-web-1`.
     pub name: String,
@@ -34,7 +34,7 @@ impl fmt::Display for Container {
 }
 
 /// Why the program behind a socket is not known.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UnknownReason {
     /// Some processes could not be inspected without more privileges, or
@@ -46,7 +46,7 @@ pub enum UnknownReason {
 }
 
 /// The program behind one socket, or why it is not known.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Service {
     /// The process that has the socket open.

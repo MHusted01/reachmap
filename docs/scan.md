@@ -159,7 +159,8 @@ follow:
 
 - **Not every row is a server.** A client that sent a datagram without connecting
   looks exactly like a server to the kernel, so short-lived rows on high port
-  numbers are common. reachmap lists them: they do receive traffic.
+  numbers are common. reachmap lists them: they do receive traffic. They also
+  show up in [`reachmap diff`](diff.md#udp-rows).
 - **A row means the socket accepts traffic, not that anything answers.** Without
   a handshake, a service can stay silent, so a connect probe such as
   [`reachmap probe`](probe.md) cannot confirm a UDP row. The note under the

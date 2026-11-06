@@ -15,6 +15,9 @@ $ sudo reachmap scan --json | jq -r '.ports[] | select(.reach.networks // [] | i
 The table and the JSON come from the same scan, so they never disagree. The
 JSON holds facts as typed values, not the sentences of the table.
 
+[`reachmap diff`](diff.md) reads this document back, so a saved scan works as a
+baseline.
+
 ## Stability
 
 `schema_version` is `1`. It goes up when a change would break an existing

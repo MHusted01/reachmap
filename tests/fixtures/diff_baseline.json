@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 22,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 812,
+        "name": "sshd"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": ["this_host", "lan"]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": true
+      },
+      "warning": null
+    },
+    {
+      "port": 3306,
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 1201,
+        "name": "mysqld"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": ["this_host"]
+      },
+      "reason": {
+        "kind": "loopback"
+      },
+      "warning": null
+    },
+    {
+      "port": 8443,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "listener": "docker_forward",
+      "service": {
+        "kind": "container",
+        "name": "shop-web-1",
+        "compose_service": "web"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": ["this_host", "docker", "lan"]
+      },
+      "reason": {
+        "kind": "all_addresses",
+        "covers": "ipv4",
+        "checked": false
+      },
+      "warning": "ufw_bypassed"
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "ufw_bypassed",
+      "ports": [8443]
+    }
+  ],
+  "collector_errors": []
+}
