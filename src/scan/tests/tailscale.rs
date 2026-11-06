@@ -371,3 +371,35 @@ fn a_tailnet_share_is_a_warning_when_the_interfaces_could_not_be_listed() {
         }]
     );
 }
+
+#[test]
+fn a_wildcard_socket_on_a_shared_port_keeps_its_reach_beside_the_share() {
+    // The socket does not get what Tailscale accepts, so its row stays as it is.
+    let sockets = || vec![tcp_socket(Ipv4Addr::UNSPECIFIED, 443, 100)];
+    let alone = join_on_tailnet(sockets(), Vec::new());
+
+    let report = join_on_tailnet(sockets(), vec![answered_by_tailscale(443, Sharing::Funnel)]);
+
+    assert_eq!(
+        addresses(&report),
+        ["0.0.0.0", "100.64.0.1", "fd7a:115c:a1e0::1"]
+    );
+    assert_eq!(report.ports[0], alone.ports[0]);
+    assert_eq!(report.ports[1].listener, Listener::TailscaleShare);
+}
+
+#[test]
+fn diff_tells_a_share_from_a_socket_on_the_same_address() {
+    let sockets = || vec![tcp_socket(Ipv4Addr::new(100, 64, 0, 1), 443, 100)];
+    let before = join_on_tailnet(sockets(), vec![answered_by_tailscale(443, Sharing::Funnel)]);
+    let after = join_on_tailnet(sockets(), Vec::new());
+
+    let diff = compare(&Snapshot::from(&before), &Snapshot::from(&after));
+
+    // Both rows of the shared address are kept apart, so only the share goes.
+    assert_eq!(diff.differences.len(), 2);
+    assert!(diff.differences.iter().all(|difference| matches!(
+        &difference.change,
+        Change::Removed { was } if was.listener == Tolerant::Known(Listener::TailscaleShare)
+    )));
+}
