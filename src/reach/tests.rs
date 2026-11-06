@@ -652,3 +652,114 @@ fn displays_the_interfaces_of_a_broadcast_address() {
         "broadcast address of enp1s0, eth1"
     );
 }
+
+/// `255.255.255.255`, the broadcast address of no subnet in particular.
+const LIMITED_BROADCAST: &str = "255.255.255.255";
+
+#[test]
+fn the_limited_broadcast_address_is_reached_from_every_ipv4_network() {
+    check(
+        &example_host(),
+        LIMITED_BROADCAST,
+        &[ThisHost, Docker, Tailnet, Lan],
+        Reason::LimitedBroadcast,
+    );
+}
+
+#[test]
+fn the_limited_broadcast_address_seen_through_an_ipv6_socket_is_recognised() {
+    check(
+        &example_host(),
+        "::ffff:255.255.255.255",
+        &[ThisHost, Docker, Tailnet, Lan],
+        Reason::LimitedBroadcast,
+    );
+}
+
+#[test]
+fn ipv6_addresses_add_nothing_to_the_limited_broadcast_address() {
+    // The public address is IPv6, so the internet is not on the list.
+    check(
+        &public_ipv6(),
+        LIMITED_BROADCAST,
+        &[ThisHost, Lan],
+        Reason::LimitedBroadcast,
+    );
+}
+
+#[test]
+fn the_limited_broadcast_address_is_recognised_when_an_interface_lists_it() {
+    // `ip addr add ... brd 255.255.255.255` prints it as the broadcast address.
+    let host = [
+        with_broadcast("enp1s0", "192.168.1.20", LIMITED_BROADCAST),
+        with_broadcast("eth1", "203.0.113.5", "203.0.113.255"),
+    ];
+
+    check(
+        &host,
+        LIMITED_BROADCAST,
+        &[Lan, Internet],
+        Reason::LimitedBroadcast,
+    );
+}
+
+#[test]
+fn a_limited_broadcast_socket_bound_to_a_device_is_only_on_that_device() {
+    check_scoped(
+        &example_host(),
+        LIMITED_BROADCAST,
+        on_device("enp1s0"),
+        &[Lan],
+        only_on("enp1s0"),
+    );
+}
+
+#[test]
+fn a_limited_broadcast_socket_on_a_device_without_ipv4_has_no_address_to_use() {
+    let host = host(&[("eth0", "192.168.1.20"), ("eth1", "2001:db8:1::20")]);
+
+    assert_eq!(
+        classify(
+            LIMITED_BROADCAST.parse().unwrap(),
+            Some(on_device("eth1")),
+            Some(&host)
+        ),
+        verdict(
+            Reach::Unknown,
+            Reason::NoAddressesOnDevice {
+                interface: "eth1".to_string()
+            }
+        )
+    );
+}
+
+#[test]
+fn the_limited_broadcast_address_on_a_host_without_ipv4_reaches_nothing_known() {
+    let host = host(&[("eth0", "2001:db8:1::20")]);
+
+    assert_eq!(
+        classify(LIMITED_BROADCAST.parse().unwrap(), None, Some(&host)),
+        verdict(
+            Reach::Unknown,
+            Reason::NoAddresses {
+                covers: Coverage::Ipv4
+            }
+        )
+    );
+}
+
+#[test]
+fn the_limited_broadcast_address_needs_the_interfaces() {
+    assert_eq!(
+        classify(LIMITED_BROADCAST.parse().unwrap(), None, None),
+        verdict(Reach::Unknown, Reason::InterfacesUnknown)
+    );
+}
+
+#[test]
+fn the_limited_broadcast_reason_says_what_the_address_is() {
+    assert_eq!(
+        Reason::LimitedBroadcast.to_string(),
+        "limited broadcast address, every IPv4 interface"
+    );
+}

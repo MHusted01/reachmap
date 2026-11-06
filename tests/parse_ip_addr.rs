@@ -10,6 +10,7 @@ use std::net::Ipv4Addr;
 
 use reachmap::network::Network;
 use reachmap::parse::ip_addr::parse_ip_addr;
+use reachmap::reach::{Reach, Reason, classify};
 
 const IP_ADDR: &str = include_str!("fixtures/ip_addr.json");
 
@@ -62,7 +63,9 @@ fn fixture_keeps_broadcast_addresses_and_not_the_mac_of_the_link() {
         .filter_map(|a| Some((a.interface, a.broadcast?)))
         .collect();
 
+    // `lo` lists none, so its address is computed. The /32 of tailscale0 has none.
     let expected = [
+        ("lo", Ipv4Addr::new(127, 255, 255, 255)),
         ("enp1s0", Ipv4Addr::new(192, 168, 1, 255)),
         ("br-0123456789ab", Ipv4Addr::new(172, 18, 255, 255)),
         ("docker0", Ipv4Addr::new(172, 17, 255, 255)),
@@ -70,4 +73,27 @@ fn fixture_keeps_broadcast_addresses_and_not_the_mac_of_the_link() {
     .map(|(interface, broadcast)| (interface.to_string(), broadcast));
 
     assert_eq!(broadcasts, expected);
+}
+
+#[test]
+fn a_socket_on_the_broadcast_address_of_a_subnet_without_brd_names_the_interface() {
+    let json = r#"[{"ifindex": 2, "ifname": "enp1s0", "addr_info": [
+        {"family": "inet", "local": "192.168.1.20", "prefixlen": 24}
+    ]}]"#;
+    let host = parse_ip_addr(json).unwrap().addresses;
+
+    let verdict = classify("192.168.1.255".parse().unwrap(), None, Some(&host));
+
+    assert_eq!(
+        verdict.reach,
+        Reach::From {
+            networks: [Network::Lan].into()
+        }
+    );
+    assert_eq!(
+        verdict.reason,
+        Reason::Broadcast {
+            interfaces: ["enp1s0".to_string()].into()
+        }
+    );
 }

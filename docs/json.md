@@ -130,6 +130,7 @@ nothing upstream filters it. reachmap cannot see such filters. Like the table,
 | `loopback` | | Bound to a loopback address. |
 | `on_interfaces` | `interfaces` (array of strings) | Bound to one address, carried by these interfaces. |
 | `broadcast` | `interfaces` (array of strings) | Bound to the broadcast address of a subnet on these interfaces. |
+| `limited_broadcast` | | Bound to `255.255.255.255`. `reach` lists every network with an IPv4 address on this host. |
 | `all_addresses` | `covers`, `checked` (boolean) | Bound to a wildcard address. `checked` is true when the kernel confirmed that no device restricts the socket, and whether it is IPv6-only. When false, the widest case is assumed; a Docker-forwarded port without a socket is always false. |
 | `not_on_host` | | Bound to an address no interface has. |
 | `multicast` | | A UDP socket bound to a multicast group. Which networks reach it depends on the groups this host joined, which reachmap does not read. |

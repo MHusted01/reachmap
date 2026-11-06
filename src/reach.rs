@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use serde::{Deserialize, Serialize};
 
@@ -96,6 +96,9 @@ pub enum Reason {
         /// The interfaces with that broadcast address (almost always one).
         interfaces: BTreeSet<String>,
     },
+    /// Bound to `255.255.255.255`: the socket receives what is broadcast on
+    /// any link with IPv4, and no router forwards that.
+    LimitedBroadcast,
     /// Bound to a wildcard address: `0.0.0.0` (every IPv4 address) or `::`
     /// (every IPv6 address, and IPv4 as well unless the socket is IPv6-only).
     AllAddresses {
@@ -172,6 +175,9 @@ impl fmt::Display for Reason {
             Reason::Broadcast { interfaces } => {
                 f.write_str("broadcast address of ")?;
                 write_joined(f, interfaces)
+            }
+            Reason::LimitedBroadcast => {
+                f.write_str("limited broadcast address, every IPv4 interface")
             }
             Reason::AllAddresses { covers, checked } => f.write_str(match (covers, checked) {
                 (Coverage::Ipv4, true) => "all IPv4 addresses",
@@ -262,32 +268,40 @@ pub fn classify(
     let Some(host) = host else {
         return Verdict::unknown(Reason::InterfacesUnknown);
     };
+    let device = scope.and_then(|scope| scope.device);
     if address.is_unspecified() {
-        classify_wildcard(address, scope, host)
+        let covers = Coverage::of_wildcard(address, scope);
+        let checked = scope.is_some();
+        classify_covered(
+            covers,
+            device,
+            host,
+            Reason::AllAddresses { covers, checked },
+        )
+    } else if address == IpAddr::V4(Ipv4Addr::BROADCAST) {
+        // It belongs to no interface: Linux delivers it from every link.
+        classify_covered(Coverage::Ipv4, device, host, Reason::LimitedBroadcast)
     } else {
-        classify_address(address, scope.and_then(|scope| scope.device), host)
+        classify_address(address, device, host)
     }
 }
 
-/// The verdict for `0.0.0.0` or `::`: every address it covers, on the bound
-/// device if there is one.
-fn classify_wildcard(
-    address: IpAddr,
-    scope: Option<SocketScope<'_>>,
+/// The verdict for a socket that takes traffic for every address in `covers`,
+/// for `reason`: the networks of those addresses, on the bound device if there
+/// is one.
+fn classify_covered(
+    covers: Coverage,
+    device: Option<&str>,
     host: &[HostAddress],
+    reason: Reason,
 ) -> Verdict {
-    let covers = Coverage::of_wildcard(address, scope);
-    if let Some(device) = scope.and_then(|scope| scope.device) {
+    if let Some(device) = device {
         return only_on_device(device, covers, host);
     }
-    let covered = host.iter().filter(|a| covers.includes(a.ip));
-    match networks_of(covered) {
+    match networks_of(host.iter().filter(|a| covers.includes(a.ip))) {
         Some(networks) => Verdict {
             reach: Reach::From { networks },
-            reason: Reason::AllAddresses {
-                covers,
-                checked: scope.is_some(),
-            },
+            reason,
         },
         None => Verdict::unknown(Reason::NoAddresses { covers }),
     }
