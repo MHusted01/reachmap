@@ -30,6 +30,7 @@ fn host(pairs: &[(&str, &str)]) -> Vec<HostAddress> {
         .map(|&(interface, ip)| HostAddress {
             interface: interface.to_string(),
             ip: ip.parse().unwrap(),
+            broadcast: None,
         })
         .collect()
 }
@@ -505,4 +506,149 @@ fn a_multicast_address_seen_through_an_ipv6_socket_counts_too() {
     let verdict = classify("::ffff:239.255.255.250".parse().unwrap(), None, Some(&[]));
 
     assert_eq!(verdict.reason, Reason::Multicast);
+}
+
+/// A host whose LAN and Docker subnets have broadcast addresses, as `ip -j
+/// addr` reports them.
+fn broadcast_host() -> Vec<HostAddress> {
+    vec![
+        with_broadcast("enp1s0", "192.168.1.20", "192.168.1.255"),
+        with_broadcast("eth1", "203.0.113.5", "203.0.113.255"),
+        with_broadcast("docker0", "172.17.0.1", "172.17.255.255"),
+    ]
+}
+
+fn with_broadcast(interface: &str, ip: &str, broadcast: &str) -> HostAddress {
+    HostAddress {
+        interface: interface.to_string(),
+        ip: ip.parse().unwrap(),
+        broadcast: Some(broadcast.parse().unwrap()),
+    }
+}
+
+fn broadcast_of(interfaces: &[&str]) -> Reason {
+    Reason::Broadcast {
+        interfaces: interfaces.iter().map(ToString::to_string).collect(),
+    }
+}
+
+#[test]
+fn a_broadcast_address_is_reached_from_the_network_of_its_interface() {
+    let host = broadcast_host();
+
+    check(&host, "192.168.1.255", &[Lan], broadcast_of(&["enp1s0"]));
+    check(&host, "203.0.113.255", &[Internet], broadcast_of(&["eth1"]));
+    check(
+        &host,
+        "172.17.255.255",
+        &[Docker],
+        broadcast_of(&["docker0"]),
+    );
+}
+
+#[test]
+fn a_broadcast_address_seen_through_an_ipv6_socket_is_recognised() {
+    check(
+        &broadcast_host(),
+        "::ffff:192.168.1.255",
+        &[Lan],
+        broadcast_of(&["enp1s0"]),
+    );
+}
+
+#[test]
+fn a_broadcast_address_shared_by_two_interfaces_names_both() {
+    let host = [
+        with_broadcast("enp1s0", "192.168.1.20", "192.168.1.255"),
+        with_broadcast("docker0", "192.168.1.30", "192.168.1.255"),
+    ];
+
+    check(
+        &host,
+        "192.168.1.255",
+        &[Docker, Lan],
+        broadcast_of(&["docker0", "enp1s0"]),
+    );
+}
+
+#[test]
+fn two_addresses_in_one_subnet_name_their_interface_once() {
+    let host = [
+        with_broadcast("enp1s0", "192.168.1.20", "192.168.1.255"),
+        with_broadcast("enp1s0", "192.168.1.21", "192.168.1.255"),
+    ];
+
+    check(&host, "192.168.1.255", &[Lan], broadcast_of(&["enp1s0"]));
+}
+
+#[test]
+fn an_address_of_this_host_is_not_treated_as_a_broadcast_address() {
+    // Odd but legal: one interface has as its address what another calls its
+    // broadcast address. The interface that has it decides.
+    let host = [
+        with_broadcast("enp1s0", "192.168.1.20", "192.168.1.255"),
+        HostAddress {
+            interface: "eth1".to_string(),
+            ip: "192.168.1.255".parse().unwrap(),
+            broadcast: None,
+        },
+    ];
+
+    check(&host, "192.168.1.255", &[Lan], only_on("eth1"));
+}
+
+#[test]
+fn a_broadcast_socket_bound_to_the_device_with_that_broadcast_says_so() {
+    check_scoped(
+        &broadcast_host(),
+        "192.168.1.255",
+        on_device("enp1s0"),
+        &[Lan],
+        broadcast_of(&["enp1s0"]),
+    );
+}
+
+#[test]
+fn a_broadcast_socket_bound_to_another_device_is_only_on_that_device() {
+    // Linux delivers what arrives on the device, not what arrives on the
+    // interface the broadcast address belongs to.
+    check_scoped(
+        &broadcast_host(),
+        "192.168.1.255",
+        on_device("eth1"),
+        &[Internet],
+        only_on("eth1"),
+    );
+}
+
+#[test]
+fn an_address_that_is_no_broadcast_address_is_still_not_on_this_host() {
+    assert_eq!(
+        classify(
+            "192.168.2.255".parse().unwrap(),
+            None,
+            Some(&broadcast_host())
+        ),
+        verdict(Reach::Unknown, Reason::NotOnHost)
+    );
+}
+
+#[test]
+fn a_broadcast_address_needs_the_interfaces() {
+    assert_eq!(
+        classify("192.168.1.255".parse().unwrap(), None, None),
+        verdict(Reach::Unknown, Reason::InterfacesUnknown)
+    );
+}
+
+#[test]
+fn displays_the_interfaces_of_a_broadcast_address() {
+    assert_eq!(
+        broadcast_of(&["enp1s0"]).to_string(),
+        "broadcast address of enp1s0"
+    );
+    assert_eq!(
+        broadcast_of(&["enp1s0", "eth1"]).to_string(),
+        "broadcast address of enp1s0, eth1"
+    );
 }

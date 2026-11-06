@@ -89,6 +89,12 @@ pub enum Reason {
         /// The interfaces that carry it (almost always one).
         interfaces: BTreeSet<String>,
     },
+    /// Bound to the broadcast address of a subnet: the socket receives what is
+    /// broadcast there, not what is sent to this host's own address.
+    Broadcast {
+        /// The interfaces with that broadcast address (almost always one).
+        interfaces: BTreeSet<String>,
+    },
     /// Bound to a wildcard address: `0.0.0.0` (every IPv4 address) or `::`
     /// (every IPv6 address, and IPv4 as well unless the socket is IPv6-only).
     AllAddresses {
@@ -154,6 +160,10 @@ impl fmt::Display for Reason {
             Reason::Loopback => f.write_str("loopback address"),
             Reason::OnInterfaces { interfaces } => {
                 f.write_str("only on ")?;
+                write_joined(f, interfaces)
+            }
+            Reason::Broadcast { interfaces } => {
+                f.write_str("broadcast address of ")?;
                 write_joined(f, interfaces)
             }
             Reason::AllAddresses { covers, checked } => f.write_str(match (covers, checked) {
@@ -270,15 +280,36 @@ fn classify_wildcard(
     }
 }
 
-/// The verdict for one address: the network of the interface that has it. A
-/// bound device narrows that. If another interface has the address, traffic
-/// for it still arrives through the device, because Linux accepts traffic for
-/// any local address on any interface.
+/// The verdict for one address: the network of the interface that has it, or
+/// failing that, of the interface it is the broadcast address of.
 fn classify_address(address: IpAddr, device: Option<&str>, host: &[HostAddress]) -> Verdict {
-    let holders: Vec<&HostAddress> = host
+    let owners: Vec<&HostAddress> = host
         .iter()
         .filter(|a| a.ip.to_canonical() == address)
         .collect();
+    if !owners.is_empty() {
+        return classify_holders(&owners, address, device, host, |interfaces| {
+            Reason::OnInterfaces { interfaces }
+        });
+    }
+    let broadcasters: Vec<&HostAddress> =
+        host.iter().filter(|a| a.has_broadcast(address)).collect();
+    classify_holders(&broadcasters, address, device, host, |interfaces| {
+        Reason::Broadcast { interfaces }
+    })
+}
+
+/// The verdict for an address that `holders` have, with `reason` naming their
+/// interfaces. A bound device narrows that. If only another interface holds
+/// the address, traffic for it still arrives through the device, because Linux
+/// accepts traffic for any local or broadcast address on any interface.
+fn classify_holders(
+    holders: &[&HostAddress],
+    address: IpAddr,
+    device: Option<&str>,
+    host: &[HostAddress],
+    reason: impl FnOnce(BTreeSet<String>) -> Reason,
+) -> Verdict {
     let matching: Vec<&HostAddress> = holders
         .iter()
         .copied()
@@ -287,9 +318,7 @@ fn classify_address(address: IpAddr, device: Option<&str>, host: &[HostAddress])
     match (networks_of(matching.iter().copied()), device) {
         (Some(networks), _) => Verdict {
             reach: Reach::From { networks },
-            reason: Reason::OnInterfaces {
-                interfaces: matching.iter().map(|a| a.interface.clone()).collect(),
-            },
+            reason: reason(matching.iter().map(|a| a.interface.clone()).collect()),
         },
         (None, Some(device)) if !holders.is_empty() => {
             let family = if address.is_ipv4() {

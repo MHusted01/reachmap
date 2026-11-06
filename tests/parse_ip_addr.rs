@@ -6,6 +6,8 @@
 // Test helpers may panic: a failed test should stop loudly.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+use std::net::Ipv4Addr;
+
 use reachmap::network::Network;
 use reachmap::parse::ip_addr::parse_ip_addr;
 
@@ -49,4 +51,23 @@ fn fixture_names_interfaces_by_index() {
     assert_eq!(names[&4], "tailscale0");
     // Interfaces without addresses count too: a socket can be bound to one.
     assert_eq!(names[&3], "wlp2s0");
+}
+
+#[test]
+fn fixture_keeps_broadcast_addresses_and_not_the_mac_of_the_link() {
+    let broadcasts: Vec<(String, Ipv4Addr)> = parse_ip_addr(IP_ADDR)
+        .unwrap()
+        .addresses
+        .into_iter()
+        .filter_map(|a| Some((a.interface, a.broadcast?)))
+        .collect();
+
+    let expected = [
+        ("enp1s0", Ipv4Addr::new(192, 168, 1, 255)),
+        ("br-0123456789ab", Ipv4Addr::new(172, 18, 255, 255)),
+        ("docker0", Ipv4Addr::new(172, 17, 255, 255)),
+    ]
+    .map(|(interface, broadcast)| (interface.to_string(), broadcast));
+
+    assert_eq!(broadcasts, expected);
 }

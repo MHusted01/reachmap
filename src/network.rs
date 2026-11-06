@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,10 @@ pub struct HostAddress {
     pub interface: String,
     /// The address.
     pub ip: IpAddr,
+    /// The broadcast address of its subnet, if `ip -j addr` prints one. IPv6
+    /// has no broadcast. An address configured without one prints none, even
+    /// though the kernel may still accept broadcasts for its subnet.
+    pub broadcast: Option<Ipv4Addr>,
 }
 
 /// What this host's interfaces look like.
@@ -87,6 +91,11 @@ impl HostAddress {
             Network::Internet
         }
     }
+
+    /// Whether `address` is the broadcast address of this address's subnet.
+    pub fn has_broadcast(&self, address: IpAddr) -> bool {
+        self.broadcast.map(IpAddr::V4) == Some(address)
+    }
 }
 
 /// The interface Tailscale creates on Linux (its default `--tun` name).
@@ -151,6 +160,7 @@ mod tests {
         HostAddress {
             interface: interface.to_string(),
             ip: ip.parse().unwrap(),
+            broadcast: None,
         }
         .network()
     }

@@ -2,7 +2,7 @@
 //! interface, each with a list of assigned addresses.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use serde::Deserialize;
 
@@ -25,6 +25,10 @@ struct AddrInfo {
     /// The address itself, e.g. `"192.168.1.20"`. serde parses the text
     /// into an `IpAddr`.
     local: IpAddr,
+    /// The broadcast address of the subnet, e.g. `"192.168.1.255"`. Missing
+    /// for IPv6 and for addresses configured without one. The link has a
+    /// `broadcast` key too, holding a MAC address; [`Link`] does not read it.
+    broadcast: Option<Ipv4Addr>,
 }
 
 /// Turns `ip -j addr` output into one [`HostAddress`] per assigned address,
@@ -44,6 +48,7 @@ pub fn parse_ip_addr(json: &str) -> Result<HostInterfaces, serde_json::Error> {
             addr_info.into_iter().map(move |addr| HostAddress {
                 interface: ifname.clone(),
                 ip: addr.local,
+                broadcast: addr.broadcast,
             })
         })
         .collect();
@@ -120,6 +125,61 @@ mod tests {
     fn an_address_that_is_not_an_ip_is_an_error() {
         let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [{"local": "not-an-ip"}]}]"#;
         assert!(parse_ip_addr(json).is_err());
+    }
+
+    fn broadcasts(json: &str) -> Vec<Option<Ipv4Addr>> {
+        parse_ip_addr(json)
+            .unwrap()
+            .addresses
+            .into_iter()
+            .map(|a| a.broadcast)
+            .collect()
+    }
+
+    #[test]
+    fn keeps_the_broadcast_address_of_each_address() {
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [
+            {"family": "inet", "local": "192.0.2.20", "broadcast": "192.0.2.255"},
+            {"family": "inet", "local": "198.51.100.20", "broadcast": "198.51.100.127"}
+        ]}]"#;
+
+        assert_eq!(
+            broadcasts(json),
+            [
+                Some(Ipv4Addr::new(192, 0, 2, 255)),
+                Some(Ipv4Addr::new(198, 51, 100, 127))
+            ]
+        );
+    }
+
+    #[test]
+    fn an_address_without_a_broadcast_address_has_none() {
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [
+            {"family": "inet", "local": "192.0.2.20", "prefixlen": 32},
+            {"family": "inet6", "local": "fe80::1", "prefixlen": 64}
+        ]}]"#;
+
+        assert_eq!(broadcasts(json), [None, None]);
+    }
+
+    #[test]
+    fn the_hardware_broadcast_address_of_the_link_is_not_an_ip_broadcast() {
+        // The same key one level up holds a MAC address.
+        let json = r#"[{"ifindex": 2, "ifname": "eth0", "broadcast": "ff:ff:ff:ff:ff:ff",
+            "addr_info": [{"family": "inet", "local": "192.0.2.20"}]}]"#;
+
+        assert_eq!(broadcasts(json), [None]);
+    }
+
+    #[test]
+    fn a_broadcast_address_that_is_not_an_ipv4_address_is_an_error() {
+        for broadcast in ["not-an-ip", "2001:db8::ff"] {
+            let json = format!(
+                r#"[{{"ifindex": 2, "ifname": "eth0", "addr_info":
+                    [{{"local": "192.0.2.20", "broadcast": "{broadcast}"}}]}}]"#
+            );
+            assert!(parse_ip_addr(&json).is_err(), "{broadcast}");
+        }
     }
 
     #[test]

@@ -83,12 +83,13 @@ connections on:
 |-----|---------|
 | `loopback address` | Bound to `127.0.0.1`, `::1` or another loopback address: only programs on this host can connect. Needs no interface facts. |
 | `only on enp1s0` | Bound to one address, or to this device; the interface decides the network. |
+| `broadcast address of enp1s0` | Bound to the broadcast address of a subnet, as Samba's `nmbd` does. The socket receives what is broadcast there, not what is sent to this host's own address. REACHABLE FROM is the network of that interface. A TCP socket can bind such an address, but no client can connect to it; reachmap reports it the same way, so the row can show more reach than there is. |
 | `all IPv4 addresses` | Bound to `0.0.0.0`: every network with an IPv4 address on this host. |
 | `all IPv6 and IPv4 addresses` | Bound to `::`: every network with any address on this host. |
 | `all IPv6 addresses` | Bound to `::` with the IPv6-only option: every network with an IPv6 address on this host. |
 | `all IPv4 addresses (bound device not checked)` | Like `all IPv4 addresses`, but the socket's options are unknown (see below). |
 | `all IPv6 and IPv4 addresses (IPv6-only and bound device not checked)` | Like `all IPv6 and IPv4 addresses`, but the socket's options are unknown (see below). |
-| `no interface has this address` | Bound to an address that no interface has (for example, an interface that went away). REACHABLE FROM is `unknown`. |
+| `no interface has this address` | Bound to an address that no interface has (for example, an interface that went away). REACHABLE FROM is `unknown`. Also shown for `255.255.255.255`, and for the broadcast address of a subnet configured without one (`ip addr add` without `brd`), because `ip -j addr` does not list those. |
 | `multicast address, group membership not checked` | A UDP socket bound to a multicast group, such as `239.255.255.250`. It receives what is sent to the group, and reachmap does not read which groups this host joined. REACHABLE FROM is `unknown`. Needs no interface facts. |
 | `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or an IPv6-only `::` on a host without IPv6 addresses, or `::` on a host without any). REACHABLE FROM is `unknown`. |
 | `bound to eth1, which has no address it can use` | Bound to a device without a suitable address, such as a VRF device whose addresses are on other interfaces. REACHABLE FROM is `unknown`. |

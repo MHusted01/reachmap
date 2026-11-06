@@ -8,6 +8,12 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan` recognises a socket bound to a subnet's broadcast address, as
+  Samba's `nmbd` does. The row used to say that no interface has the address and
+  show `unknown`; WHY now names the interface, REACHABLE FROM shows its network,
+  and `--json` has the new reason `broadcast`. `reachmap diff` reports such a row
+  once as changed against a baseline saved before this
+  ([#39](https://github.com/MHusted01/reachmap/issues/39)).
 - `reachmap scan` reads `tailscale serve status --json`. A row that Tailscale
   forwards to gains `tailnet`, and with Funnel also `internet`, and WHY says so.
   Every Funnel port is a warning, so the scan exits with 1, and a `tailscale`
