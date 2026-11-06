@@ -44,6 +44,7 @@ struct JsonReport<'a> {
     baseline_collector_errors: &'a BTreeSet<Tolerant<Collector>>,
     current_collector_errors: &'a BTreeSet<Tolerant<Collector>>,
     privileges_differ: bool,
+    ignored: Option<usize>,
 }
 
 /// The report as pretty-printed JSON, ending in a newline.
@@ -54,6 +55,7 @@ pub fn render_json(diff: &Diff) -> Result<String, serde_json::Error> {
         baseline_collector_errors: &diff.baseline_missing,
         current_collector_errors: &diff.current_missing,
         privileges_differ: diff.privileges_differ,
+        ignored: diff.ignored,
     };
     serde_json::to_string_pretty(&document).map(|text| text + "\n")
 }
@@ -90,6 +92,7 @@ fn notes(diff: &Diff) -> Vec<String> {
     let unverified = has(|difference| matches!(difference.change, Change::Unverified { .. }));
     let udp = has(|difference| difference.key.protocol == Tolerant::Known(Protocol::Udp));
     [
+        diff.ignored.map(ignored_note),
         unverified.then(|| UNVERIFIED_NOTE.to_string()),
         missing_note("the baseline", &diff.baseline_missing),
         missing_note("the current scan", &diff.current_missing),
@@ -99,6 +102,16 @@ fn notes(diff: &Diff) -> Vec<String> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// The note for an active filter, which is there even if it left nothing out.
+fn ignored_note(count: usize) -> String {
+    let noun = if count == 1 {
+        "difference"
+    } else {
+        "differences"
+    };
+    format!("--ignore left out {count} {noun}")
 }
 
 /// The note for facts one side lacks, if it lacks any.
@@ -221,6 +234,7 @@ mod tests {
             baseline_missing: BTreeSet::new(),
             current_missing: BTreeSet::new(),
             privileges_differ: false,
+            ignored: None,
         }
     }
 
@@ -296,6 +310,57 @@ mod tests {
              note: the current scan has no facts from Docker, so the rows those facts affect \
              cannot be trusted\n"
         );
+    }
+
+    fn ignored(count: usize) -> Diff {
+        Diff {
+            ignored: Some(count),
+            ..clean()
+        }
+    }
+
+    #[test]
+    fn an_active_filter_is_named_even_when_it_left_nothing_out() {
+        assert_eq!(
+            Report(&ignored(0)).to_string(),
+            "No differences.\n\nnote: --ignore left out 0 differences\n"
+        );
+    }
+
+    #[test]
+    fn the_ignored_note_counts_in_the_singular_and_the_plural() {
+        assert_eq!(notes(&ignored(1)), ["--ignore left out 1 difference"]);
+        assert_eq!(notes(&ignored(3)), ["--ignore left out 3 differences"]);
+    }
+
+    #[test]
+    fn the_ignored_note_comes_before_the_others() {
+        let both = Diff {
+            ignored: Some(2),
+            privileges_differ: true,
+            ..clean()
+        };
+
+        assert_eq!(
+            notes(&both),
+            ["--ignore left out 2 differences", PRIVILEGES_NOTE]
+        );
+    }
+
+    #[test]
+    fn json_says_how_many_differences_were_left_out() {
+        let document: serde_json::Value =
+            serde_json::from_str(&render_json(&ignored(3)).unwrap()).unwrap();
+
+        assert_eq!(document["ignored"], 3);
+    }
+
+    #[test]
+    fn json_has_a_null_count_without_a_filter() {
+        let document: serde_json::Value =
+            serde_json::from_str(&render_json(&clean()).unwrap()).unwrap();
+
+        assert_eq!(document["ignored"], serde_json::Value::Null);
     }
 
     #[test]

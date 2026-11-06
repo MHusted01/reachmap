@@ -94,7 +94,34 @@ side and known on the other is a change, and unknown on both sides is not.
 A UDP client that sent without connecting looks like a server (see
 [UDP](scan.md#udp)), so short-lived rows on high ports can appear as `new` or
 `removed` between runs. reachmap cannot tell them apart, so it reports them, with
-a note. Expect this to set off an unattended check now and then.
+a note. Expect this to set off an unattended check now and then, unless you
+[leave those ports out](#leaving-ports-out).
+
+## Leaving ports out
+
+`--ignore` leaves ports out of the comparison, so an unattended check stays quiet
+about noise you know. It takes the same list as `reachmap probe --ports`: ports
+and ranges, separated by commas.
+
+```
+$ reachmap diff baseline.json --ignore 5353,32768-60999
+CHANGE   PORT  PROTO  ADDRESS  DETAIL
+changed  22    tcp    0.0.0.0  reachable from: this host, LAN -> this host, tailnet, LAN
+
+note: --ignore left out 2 differences
+```
+
+The note counts differences, not rows that stayed the same. It is always there
+when `--ignore` is, even with 0, so a filter never goes unnoticed in a report.
+
+Left-out differences do not change the exit status: if nothing else differs, the
+status is 0. Facts a scan lacks are not tied to a port, so they still set status
+1 and print their note.
+
+`--ignore` works on port numbers, on every protocol. A range you pick for UDP
+noise hides a new TCP listener in that range as well, and only the count shows
+it. Keep ranges as narrow as the noise allows, and compare without `--ignore`
+now and then.
 
 ## Exit status
 
@@ -166,7 +193,8 @@ appear without a new version. Treat an unknown `kind` as a difference.
   ],
   "baseline_collector_errors": [],
   "current_collector_errors": ["docker"],
-  "privileges_differ": false
+  "privileges_differ": false,
+  "ignored": null
 }
 ```
 
@@ -177,6 +205,7 @@ appear without a new version. Treat an unknown `kind` as a difference.
 | `baseline_collector_errors` | array of strings | The facts the baseline lacks: `interfaces`, `docker`, `socket_options`, `tailscale`, or `unknown` for a value this version cannot read. |
 | `current_collector_errors` | array of strings | The same for the current scan. |
 | `privileges_differ` | boolean | Only one of the scans could inspect every process, so owners can differ for that reason alone. |
+| `ignored` | number or null | How many differences `--ignore` left out, or `null` without `--ignore`. |
 
 ### `differences`
 

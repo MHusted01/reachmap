@@ -1,4 +1,5 @@
-//! The values of `reachmap probe`'s options: the port list and the timeout.
+//! The values of command-line options: the port list that `reachmap probe` and
+//! `reachmap diff` share, and the probe's timeout.
 
 use std::collections::BTreeSet;
 use std::ops::RangeInclusive;
@@ -7,11 +8,11 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-/// The ports to probe: sorted, without duplicates, never empty.
+/// A set of ports from the command line: sorted, without duplicates, never empty.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortList(BTreeSet<u16>);
 
-/// Why a `--ports` value was refused.
+/// Why a list of ports was refused.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PortListError {
     /// Not a number from 1 to 65535. Empty items end up here too.
@@ -41,6 +42,11 @@ impl PortList {
     /// The ports in ascending order.
     pub fn iter(&self) -> impl Iterator<Item = u16> + '_ {
         self.0.iter().copied()
+    }
+
+    /// Whether `port` is in the list.
+    pub fn contains(&self, port: u16) -> bool {
+        self.0.contains(&port)
     }
 }
 
@@ -123,6 +129,17 @@ mod tests {
     fn a_list_without_ports_cannot_be_built() {
         assert_eq!(PortList::from_ports([]), None);
         assert_eq!(PortList::from_ports([0]), None);
+    }
+
+    #[test]
+    fn a_list_knows_which_ports_it_holds() {
+        let list: PortList = "22,8000-8002".parse().unwrap();
+
+        assert!(list.contains(22));
+        assert!(list.contains(8000));
+        assert!(list.contains(8002));
+        assert!(!list.contains(80));
+        assert!(!list.contains(8003));
     }
 
     fn invalid(text: &str) -> PortListError {

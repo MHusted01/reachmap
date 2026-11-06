@@ -102,5 +102,6 @@
   "current_collector_errors": [
     "docker"
   ],
-  "privileges_differ": true
+  "privileges_differ": true,
+  "ignored": null
 }
