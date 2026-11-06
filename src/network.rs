@@ -121,6 +121,13 @@ impl HostAddress {
         }
     }
 
+    /// Whether clients on the tailnet connect to this address. `tailscale0`
+    /// has a link-local IPv6 address too, which no peer is told about.
+    pub fn is_tailnet_address(&self) -> bool {
+        let link_local = matches!(self.ip, IpAddr::V6(ip) if ip.is_unicast_link_local());
+        self.network() == Network::Tailnet && !link_local
+    }
+
     /// Whether `address` is the broadcast address of this address's subnet.
     pub fn has_broadcast(&self, address: IpAddr) -> bool {
         self.broadcast.map(IpAddr::V4) == Some(address)
@@ -380,5 +387,18 @@ mod tests {
             Network::Internet.to_string(),
             "internet (if not filtered upstream)"
         );
+    }
+
+    #[test]
+    fn a_tailnet_address_is_one_tailnet_clients_connect_to() {
+        let address = |interface: &str, ip: &str| HostAddress {
+            interface: interface.to_string(),
+            ip: ip.parse().unwrap(),
+            broadcast: None,
+        };
+        assert!(address("tailscale0", "100.64.0.1").is_tailnet_address());
+        assert!(address("tailscale0", "fd7a:115c:a1e0::1").is_tailnet_address());
+        assert!(!address("tailscale0", "fe80::1").is_tailnet_address());
+        assert!(!address("enp1s0", "192.168.1.20").is_tailnet_address());
     }
 }

@@ -61,6 +61,21 @@ fn without_docker(snapshot: Snapshot) -> Snapshot {
     }
 }
 
+fn shared_by_tailscale() -> Exposure {
+    Exposure {
+        listener: Tolerant::Known(Listener::TailscaleShare),
+        service: Owner::Tailscale,
+        ..exposure("unused")
+    }
+}
+
+fn without(collector: Collector, snapshot: Snapshot) -> Snapshot {
+    Snapshot {
+        missing: BTreeSet::from([Tolerant::Known(collector)]),
+        ..snapshot
+    }
+}
+
 fn changes(diff: &Diff) -> Vec<(u16, Change)> {
     diff.differences
         .iter()
@@ -449,4 +464,57 @@ fn ignoring_ports_does_not_excuse_lost_facts() {
 
     assert!(diff.differences.is_empty());
     assert!(!diff.is_clean());
+}
+
+#[test]
+fn a_share_is_unverified_when_tailscale_or_the_interfaces_are_missing() {
+    let baseline = snapshot([(key(443), shared_by_tailscale())]);
+
+    for collector in [Collector::Tailscale, Collector::Interfaces] {
+        let diff = compare(&baseline, &without(collector, snapshot([])));
+        assert_eq!(
+            changes(&diff),
+            [(
+                443,
+                Change::Unverified {
+                    was: shared_by_tailscale()
+                }
+            )],
+            "{collector:?}"
+        );
+    }
+}
+
+#[test]
+fn a_share_is_removed_when_every_fact_it_needs_is_there() {
+    let baseline = snapshot([(key(443), shared_by_tailscale())]);
+
+    let diff = compare(&baseline, &without(Collector::Docker, snapshot([])));
+
+    assert_eq!(
+        changes(&diff),
+        [(
+            443,
+            Change::Removed {
+                was: shared_by_tailscale()
+            }
+        )]
+    );
+}
+
+#[test]
+fn a_host_socket_is_removed_even_when_tailscale_could_not_be_asked() {
+    let baseline = snapshot([(key(22), exposure("sshd"))]);
+
+    let diff = compare(&baseline, &without(Collector::Tailscale, snapshot([])));
+
+    assert_eq!(
+        changes(&diff),
+        [(
+            22,
+            Change::Removed {
+                was: exposure("sshd")
+            }
+        )]
+    );
 }

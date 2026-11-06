@@ -94,6 +94,7 @@ connections on:
 | `no interface has an IPv4 address` | Bound to `0.0.0.0` on a host without IPv4 addresses (or an IPv6-only `::` on a host without IPv6 addresses, or `::` on a host without any). REACHABLE FROM is `unknown`. |
 | `bound to eth1, which has no address it can use` | Bound to a device without a suitable address, such as a VRF device whose addresses are on other interfaces. REACHABLE FROM is `unknown`. |
 | `...; shared by Tailscale Funnel on 443` | Tailscale forwards connections to this socket (see [Tailscale](#tailscale)). The first part is the socket's own reason. |
+| `accepted by Tailscale Funnel; no listening port behind it` | Tailscale shares the port, and it forwards to no port with a row (see [Tailscale](#tailscale)). |
 | `...; no host socket, Docker forwards this port` | Docker publishes the port but no socket listens on the host (see [Docker](#docker)). The first part is the usual reason for the published address. |
 | `could not list interfaces` | `ip -j addr` failed; a warning on stderr says why. REACHABLE FROM is `unknown`, except for loopback addresses. |
 
@@ -231,6 +232,20 @@ A wildcard socket counts when it accepts the target's address. A `::` socket
 counts for IPv4 targets too, even if it is IPv6-only, so a row can list more
 networks than can connect, never fewer.
 
+A shared port that forwards to no row gets a row of its own, on each Tailscale
+address of this host. That is a port serving a file, a text or a redirect, or
+one that forwards to a Unix socket, another machine or a program that is not
+running. SERVICE says `Tailscale`, and REACHABLE FROM is `tailnet`, with Funnel
+also `internet (if not filtered upstream)`:
+
+```text
+PORT  PROTO  ADDRESS     SERVICE    REACHABLE FROM  WHY
+8443  tcp    100.64.0.1  Tailscale  tailnet         accepted by Tailscale Serve; no listening port behind it
+```
+
+Such a row stands beside a socket on the same address and port, because the
+share can reach further than the socket.
+
 Every Funnel port is a warning under the table, so the scan exits with 1, also
 when you share the port on purpose. Serve alone is no warning.
 
@@ -239,13 +254,19 @@ when you share the port on purpose. Serve alone is no warning.
 - **`tailscale` fails.** For example when `tailscaled` is stopped. The scan
   continues with a note on stderr and a warning that it is unknown what is
   shared, so it exits with 1. Rows keep the reach of their socket.
-- **Some targets have no row.** A file, a text, a redirect, a Unix socket and
-  a host name other than `localhost` have no address to match, and an address
-  on another machine has no socket here. Funnel ports are
-  still listed in the warning; a port shared with the tailnet alone does not
-  show.
-- **The shared port itself may have no row.** Tailscale can accept the
-  connection without a socket in the kernel's tables.
+- **No Tailscale address is known.** A shared port with no row behind it needs
+  an address to show on. Without one, for example when the interfaces could not
+  be listed or Tailscale runs without `tailscale0`, a warning names the ports
+  shared with the tailnet, so the scan exits with 1. Funnel ports are in their
+  own warning.
+- **A host name counts as nothing behind it.** A target with a host name other
+  than `localhost` has no address to match, so the shared port gets its own row
+  even if that name is this host.
+- **A port that forwards to a row has no row itself.** The row it forwards to
+  shows the reach, and WHY names the port clients connect to.
+- **A Tailscale Service has its own address.** The serve config names no
+  address, so its ports show on this host's Tailscale addresses, which can list
+  more than clients really use.
 - **Funnel counts per port.** When one port is shared under two names, or by a
   Tailscale Service as well, and Funnel is on for one of them, all of them
   count as Funnel.

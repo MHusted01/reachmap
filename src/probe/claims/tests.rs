@@ -233,6 +233,18 @@ fn a_missing_file_is_an_error_naming_it() {
 /// The pinned output of `reachmap scan --json`, so this reader and the real
 /// document cannot drift apart.
 const REAL_SCAN: &str = include_str!("../../../tests/fixtures/scan_report.json");
+#[test]
+fn a_row_tailscale_accepts_speaks_for_its_own_port() {
+    // Unlike a row Tailscale forwards to, this row is the port clients use.
+    let row = r#"{"port": 443, "protocol": "tcp",
+        "reach": {"kind": "from", "networks": ["tailnet", "internet"]},
+        "reason": {"kind": "tailscale_accepts", "sharing": "funnel"}}"#;
+    let claims = claims(&[row]);
+    assert_eq!(claims.claim(443, Network::Tailnet), Claim::CanReach);
+    assert_eq!(claims.claim(443, Network::Internet), Claim::CanReach);
+    assert_eq!(claims.claim(443, Network::Lan), Claim::CannotReach);
+}
+
 const REAL_SHARED_SCAN: &str = include_str!("../../../tests/fixtures/scan_report_tailscale.json");
 
 #[test]

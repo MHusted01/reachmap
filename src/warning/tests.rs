@@ -303,3 +303,15 @@ fn a_tailscale_that_could_not_be_asked_is_unknown_not_fine() {
         "Tailscale could not be asked, so it is unknown which ports it shares"
     );
 }
+
+#[test]
+fn a_share_without_a_row_is_named() {
+    let warning = ScanWarning::TailscaleNoRow {
+        ports: BTreeSet::from([8443, 10000]),
+    };
+    assert_eq!(
+        warning.to_string(),
+        "Tailscale shares these ports with the tailnet, but no Tailscale address is known to \
+         show them on: 8443, 10000"
+    );
+}

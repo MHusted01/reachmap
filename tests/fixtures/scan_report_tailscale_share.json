@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 443,
+      "protocol": "tcp",
+      "address": "100.64.0.1",
+      "listener": "tailscale_share",
+      "service": {
+        "kind": "tailscale"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "tailnet",
+          "internet"
+        ]
+      },
+      "reason": {
+        "kind": "tailscale_accepts",
+        "sharing": "funnel"
+      },
+      "warning": null
+    }
+  ],
+  "warnings": [
+    {
+      "kind": "tailscale_funnel",
+      "ports": [
+        443
+      ]
+    }
+  ],
+  "collector_errors": []
+}

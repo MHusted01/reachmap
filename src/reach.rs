@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::network::{HostAddress, Network};
 use crate::socket::SocketOptions;
+use crate::tailscale::Sharing;
 
 /// Which networks can reach a socket.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -134,6 +135,12 @@ pub enum Reason {
         /// The reason the socket has by itself.
         direct: Box<Reason>,
     },
+    /// Tailscale accepts connections on this port, and they end up at no port
+    /// of this host that has a row.
+    TailscaleAccepts {
+        /// Who Tailscale shares the port with.
+        sharing: Sharing,
+    },
 }
 
 /// Where a socket can be reached from, with the reason.
@@ -204,6 +211,12 @@ impl fmt::Display for Reason {
                     write_joined(f, funnel_on)?;
                 }
                 Ok(())
+            }
+            Reason::TailscaleAccepts { sharing } => {
+                write!(
+                    f,
+                    "accepted by Tailscale {sharing}; no listening port behind it"
+                )
             }
         }
     }

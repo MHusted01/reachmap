@@ -8,6 +8,14 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan` shows a port Tailscale shares that forwards to no row, such as
+  one serving a file, as a row of its own on each Tailscale address of the host,
+  so `reachmap diff` reports it and `reachmap probe --scan` checks it. Without a
+  known Tailscale address, a warning names the tailnet ports instead, and the scan
+  exits with 1. `--json` has the new listener `tailscale_share`, service
+  `tailscale`, reason `tailscale_accepts` and warning `tailscale_no_row`. A
+  baseline saved before this lists these rows as new once
+  ([#45](https://github.com/MHusted01/reachmap/issues/45)).
 - `reachmap diff --ignore <ports>` leaves ports and ranges out of the comparison,
   on every protocol, so an unattended check stays quiet about known noise. A note
   says how many differences were left out, even when that is 0, and `--json` gains

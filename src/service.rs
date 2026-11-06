@@ -53,6 +53,8 @@ pub enum Service {
     Process(Process),
     /// The Docker container the port is published for.
     Container(Container),
+    /// Tailscale accepts the connections, and no port on this host is behind it.
+    Tailscale,
     /// No owner was found.
     Unknown {
         /// Why not.
@@ -65,6 +67,7 @@ impl fmt::Display for Service {
         match self {
             Service::Process(Process { pid, name }) => write!(f, "{name} ({pid})"),
             Service::Container(container) => container.fmt(f),
+            Service::Tailscale => f.write_str("Tailscale"),
             Service::Unknown {
                 reason: UnknownReason::NeedsRoot,
             } => f.write_str("unknown (run with sudo for details)"),

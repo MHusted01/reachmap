@@ -62,13 +62,15 @@ Identical rows count once, so eight workers instead of four change nothing.
 ## Tailscale
 
 `diff` compares rows, so a port that Tailscale starts to share shows as a change
-when it adds a network to a row. Two cases do not show:
+when it adds a network to a row, and as `new` when it forwards to no row and gets
+one of its own, once per Tailscale address. Two cases do not show:
 
 - A row that already lists those networks. The same reach for another reason is
   no new exposure, so WHY is not compared.
-- A shared port with no row, such as a Funnel port that serves a file. `scan`
-  still lists every Funnel port in its warning, so run `scan` too if that
-  matters to you.
+- A shared port on a host with no known Tailscale address, as no row can show
+  it. `scan` names it in a warning, so run `scan` too if that matters to you.
+
+A baseline saved before reachmap showed these rows lists them as `new` once.
 
 ## Missing facts
 
@@ -77,6 +79,8 @@ Tailscale. That must not read as "nothing changed", so:
 
 - A Docker-forwarded port without a host socket is only known from Docker. When
   Docker could not be asked, such a row is `unverified`, not `removed`.
+- A port Tailscale shares with no row behind it is only known from Tailscale and
+  the interface list. When either is missing, such a row is `unverified` too.
 - A note names the facts either side lacks.
 - If the current scan lacks facts the baseline has, the status is 1 even when
   every row matches, and the line above the notes says `No differences in the

@@ -157,16 +157,26 @@ fn changes_at(
     .collect()
 }
 
+/// The facts a row with this listener needs, besides the sockets. A forwarded
+/// port without a socket is only known from Docker, and a port Tailscale shares
+/// from its config and the address of its interface.
+fn facts_behind(listener: &Tolerant<Listener>) -> &'static [Collector] {
+    match listener {
+        Tolerant::Known(Listener::DockerForward) => &[Collector::Docker],
+        Tolerant::Known(Listener::TailscaleShare) => &[Collector::Tailscale, Collector::Interfaces],
+        Tolerant::Known(Listener::HostSocket) | Tolerant::Unknown => &[],
+    }
+}
+
 /// A row the current scan does not have: removed, unless that scan could not
-/// have seen it. A forwarded port without a socket is only known from Docker,
-/// and this version cannot produce a row it cannot read.
+/// have seen it, because it lacks a fact the row needs. This version cannot
+/// produce a row it cannot read either.
 fn missing_now(key: &RowKey, was: Exposure, current: &Snapshot) -> Change {
-    let docker_silent = was.listener == Tolerant::Known(Listener::DockerForward)
-        && current
-            .missing
-            .contains(&Tolerant::Known(Collector::Docker));
+    let silent = facts_behind(&was.listener)
+        .iter()
+        .any(|collector| current.missing.contains(&Tolerant::Known(*collector)));
     let unreadable = key.protocol == Tolerant::Unknown || was.listener == Tolerant::Unknown;
-    if docker_silent || unreadable {
+    if silent || unreadable {
         Change::Unverified { was }
     } else {
         Change::Removed { was }
