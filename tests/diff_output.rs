@@ -82,6 +82,88 @@ fn a_broadcast_row_is_quiet_once_the_baseline_is_saved_again() {
 }
 
 #[test]
+fn ignored_ports_leave_the_table_and_a_note_says_how_many() {
+    let out = run(&["diff", BASELINE, CURRENT, "--ignore", "3306,5000-6000"]);
+    let text = stdout(&out);
+
+    assert!(
+        text.contains("note: --ignore left out 2 differences\n"),
+        "{text}"
+    );
+    assert!(!text.contains("mysqld"), "{text}");
+    assert!(!text.contains("5353"), "{text}");
+    assert!(text.contains("changed "), "{text}");
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn the_udp_note_goes_with_the_last_udp_row() {
+    let out = run(&["diff", BASELINE, CURRENT, "--ignore", "5353"]);
+    let text = stdout(&out);
+
+    assert!(text.contains("--ignore left out 1 difference\n"), "{text}");
+    assert!(!text.contains("a UDP client"), "{text}");
+}
+
+#[test]
+fn a_change_that_is_only_on_ignored_ports_exits_with_0() {
+    let out = run(&[
+        "diff",
+        BROADCAST_BEFORE,
+        BROADCAST_AFTER,
+        "--ignore",
+        "5137",
+    ]);
+
+    assert_eq!(
+        stdout(&out),
+        "No differences.\n\nnote: --ignore left out 1 difference\n"
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn an_ignored_port_without_a_difference_is_not_counted_but_the_filter_shows() {
+    let out = run(&["diff", BASELINE, BASELINE, "--ignore", "22"]);
+
+    assert_eq!(
+        stdout(&out),
+        "No differences.\n\nnote: --ignore left out 0 differences\n"
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn facts_lost_still_fail_when_every_row_is_ignored() {
+    let out = run(&["diff", BASELINE, CURRENT, "--ignore", "22,3306,5353,8443"]);
+
+    assert!(
+        stdout(&out).starts_with("No differences in the rows.\n"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn json_counts_what_the_filter_left_out() {
+    let out = run(&["diff", BASELINE, CURRENT, "--ignore", "5353", "--json"]);
+    let document: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+
+    assert_eq!(document["ignored"], 1);
+    assert_eq!(document["differences"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn a_bad_ignore_value_exits_with_2_and_says_why() {
+    let out = run(&["diff", BASELINE, CURRENT, "--ignore", "http"]);
+
+    assert_eq!(stdout(&out), "");
+    assert!(stderr(&out).contains("is not a port"), "{}", stderr(&out));
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
 fn facts_lost_since_the_baseline_fail_even_with_identical_rows() {
     let out = run(&[
         "diff",

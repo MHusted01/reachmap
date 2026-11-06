@@ -70,6 +70,9 @@ enum Command {
         baseline: PathBuf,
         /// A saved scan to use instead of scanning this host
         current: Option<PathBuf>,
+        /// Ports to leave out on every protocol, for example 5353,32768-60999
+        #[arg(long, value_name = "PORTS")]
+        ignore: Option<PortList>,
         /// Print the differences as JSON instead of a table
         #[arg(long)]
         json: bool,
@@ -121,15 +124,21 @@ fn main() -> ExitCode {
         Command::Diff {
             baseline,
             current,
+            ignore,
             json,
-        } => run_diff(&baseline, current.as_deref(), json),
+        } => run_diff(&baseline, current.as_deref(), ignore.as_ref(), json),
     }
 }
 
 /// Compares two scans: 0 when nothing needs attention, 1 when something does,
 /// [`COULD_NOT_COMPARE`] when that cannot be told.
-fn run_diff(baseline: &Path, current: Option<&Path>, json: bool) -> ExitCode {
-    match diff_with(baseline, current) {
+fn run_diff(
+    baseline: &Path,
+    current: Option<&Path>,
+    ignore: Option<&PortList>,
+    json: bool,
+) -> ExitCode {
+    match diff_with(baseline, current, ignore) {
         Ok(diff) => print_diff(&diff, json),
         Err(error) => {
             eprintln!("error: {}", render_chain(&error));
@@ -140,13 +149,21 @@ fn run_diff(baseline: &Path, current: Option<&Path>, json: bool) -> ExitCode {
 }
 
 /// Reads the baseline first, so a bad file fails before a scan runs.
-fn diff_with(baseline: &Path, current: Option<&Path>) -> Result<Diff, DiffError> {
+fn diff_with(
+    baseline: &Path,
+    current: Option<&Path>,
+    ignore: Option<&PortList>,
+) -> Result<Diff, DiffError> {
     let baseline = baseline::load(baseline)?;
     let current = match current {
         Some(path) => baseline::load(path)?,
         None => live_snapshot()?,
     };
-    Ok(compare(&baseline, &current))
+    let diff = compare(&baseline, &current);
+    Ok(match ignore {
+        Some(ports) => diff.ignoring(ports),
+        None => diff,
+    })
 }
 
 /// Scans this host, with the same notes on standard error as `reachmap scan`.

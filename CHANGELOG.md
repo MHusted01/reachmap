@@ -8,6 +8,11 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap diff --ignore <ports>` leaves ports and ranges out of the comparison,
+  on every protocol, so an unattended check stays quiet about known noise. A note
+  says how many differences were left out, even when that is 0, and `--json` gains
+  an `ignored` field. Left-out differences do not change the exit status
+  ([#43](https://github.com/MHusted01/reachmap/issues/43)).
 - `reachmap probe <host> --scan scan.json [--from <network>]` takes the TCP ports
   from a saved `reachmap scan --json`, probes them and reports where the two
   disagree: a connection the scan rules out, or none where the scan expects one.

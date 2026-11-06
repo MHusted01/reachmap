@@ -367,3 +367,86 @@ fn notices_when_only_one_scan_lacked_privileges() {
     assert!(!compare(&without_root, &without_root).privileges_differ);
     assert!(!compare(&with_root, &with_root).privileges_differ);
 }
+
+fn ports(text: &str) -> PortList {
+    text.parse().unwrap()
+}
+
+#[test]
+fn a_comparison_has_no_filter_until_one_is_applied() {
+    let diff = compare(&snapshot([]), &snapshot([(key(22), exposure("sshd"))]));
+
+    assert_eq!(diff.ignored, None);
+}
+
+#[test]
+fn ignoring_leaves_out_the_named_ports_and_counts_them() {
+    let baseline = snapshot([(key(22), exposure("sshd"))]);
+    let current = snapshot([(key(80), exposure("nginx")), (key(8000), exposure("api"))]);
+
+    let diff = compare(&baseline, &current).ignoring(&ports("22,8000-8100"));
+
+    assert_eq!(
+        changes(&diff),
+        [(
+            80,
+            Change::New {
+                now: exposure("nginx")
+            }
+        )]
+    );
+    assert_eq!(diff.ignored, Some(2));
+}
+
+#[test]
+fn ignoring_applies_to_every_protocol() {
+    let udp = RowKey {
+        protocol: Tolerant::Known(Protocol::Udp),
+        ..key(5000)
+    };
+    let current = snapshot([(key(5000), exposure("tcp")), (udp, exposure("udp"))]);
+
+    let diff = compare(&snapshot([]), &current).ignoring(&ports("5000"));
+
+    assert!(diff.differences.is_empty());
+    assert_eq!(diff.ignored, Some(2));
+}
+
+#[test]
+fn ignoring_counts_each_difference_on_a_shared_row() {
+    let current = snapshot([(key(22), exposure("one")), (key(22), exposure("two"))]);
+
+    let diff = compare(&snapshot([]), &current).ignoring(&ports("22"));
+
+    assert_eq!(diff.ignored, Some(2));
+}
+
+#[test]
+fn a_filter_that_matches_nothing_still_shows_it_ran() {
+    let row = snapshot([(key(22), exposure("sshd"))]);
+
+    let diff = compare(&row, &row).ignoring(&ports("22"));
+
+    assert_eq!(diff.ignored, Some(0));
+}
+
+#[test]
+fn ignored_differences_need_no_attention() {
+    let current = snapshot([(key(40000), exposure("client"))]);
+
+    let diff = compare(&snapshot([]), &current);
+    assert!(!diff.is_clean());
+
+    assert!(diff.ignoring(&ports("40000")).is_clean());
+}
+
+#[test]
+fn ignoring_ports_does_not_excuse_lost_facts() {
+    let baseline = snapshot([(key(22), exposure("sshd"))]);
+    let current = without_docker(snapshot([]));
+
+    let diff = compare(&baseline, &current).ignoring(&ports("22"));
+
+    assert!(diff.differences.is_empty());
+    assert!(!diff.is_clean());
+}

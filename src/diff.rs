@@ -11,6 +11,7 @@ use thiserror::Error;
 
 use crate::baseline::{Exposure, LoadError, RowKey, Snapshot, Tolerant};
 use crate::json::Collector;
+use crate::parse::probe_args::PortList;
 use crate::scan::{Listener, ScanError};
 
 /// What happened to one row.
@@ -65,6 +66,9 @@ pub struct Diff {
     /// Whether only one of the scans lacked the privileges to name every
     /// owner, so owners can differ for that reason alone.
     pub privileges_differ: bool,
+    /// How many differences [`Diff::ignoring`] left out. `None` without a
+    /// filter, so a filter that matched nothing still shows that it ran.
+    pub ignored: Option<usize>,
 }
 
 impl Diff {
@@ -73,6 +77,21 @@ impl Diff {
     /// missing from both are fine, or a host without Docker would never pass.
     pub fn is_clean(&self) -> bool {
         self.differences.is_empty() && self.current_missing.is_subset(&self.baseline_missing)
+    }
+
+    /// Leaves out the differences on `ports`, on any protocol, and counts them.
+    /// Facts a scan lacks are not tied to a port, so they still count.
+    #[must_use]
+    pub fn ignoring(self, ports: &PortList) -> Self {
+        let (ignored, differences): (Vec<_>, Vec<_>) = self
+            .differences
+            .into_iter()
+            .partition(|difference| ports.contains(difference.key.port));
+        Diff {
+            differences,
+            ignored: Some(ignored.len()),
+            ..self
+        }
     }
 }
 
@@ -114,6 +133,7 @@ pub fn compare(baseline: &Snapshot, current: &Snapshot) -> Diff {
         baseline_missing: baseline.missing.clone(),
         current_missing: current.missing.clone(),
         privileges_differ: baseline.needs_root != current.needs_root,
+        ignored: None,
     }
 }
 
