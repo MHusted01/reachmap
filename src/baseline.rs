@@ -8,13 +8,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::fs;
-use std::io;
+use std::fs::File;
+use std::io::{self, ErrorKind, Read};
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::json::{Collector, SCHEMA_VERSION};
@@ -25,49 +24,9 @@ use crate::service::{Container, Process, Service, UnknownReason};
 use crate::socket::{Endpoint, Protocol};
 use crate::warning::Warning;
 
-/// A value from a document, or a value this version of reachmap cannot read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Tolerant<T> {
-    /// A value this version understands.
-    Known(T),
-    /// Anything else, for example a value added by a newer reachmap.
-    Unknown,
-}
+mod tolerant;
 
-impl<T> Tolerant<T> {
-    /// The value, if this version understands it.
-    fn known(self) -> Option<T> {
-        match self {
-            Tolerant::Known(value) => Some(value),
-            Tolerant::Unknown => None,
-        }
-    }
-}
-
-impl<'de, T: DeserializeOwned> Deserialize<'de> for Tolerant<T> {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = serde_json::Value::deserialize(deserializer)?;
-        Ok(serde_json::from_value(value).map_or(Tolerant::Unknown, Tolerant::Known))
-    }
-}
-
-impl<T: Serialize> Serialize for Tolerant<T> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Tolerant::Known(value) => value.serialize(serializer),
-            Tolerant::Unknown => serializer.serialize_str("unknown"),
-        }
-    }
-}
-
-impl<T: fmt::Display> fmt::Display for Tolerant<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Tolerant::Known(value) => value.fmt(f),
-            Tolerant::Unknown => f.write_str("unknown"),
-        }
-    }
-}
+pub use tolerant::Tolerant;
 
 /// What identifies a row across two scans. Ordered by port, then protocol,
 /// then address, like the rows of a scan.
@@ -236,6 +195,13 @@ impl From<&ScanReport> for Snapshot {
     }
 }
 
+/// The largest saved scan reachmap reads. A real one is a few kilobytes, so
+/// this only stops a mistyped path, such as `/dev/zero`, from filling the memory.
+/// The size of a file cannot tell: a device reports 0.
+const MAX_DOCUMENT_MIB: u64 = 64;
+
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
 /// The version of a document, read first: another version may have another
 /// shape, and the version is what the user needs to hear about.
 #[derive(Deserialize)]
@@ -329,6 +295,12 @@ pub enum LoadError {
         #[source]
         source: io::Error,
     },
+    /// The file is far larger than any scan, for example a mistyped path.
+    #[error("{} is over {MAX_DOCUMENT_MIB} MiB, too large to be a scan", path.display())]
+    TooLarge {
+        /// The file.
+        path: PathBuf,
+    },
     /// The file was read, but reachmap cannot use its content.
     #[error("could not use {}", path.display())]
     Parse {
@@ -338,6 +310,18 @@ pub enum LoadError {
         #[source]
         source: ParseError,
     },
+}
+
+/// Reads `reader` to its end, or `None` when it holds more than `limit` bytes.
+fn read_limited(reader: impl Read, limit: u64) -> io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    let read = reader.take(limit + 1).read_to_end(&mut bytes)?;
+    if u64::try_from(read).map_or(true, |read| read > limit) {
+        return Ok(None);
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
 }
 
 /// Reads the text of a saved scan. Pure, so it is tested on any OS.
@@ -366,10 +350,16 @@ pub fn parse(text: &str) -> Result<Snapshot, ParseError> {
 
 /// Reads a saved scan from `path`.
 pub fn load(path: &Path) -> Result<Snapshot, LoadError> {
-    let text = fs::read_to_string(path).map_err(|source| LoadError::Read {
+    let read_error = |source| LoadError::Read {
         path: path.to_path_buf(),
         source,
-    })?;
+    };
+    let file = File::open(path).map_err(read_error)?;
+    let text = read_limited(file, MAX_DOCUMENT_MIB * BYTES_PER_MIB)
+        .map_err(read_error)?
+        .ok_or_else(|| LoadError::TooLarge {
+            path: path.to_path_buf(),
+        })?;
     parse(&text).map_err(|source| LoadError::Parse {
         path: path.to_path_buf(),
         source,

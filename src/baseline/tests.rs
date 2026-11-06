@@ -309,3 +309,41 @@ fn a_missing_file_names_the_path() {
         "could not read /nonexistent/baseline.json"
     );
 }
+
+#[test]
+fn text_up_to_the_limit_is_read() {
+    assert_eq!(
+        read_limited("12345".as_bytes(), 5).unwrap(),
+        Some("12345".to_string())
+    );
+}
+
+#[test]
+fn text_over_the_limit_is_refused_without_reading_the_rest() {
+    let mut endless = io::repeat(b'x');
+
+    assert_eq!(read_limited(&mut endless, 5).unwrap(), None);
+}
+
+#[test]
+fn a_limit_that_cuts_a_character_still_says_too_large() {
+    assert_eq!(read_limited("1234\u{e6}".as_bytes(), 5).unwrap(), None);
+}
+
+#[test]
+fn bytes_that_are_no_text_are_an_error() {
+    let error = read_limited([0xff, 0xfe].as_slice(), 5).unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_endless_file_is_too_large() {
+    let error = load(Path::new("/dev/zero")).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "/dev/zero is over 64 MiB, too large to be a scan"
+    );
+}

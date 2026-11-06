@@ -105,8 +105,9 @@ case $? in
 esac
 ```
 
-A file is refused when it is not a `reachmap scan --json` document, or when its
-`schema_version` is one this reachmap does not read. Save it again in that case.
+A file is refused when it is not a `reachmap scan --json` document, when it is
+over 64 MiB, or when its `schema_version` is one this reachmap does not read.
+Save it again in that last case.
 New fields are ignored. A value this version does not know counts as unknown, so
 the diff still runs.
 
