@@ -5,7 +5,6 @@
 //! warning. Data flows one way: [`crate::collect`] reads, [`crate::parse`]
 //! decodes, this module joins them.
 
-use std::collections::BTreeSet;
 use std::fmt;
 use std::io::ErrorKind;
 use std::net::IpAddr;
@@ -180,10 +179,7 @@ pub fn scan() -> Result<ScanReport, ScanError> {
         firewall::read_docker_user_chain,
     );
     let host = read_host_interfaces();
-    let interfaces: BTreeSet<String> = host
-        .iter()
-        .flat_map(|host| host.names.values().cloned())
-        .collect();
+    let host_facts = host.as_ref().ok().cloned();
     let mut report = join(
         sockets,
         &open_files,
@@ -195,7 +191,7 @@ pub fn scan() -> Result<ScanReport, ScanError> {
     );
     report.nftables = Some(NftablesReport::check(
         collect::read_nftables_rules(),
-        &interfaces,
+        host_facts.as_ref(),
         &report.ports,
     ));
     Ok(report)

@@ -92,10 +92,14 @@ with the document.
 ## nftables input
 
 The `nftables` object has `status` equal to `checked` or `unknown`. With
-`unknown`, it has a string `reason`. With `checked`, it has a `ports` array.
-Each entry has `port` (number), `protocol` (`tcp` or `udp`), `family` (`ipv4`
-or `ipv6`), and `interfaces` (array). Each interface entry has `interface`
-(name), `verdict` (`accept`, `drop` or `unknown`), and `reason` (string).
+`unknown`, it has a string `reason`. With `checked`, it has a `ports` array,
+empty when the host has no socket to check. Each entry is one socket's bind
+address seen as one IP family, and has `port` (number), `protocol` (`tcp` or
+`udp`), `address` (the socket's bind address), `family` (`ipv4` or `ipv6`), and
+`interfaces` (array). A socket bound to `::` that is not IPv6-only has an entry
+for each family. `interfaces` lists only the interfaces the socket can receive
+on. Each interface entry has `interface` (name), `verdict` (`accept`, `drop` or
+`unknown`), and `reason` (string).
 
 These findings apply to packets at the nftables input hook. See
 [nftables input](scan.md#nftables-input) for the supported rules. `reach`,

@@ -1,18 +1,21 @@
 //! Input-chain checks for host sockets.
 
-use std::collections::BTreeSet;
 use std::fmt;
 use std::io::ErrorKind;
+use std::net::IpAddr;
 
 use serde::Serialize;
 
 use crate::collect::CollectError;
 use crate::errors::render_chain;
+use crate::network::HostInterfaces;
 use crate::parse::nftables::parse_ruleset;
 use crate::sanitize::sanitize;
-use crate::scan::{Listener, ScannedPort};
-use crate::service::Service;
+use crate::scan::ScannedPort;
 use crate::socket::{AddressFamily, Protocol};
+
+mod targets;
+use targets::targets;
 
 /// The result of inspecting the nftables input hook for host socket ports.
 #[derive(Debug, Serialize)]
@@ -20,7 +23,7 @@ use crate::socket::{AddressFamily, Protocol};
 pub enum NftablesReport {
     /// The ruleset and interfaces were read. Individual checks can be unknown.
     Checked {
-        /// One entry per transport, port number and IP family.
+        /// One entry per transport, port, bind address and IP family.
         ports: Vec<PortInput>,
     },
     /// The data needed for the check could not be read.
@@ -30,11 +33,12 @@ pub enum NftablesReport {
     },
 }
 
-/// Input verdicts for a port and one packet family.
+/// Input verdicts for a socket's port and bind address, seen as one IP family.
 #[derive(Debug, Serialize)]
 pub struct PortInput {
     port: u16,
     protocol: Protocol,
+    address: IpAddr,
     family: AddressFamily,
     interfaces: Vec<InterfaceInput>,
 }
@@ -58,19 +62,14 @@ pub(crate) enum InputVerdict {
 impl NftablesReport {
     pub(crate) fn check(
         raw: Result<String, CollectError>,
-        interfaces: &BTreeSet<String>,
+        host: Option<&HostInterfaces>,
         ports: &[ScannedPort],
     ) -> Self {
         let raw = match raw {
             Ok(raw) => raw,
-            Err(CollectError::Run { source, .. }) if source.kind() == ErrorKind::NotFound => {
-                return Self::Unknown {
-                    reason: "nft is missing from the standard system paths".to_string(),
-                };
-            }
             Err(error) => {
                 return Self::Unknown {
-                    reason: render_chain(&error),
+                    reason: collect_reason(&error),
                 };
             }
         };
@@ -82,27 +81,12 @@ impl NftablesReport {
                 };
             }
         };
-        if interfaces.is_empty() {
+        let Some(host) = host.filter(|host| !host.addresses.is_empty()) else {
             return Self::Unknown {
-                reason: "no interface names available".to_string(),
+                reason: "no interface addresses available".to_string(),
             };
-        }
+        };
 
-        let targets: BTreeSet<_> = ports
-            .iter()
-            .filter(|row| {
-                row.listener == Listener::HostSocket
-                    && !matches!(row.service, Service::Container(_))
-            })
-            .map(|row| {
-                let endpoint = row.endpoint;
-                (
-                    endpoint.port,
-                    endpoint.protocol,
-                    endpoint.address.to_canonical().is_ipv6(),
-                )
-            })
-            .collect();
         let v4 = rules.input(AddressFamily::Ipv4);
         let v6 = rules.input(AddressFamily::Ipv6);
         if let (Err(v4_reason), Err(v6_reason)) = (&v4, &v6)
@@ -112,28 +96,29 @@ impl NftablesReport {
                 reason: (*v4_reason).to_string(),
             };
         }
-        let ports = targets
+        let ports = targets(ports, host)
             .into_iter()
-            .map(|(port, protocol, ipv6)| {
-                let (family, chain) = if ipv6 {
-                    (AddressFamily::Ipv6, &v6)
-                } else {
-                    (AddressFamily::Ipv4, &v4)
+            .map(|target| {
+                let chain = match target.family {
+                    AddressFamily::Ipv4 => &v4,
+                    AddressFamily::Ipv6 => &v6,
                 };
-                let interfaces = interfaces
+                let interfaces = target
+                    .interfaces
                     .iter()
                     .map(|name| InterfaceInput {
                         interface: sanitize(name),
                         outcome: chain.as_ref().map_or_else(
                             |reason| InputVerdict::Unknown { reason },
-                            |input| input.evaluate(protocol, port, name),
+                            |input| input.evaluate(target.protocol, target.port, name),
                         ),
                     })
                     .collect();
                 PortInput {
-                    port,
-                    protocol,
-                    family,
+                    port: target.port,
+                    protocol: target.protocol,
+                    address: target.address,
+                    family: target.family,
                     interfaces,
                 }
             })
@@ -142,11 +127,28 @@ impl NftablesReport {
     }
 }
 
+/// Why the ruleset could not be read. A failed `nft` run most often means the
+/// scan lacks the privilege, so the reason says what to try.
+fn collect_reason(error: &CollectError) -> String {
+    match error {
+        CollectError::Run { source, .. } if source.kind() == ErrorKind::NotFound => {
+            "nft is missing from the standard system paths".to_string()
+        }
+        CollectError::CommandFailed { .. } => format!(
+            "{}; reading the nftables ruleset usually needs root or CAP_NET_ADMIN",
+            sanitize(&render_chain(error))
+        ),
+        _ => sanitize(&render_chain(error)),
+    }
+}
+
 impl fmt::Display for NftablesReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Unknown { reason } => writeln!(f, "nftables input: unknown ({reason})"),
-            Self::Checked { ports } if ports.is_empty() => Ok(()),
+            Self::Checked { ports } if ports.is_empty() => {
+                writeln!(f, "nftables input: no host socket ports to check")
+            }
             Self::Checked { ports } => {
                 writeln!(f, "nftables input for host socket ports:")?;
                 for entry in ports {
@@ -162,8 +164,8 @@ impl fmt::Display for NftablesReport {
                         .join(", ");
                     writeln!(
                         f,
-                        "  {}/{} {family}: {interfaces}",
-                        entry.port, entry.protocol
+                        "  {}/{} {} ({family}): {interfaces}",
+                        entry.port, entry.protocol, entry.address
                     )?;
                 }
                 Ok(())
