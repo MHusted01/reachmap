@@ -1,7 +1,5 @@
-//! Parsers for what the `docker` command prints: the container IDs from
-//! `docker ps -q` and the published ports in `docker inspect` JSON. Everything
-//! in that output comes from whoever started the container, so names and
-//! labels are sanitised here.
+//! Docker Engine inspect data and its published ports. Container names and
+//! labels can come from whoever started the container, so they are sanitised here.
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
@@ -20,12 +18,18 @@ const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
 /// Why Docker's output could not be understood.
 #[derive(Debug, Error)]
 pub enum DockerParseError {
-    /// `docker ps -q` printed a line that is not a container ID.
+    /// Docker returned an invalid ID in the list of running containers.
     #[error("{0:?} is not a container ID")]
     ContainerId(String),
-    /// `docker inspect` printed something other than the expected JSON.
+    /// An inspect fixture did not contain the expected JSON.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    /// Docker returned an API response that the client could not decode.
+    #[error("invalid JSON from the Docker Engine API")]
+    ApiJson,
+    /// A Docker API object omitted a field needed by the scan.
+    #[error("Docker did not return {0}")]
+    MissingField(&'static str),
     /// A port binding has a host address that is not an IP address.
     #[error("{0:?} is not an IP address")]
     HostIp(String),
@@ -65,24 +69,17 @@ struct RawBinding {
     host_port: String,
 }
 
-/// The IDs in the output of `docker ps -q`, one per line. They become
-/// arguments of `docker inspect`, so anything but a hexadecimal ID is refused.
-pub fn parse_container_ids(text: &str) -> Result<Vec<&str>, DockerParseError> {
-    text.lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            if line.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                Ok(line)
-            } else {
-                Err(DockerParseError::ContainerId(sanitize(line)))
-            }
-        })
-        .collect()
+/// A container ID becomes a path segment in the inspect request.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn validate_container_id(id: &str) -> Result<&str, DockerParseError> {
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(DockerParseError::ContainerId(sanitize(id)));
+    }
+    Ok(id)
 }
 
-/// The TCP and UDP ports published by the containers in `docker inspect` JSON, in the
-/// order of the containers and, within one, of the container ports as text.
+/// The TCP and UDP ports in an array of Docker inspect objects, in container order
+/// and, within one container, ordered by the container ports as text.
 pub fn parse_docker_inspect(json: &str) -> Result<Vec<PublishedPort>, DockerParseError> {
     let containers: Vec<RawContainer> = serde_json::from_str(json)?;
     let per_container = containers
@@ -90,6 +87,59 @@ pub fn parse_docker_inspect(json: &str) -> Result<Vec<PublishedPort>, DockerPars
         .map(published_ports)
         .collect::<Result<Vec<_>, _>>()?;
     Ok(per_container.into_iter().flatten().collect())
+}
+
+/// Maps one Engine response to the same parser input used by inspect fixtures.
+#[cfg(target_os = "linux")]
+pub(crate) fn parse_inspected_container(
+    response: bollard::models::ContainerInspectResponse,
+) -> Result<Vec<PublishedPort>, DockerParseError> {
+    let name = response
+        .name
+        .ok_or(DockerParseError::MissingField("Name"))?;
+    let config = response
+        .config
+        .ok_or(DockerParseError::MissingField("Config"))?;
+    let network = response
+        .network_settings
+        .ok_or(DockerParseError::MissingField("NetworkSettings"))?;
+    let ports = network
+        .ports
+        .map(|ports| {
+            ports
+                .into_iter()
+                .map(|(port, bindings)| {
+                    let bindings = bindings
+                        .map(|bindings| bindings.into_iter().map(RawBinding::try_from).collect())
+                        .transpose()?;
+                    Ok((port, bindings))
+                })
+                .collect::<Result<_, DockerParseError>>()
+        })
+        .transpose()?;
+    published_ports(&RawContainer {
+        name,
+        config: RawConfig {
+            labels: config.labels.map(|labels| labels.into_iter().collect()),
+        },
+        network_settings: RawNetworkSettings { ports },
+    })
+}
+
+#[cfg(target_os = "linux")]
+impl TryFrom<bollard::models::PortBinding> for RawBinding {
+    type Error = DockerParseError;
+
+    fn try_from(binding: bollard::models::PortBinding) -> Result<Self, Self::Error> {
+        Ok(Self {
+            host_ip: binding
+                .host_ip
+                .ok_or(DockerParseError::MissingField("HostIp"))?,
+            host_port: binding
+                .host_port
+                .ok_or(DockerParseError::MissingField("HostPort"))?,
+        })
+    }
 }
 
 /// The published TCP and UDP ports of one container.
@@ -178,23 +228,14 @@ mod tests {
     const ONE_PORT: &str = r#"{"80/tcp": [{"HostIp": "0.0.0.0", "HostPort": "8080"}]}"#;
 
     #[test]
-    fn reads_container_ids_one_per_line() {
-        assert_eq!(
-            parse_container_ids("0a1b2c3d4e5f\nabcdefabcdef\n").unwrap(),
-            vec!["0a1b2c3d4e5f", "abcdefabcdef"]
-        );
-    }
-
-    #[test]
-    fn no_containers_is_an_empty_list() {
-        assert!(parse_container_ids("").unwrap().is_empty());
-        assert!(parse_container_ids("\n").unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_line_that_could_be_an_option_is_not_a_container_id() {
-        let error = parse_container_ids("--host=evil\n").unwrap_err();
-        assert_eq!(error.to_string(), r#""--host=evil" is not a container ID"#);
+    fn only_nonempty_hex_ids_can_be_used_in_an_inspect_request() {
+        assert_eq!(validate_container_id("0a1b2c").unwrap(), "0a1b2c");
+        for id in ["", "../info", " 0a1b2c", "0a1b2c\n"] {
+            assert!(matches!(
+                validate_container_id(id),
+                Err(DockerParseError::ContainerId(_))
+            ));
+        }
     }
 
     #[test]

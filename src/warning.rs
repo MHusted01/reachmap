@@ -148,8 +148,8 @@ fn ports_warning(rows: &[ScannedPort], ufw: &UfwState) -> Option<ScanWarning> {
     }
 }
 
-/// The line for a Docker that could not be asked. Without Docker installed,
-/// nothing can bypass UFW, so that is no warning.
+/// The line for a Docker that could not be asked. If the default socket and a
+/// standard daemon installation are both absent, the collector prints a note.
 fn docker_warning(docker_error: Option<&DockerError>, ufw: &UfwState) -> Option<ScanWarning> {
     docker_error
         .filter(|error| !matches!(error, DockerError::NotInstalled))

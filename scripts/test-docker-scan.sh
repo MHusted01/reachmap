@@ -164,6 +164,8 @@ docker run -d --rm --name reachmap-test-hostile -p "127.0.0.1:$hostile_port:80" 
 
 expect_published_rows 'without sudo' "$binary"
 expect_published_rows 'with sudo' sudo "$binary"
+expect_published_rows 'Unix socket, with a different Docker context' \
+  env DOCKER_HOST=unix:///var/run/docker.sock DOCKER_CONTEXT=reachmap-test-missing "$binary"
 expect_unreachable_note 'unreachable daemon, without sudo' 'unknown' \
   env "DOCKER_HOST=$unreachable" "$binary"
 expect_unreachable_note 'unreachable daemon, with sudo' 'docker-proxy' \

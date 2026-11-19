@@ -1,10 +1,8 @@
 //! Linux sources: the kernel's socket tables in `/proc`, the interface
-//! list from iproute2's `ip` and the containers from `docker`. The first two
-//! need no root; every user sees all sockets and interfaces of the current
-//! network namespace. The open files of other users' processes, under
+//! list from iproute2's `ip`. Every user sees all sockets and interfaces of the
+//! current network namespace. The open files of other users' processes, under
 //! `/proc/<pid>/fd`, do need root, and with `hidepid` those processes are not
-//! listed at all without it. `docker` needs access to its socket. `tailscale`
-//! needs no root to read its serve config.
+//! listed at all without it. `tailscale` needs no root to read its serve config.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -30,25 +28,6 @@ pub(super) const IP_PROGRAM: &str = "ip";
 
 /// Makes `ip` print every interface with its addresses as JSON.
 pub(super) const IP_ADDR_ARGS: &[&str] = &["-j", "addr"];
-
-/// Where Docker's command-line client is installed, tried in order. Only root
-/// can write to these directories.
-pub(super) const DOCKER_PATHS: &[&str] = &[
-    "/usr/bin/docker",
-    "/usr/local/bin/docker",
-    "/bin/docker",
-    "/snap/bin/docker",
-];
-
-/// The name to look up through `PATH` when `docker` is in none of
-/// [`DOCKER_PATHS`].
-pub(super) const DOCKER_PROGRAM: &str = "docker";
-
-/// Makes `docker` print the IDs of the running containers.
-pub(super) const DOCKER_PS_ARGS: &[&str] = &["ps", "-q"];
-
-/// Makes `docker` print details of the containers named after these arguments.
-pub(super) const DOCKER_INSPECT_ARGS: &[&str] = &["inspect", "--type", "container"];
 
 /// Where Tailscale's command-line client is installed, tried in order. Only
 /// root can write to these directories.

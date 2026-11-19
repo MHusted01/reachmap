@@ -1,5 +1,6 @@
 use super::*;
 use crate::collect::RawProcess;
+use crate::docker::DockerCollectError;
 use crate::errors::render_chain;
 use crate::network::{HostAddress, Network};
 use crate::parse::sock_diag::SockDiagError;
@@ -413,10 +414,7 @@ fn unknown_docker_under_active_ufw_ends_up_in_the_warnings() {
 }
 
 fn docker_not_reachable() -> DockerError {
-    DockerError::Collect(CollectError::Run {
-        command: "docker ps -q".to_string(),
-        source: io::Error::new(ErrorKind::PermissionDenied, "no"),
-    })
+    DockerCollectError::Socket(ErrorKind::ConnectionRefused.into()).into()
 }
 
 fn chain_must_not_be_read() -> DockerUserChain {
