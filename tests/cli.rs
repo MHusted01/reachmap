@@ -4,9 +4,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use std::fs;
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::PathBuf;
 use std::process::{Command, Output};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+
+use socket2::{Domain, Protocol, Socket, Type};
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reachmap"))
@@ -93,8 +96,7 @@ fn scan_prints_a_table_or_the_empty_message() {
 #[cfg(target_os = "linux")]
 #[test]
 fn scan_finds_a_socket_the_test_is_listening_on_with_its_process_and_reach() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let (port, _listener) = open_port();
 
     let out = run(&["scan"]);
 
@@ -153,8 +155,7 @@ fn scan_lists_a_udp_socket_with_its_owner_and_the_note() {
 #[cfg(target_os = "linux")]
 #[test]
 fn scan_json_is_one_document_with_the_socket_the_test_is_listening_on() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let (port, _listener) = open_port();
 
     let out = run(&["scan", "--json"]);
 
@@ -259,21 +260,80 @@ fn scan_of(rows: &[String]) -> String {
     )
 }
 
+// All test listeners take this lock when binding. A closed-port test keeps it
+// through the probe because macOS allows a listener to bind a connected port.
+// The lock protects no data, so a test panic cannot leave inconsistent state.
+static PORT_ALLOCATION: Mutex<()> = Mutex::new(());
+
+fn allocate_listener() -> (TcpListener, MutexGuard<'static, ()>) {
+    let allocation = PORT_ALLOCATION
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    (listener, allocation)
+}
+
 /// An open port, and the listener that keeps it open.
 fn open_port() -> (u16, TcpListener) {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let (listener, _allocation) = allocate_listener();
     (listener.local_addr().unwrap().port(), listener)
 }
 
-/// A port nothing listens on.
-fn closed_port() -> u16 {
-    open_port().0
+struct ClosedPortReservation {
+    _socket: Socket,
+    _peer: TcpListener,
+    _allocation: MutexGuard<'static, ()>,
+}
+
+/// Uses a port as the source of an outgoing TCP connection, without listening on it.
+/// Allocate any other fixture ports first. The reservation holds the allocation
+/// lock until it is dropped, so another call to either helper would block.
+fn closed_port() -> (u16, ClosedPortReservation) {
+    let (peer, allocation) = allocate_listener();
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+    socket
+        .bind(&SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0).into())
+        .unwrap();
+    socket.connect(&peer.local_addr().unwrap().into()).unwrap();
+    let port = socket
+        .local_addr()
+        .unwrap()
+        .as_socket_ipv4()
+        .unwrap()
+        .port();
+    (
+        port,
+        ClosedPortReservation {
+            _socket: socket,
+            _peer: peer,
+            _allocation: allocation,
+        },
+    )
+}
+
+#[test]
+fn closed_port_refuses_connections_while_listener_allocation_is_locked() {
+    let (port, _reservation) = closed_port();
+    assert!(matches!(
+        PORT_ALLOCATION.try_lock(),
+        Err(TryLockError::WouldBlock)
+    ));
+
+    let port = port.to_string();
+    let out = run(&["probe", "127.0.0.1", "--ports", &port]);
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains(" closed\n"),
+        "stdout: {}",
+        stdout(&out)
+    );
 }
 
 #[test]
 fn probe_scan_that_matches_exits_with_0_and_says_so() {
     let (open, _listener) = open_port();
-    let closed = closed_port();
+    let (closed, _reservation) = closed_port();
     let scan = scan_of(&[row(open, r#""this_host""#), row(closed, r#""lan""#)]);
     let path = scan_file("probe_scan_matches.json", &scan);
 
@@ -292,7 +352,7 @@ fn probe_scan_that_matches_exits_with_0_and_says_so() {
 #[test]
 fn probe_scan_reports_both_kinds_of_difference_and_exits_with_1() {
     let (open, _listener) = open_port();
-    let closed = closed_port();
+    let (closed, _reservation) = closed_port();
     let scan = scan_of(&[row(open, r#""lan""#), row(closed, r#""this_host""#)]);
     let path = scan_file("probe_scan_differs.json", &scan);
 
@@ -453,12 +513,8 @@ fn probe_refuses_a_timeout_of_zero_with_exit_2() {
 
 #[test]
 fn probe_reports_open_and_closed_ports_and_exits_with_0() {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let open = listener.local_addr().unwrap().port();
-    let closed = {
-        let released = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        released.local_addr().unwrap().port()
-    };
+    let (open, _listener) = open_port();
+    let (closed, _reservation) = closed_port();
 
     let ports = format!("{open},{closed}");
     let out = run(&["probe", "127.0.0.1", "--ports", &ports]);
@@ -472,8 +528,8 @@ fn probe_reports_open_and_closed_ports_and_exits_with_0() {
 
 #[test]
 fn probe_json_is_one_document_on_standard_output() {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-    let port = listener.local_addr().unwrap().port().to_string();
+    let (port, _listener) = open_port();
+    let port = port.to_string();
 
     let out = run(&["probe", "127.0.0.1", "--ports", &port, "--json"]);
 
