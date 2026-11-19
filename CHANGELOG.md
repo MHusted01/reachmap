@@ -69,6 +69,13 @@ All notable changes to reachmap are listed here. The format follows
   `no interface has this address`
   ([#9](https://github.com/MHusted01/reachmap/issues/9)).
 
+### Changed
+
+- `reachmap scan` reads published ports through the Docker Engine API over a
+  Unix socket. It uses `/var/run/docker.sock` by default and accepts a local
+  `unix://` endpoint in `DOCKER_HOST`
+  ([#13](https://github.com/MHusted01/reachmap/issues/13)).
+
 ### Fixed
 
 - A failed request for socket options no longer discards what the kernel already

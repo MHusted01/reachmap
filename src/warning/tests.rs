@@ -1,10 +1,10 @@
 use super::*;
-use crate::collect::CollectError;
+use crate::docker::DockerCollectError;
 use crate::reach::classify;
 use crate::scan::Listener;
 use crate::service::{Container, Service};
 use crate::socket::{Endpoint, Protocol};
-use std::io::{self, ErrorKind};
+use std::io::ErrorKind;
 
 const REASON: &str = "ufw.conf has no ENABLED setting";
 
@@ -47,10 +47,7 @@ fn firewall(ufw: UfwState, docker_user: Option<DockerUserChain>) -> Firewall {
 }
 
 fn unreachable_docker() -> DockerError {
-    DockerError::Collect(CollectError::Run {
-        command: "docker ps -q".to_string(),
-        source: io::Error::new(ErrorKind::PermissionDenied, "no"),
-    })
+    DockerCollectError::Socket(ErrorKind::ConnectionRefused.into()).into()
 }
 
 #[test]

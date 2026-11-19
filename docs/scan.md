@@ -176,11 +176,13 @@ follow:
 
 ## Docker
 
-reachmap asks Docker for the running containers with `docker ps -q` and
-`docker inspect`, and matches their published TCP and UDP ports to the sockets on
-this host by protocol, address and port. The socket's row then shows the container instead of
-the process holding it, which is `docker-proxy` or, with `userland-proxy: false`,
-`dockerd`. This needs no root as long as you can use `docker`, and only reads.
+reachmap reads the running containers through the Docker Engine API over
+`/var/run/docker.sock`. It matches their published TCP and UDP ports to sockets
+on this host by protocol, address and port. A matching row shows the container
+name and its Compose service when available. You can scan without root if
+your account can connect to the socket. The Docker CLI is optional.
+If a container disappears during the Docker read, the scan still reports the
+other containers.
 
 A socket on `::` counts as serving a port published on `0.0.0.0`, as it usually
 accepts IPv4 too. An IPv6-only socket does not, so it keeps its own process and
@@ -199,15 +201,13 @@ stderr. Sockets of published ports then show `docker-proxy`, `dockerd` or
 
 | Note | Meaning |
 |------|---------|
-| `Docker was not found` | There is no `docker` command. |
-| `could not ask Docker for its containers` | `docker` failed or did not finish within 5 seconds; the note ends with the reason, for example that the daemon is not running. If you lack access to Docker's socket, a hint suggests `sudo`. |
-| `could not understand Docker's output` | Likely a reachmap bug or a new Docker format; a hint says where to report it. |
+| `Docker was not found` | The default socket is missing and no Docker daemon executable was found in the standard installation paths. |
+| `could not ask Docker for its containers` | The note gives the reason, such as an inaccessible socket or the Docker collection exceeding its 5-second deadline. A socket permission error includes a hint to use `sudo`. |
+| `could not understand Docker's output` | The API response could not be read. A hint says where to report it. |
 
-reachmap runs the first of `/usr/bin/docker`, `/usr/local/bin/docker`,
-`/bin/docker` and `/snap/bin/docker` that exists, and looks `docker` up through
-`PATH` only if none does. `docker` follows `DOCKER_HOST` and the current Docker
-context. If they point at another machine, its containers are listed as if they
-ran here, as ports without a host socket.
+Set `DOCKER_HOST` to an absolute Unix endpoint such as
+`unix:///run/user/1000/docker.sock` to use another local socket. Reachmap ignores
+Docker contexts and accepts only Unix endpoints.
 
 ## Tailscale
 
