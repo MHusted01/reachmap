@@ -111,7 +111,7 @@ jobs:
           echo "THREADS_FILE=$threads" >> "$GITHUB_ENV"
           echo "INCREMENTAL_FILE=$incremental" >> "$GITHUB_ENV"
 
-      - uses: anthropics/claude-code-action@d535f5172dec02b204866b393d6b20b9b2aaf98d # v1.0.266
+      - uses: anthropics/claude-code-action@d1f58ad5e6f4d2b79547e63e37c2116064135896 # v1.0.277
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
@@ -170,4 +170,5 @@ jobs:
             on PR ${{ github.event.pull_request.number }}; never edit or delete
             existing comments.
           claude_args: |
+            --permission-mode default
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Read,Glob,Grep"
