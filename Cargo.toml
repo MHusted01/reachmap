@@ -22,6 +22,7 @@ tokio = { version = "1.54.1", features = ["net", "rt", "time"] }
 rustix = { version = "1.1.6", features = ["net"] }
 
 [dev-dependencies]
+socket2 = "0.6.5"
 tokio = { version = "1.54.1", features = ["macros"] }
 
 [lints.rust]
