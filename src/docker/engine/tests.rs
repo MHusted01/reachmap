@@ -13,7 +13,7 @@ const INSPECT: &str = include_str!("../../../tests/fixtures/docker_inspect.json"
 struct FakeDocker {
     ids: Vec<String>,
     inspected: RefCell<Vec<String>>,
-    responses: RefCell<VecDeque<ContainerInspectResponse>>,
+    responses: RefCell<VecDeque<Option<ContainerInspectResponse>>>,
 }
 
 impl DockerSource for FakeDocker {
@@ -26,13 +26,15 @@ impl DockerSource for FakeDocker {
         self.responses
             .borrow_mut()
             .pop_front()
+            .ok_or_else(|| DockerError::from(DockerCollectError::HttpStatus(500)))?
             .ok_or_else(|| DockerCollectError::HttpStatus(404).into())
     }
 }
 
 #[tokio::test]
 async fn engine_objects_preserve_the_existing_inspect_parser_output() {
-    let responses: VecDeque<ContainerInspectResponse> = serde_json::from_str(INSPECT).unwrap();
+    let responses: VecDeque<Option<ContainerInspectResponse>> =
+        serde_json::from_str(INSPECT).unwrap();
     let ids: Vec<String> = (0..responses.len()).map(|id| format!("{id:06x}")).collect();
     let docker = FakeDocker {
         ids: ids.clone(),
@@ -68,7 +70,8 @@ async fn only_valid_running_ids_are_inspected() {
 
 #[tokio::test]
 async fn a_failed_inspect_cannot_produce_a_partial_list() {
-    let mut responses: VecDeque<ContainerInspectResponse> = serde_json::from_str(INSPECT).unwrap();
+    let mut responses: VecDeque<Option<ContainerInspectResponse>> =
+        serde_json::from_str(INSPECT).unwrap();
     responses.truncate(1);
     let docker = FakeDocker {
         ids: vec!["0a1b2c".to_string(), "123abc".to_string()],
@@ -77,8 +80,25 @@ async fn a_failed_inspect_cannot_produce_a_partial_list() {
     };
     assert!(matches!(
         published_ports(&docker).await,
-        Err(DockerError::Collect(DockerCollectError::HttpStatus(404)))
+        Err(DockerError::Collect(DockerCollectError::HttpStatus(500)))
     ));
+}
+
+#[tokio::test]
+async fn a_removed_container_leaves_the_other_published_ports_visible() {
+    let mut responses: VecDeque<Option<ContainerInspectResponse>> =
+        serde_json::from_str(INSPECT).unwrap();
+    responses.push_front(None);
+    let docker = FakeDocker {
+        ids: (0..responses.len()).map(|id| format!("{id:06x}")).collect(),
+        responses: RefCell::new(responses),
+        ..FakeDocker::default()
+    };
+
+    assert_eq!(
+        published_ports(&docker).await.unwrap(),
+        parse_docker_inspect(INSPECT).unwrap()
+    );
 }
 
 #[test]

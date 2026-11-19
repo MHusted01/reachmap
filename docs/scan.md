@@ -181,6 +181,8 @@ reachmap reads the running containers through the Docker Engine API over
 on this host by protocol, address and port. A matching row shows the container
 name and its Compose service when available. You can scan without root if
 your account can connect to the socket. The Docker CLI is optional.
+If a container disappears during the Docker read, the scan still reports the
+other containers.
 
 A socket on `::` counts as serving a port published on `0.0.0.0`, as it usually
 accepts IPv4 too. An IPv6-only socket does not, so it keeps its own process and

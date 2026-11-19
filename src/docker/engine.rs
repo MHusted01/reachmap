@@ -104,7 +104,12 @@ async fn published_ports(docker: &impl DockerSource) -> Result<Vec<PublishedPort
     let mut published = Vec::new();
     for id in docker.running_ids().await? {
         let id = validate_container_id(&id)?;
-        published.extend(parse_inspected_container(docker.inspect(id).await?)?);
+        let container = match docker.inspect(id).await {
+            // Docker can remove a container after the list request returns.
+            Err(DockerError::Collect(DockerCollectError::HttpStatus(404))) => continue,
+            inspected => inspected?,
+        };
+        published.extend(parse_inspected_container(container)?);
     }
     Ok(published)
 }
