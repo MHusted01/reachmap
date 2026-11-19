@@ -1,7 +1,7 @@
 use super::*;
 use crate::parse::docker::parse_docker_inspect;
 use crate::scan::ISSUES_URL;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -23,10 +23,19 @@ impl DockerSource for FakeDocker {
 
     async fn inspect(&self, id: &str) -> Result<ContainerInspectResponse, DockerError> {
         self.inspected.borrow_mut().push(id.to_string());
+        let index = self
+            .ids
+            .iter()
+            .position(|candidate| candidate == id)
+            .unwrap();
+        if index == 0 {
+            tokio::task::yield_now().await;
+        }
         self.responses
             .borrow_mut()
-            .pop_front()
+            .get_mut(index)
             .ok_or_else(|| DockerError::from(DockerCollectError::HttpStatus(500)))?
+            .take()
             .ok_or_else(|| DockerCollectError::HttpStatus(404).into())
     }
 }
@@ -46,7 +55,9 @@ async fn engine_objects_preserve_the_existing_inspect_parser_output() {
         published_ports(&docker).await.unwrap(),
         parse_docker_inspect(INSPECT).unwrap()
     );
-    assert_eq!(docker.inspected.into_inner(), ids);
+    let mut inspected = docker.inspected.into_inner();
+    inspected.sort_unstable();
+    assert_eq!(inspected, ids);
 }
 
 #[tokio::test]
@@ -99,6 +110,35 @@ async fn a_removed_container_leaves_the_other_published_ports_visible() {
         published_ports(&docker).await.unwrap(),
         parse_docker_inspect(INSPECT).unwrap()
     );
+}
+
+#[derive(Default)]
+struct YieldingDocker {
+    active: Cell<usize>,
+    peak: Cell<usize>,
+}
+
+impl DockerSource for YieldingDocker {
+    async fn running_ids(&self) -> Result<Vec<String>, DockerError> {
+        Ok((0..24).map(|id| format!("{id:06x}")).collect())
+    }
+
+    async fn inspect(&self, _id: &str) -> Result<ContainerInspectResponse, DockerError> {
+        let active = self.active.get() + 1;
+        self.active.set(active);
+        self.peak.set(self.peak.get().max(active));
+        tokio::task::yield_now().await;
+        self.active.set(self.active.get() - 1);
+        Err(DockerCollectError::HttpStatus(404).into())
+    }
+}
+
+#[tokio::test]
+async fn inspect_requests_overlap_with_a_fixed_limit() {
+    let docker = YieldingDocker::default();
+    assert!(published_ports(&docker).await.unwrap().is_empty());
+    assert_eq!(docker.peak.get(), 8);
+    assert_eq!(docker.active.get(), 0);
 }
 
 #[test]

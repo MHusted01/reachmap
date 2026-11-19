@@ -12,6 +12,7 @@ use std::time::Duration;
 use bollard::errors::Error as BollardError;
 use bollard::models::ContainerInspectResponse;
 use bollard::{API_DEFAULT_VERSION, Docker};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use tokio::{runtime::Builder, time};
 
 use super::{DockerCollectError, DockerError, PublishedPort};
@@ -27,6 +28,7 @@ const DAEMON_PATHS: &[&str] = &[
     "/snap/docker/current/bin/dockerd",
 ];
 const TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_INSPECTS_IN_FLIGHT: usize = 8;
 
 pub(super) fn read_published_ports() -> Result<Vec<PublishedPort>, DockerError> {
     let host = env::var_os("DOCKER_HOST");
@@ -101,17 +103,25 @@ impl DockerSource for Docker {
 }
 
 async fn published_ports(docker: &impl DockerSource) -> Result<Vec<PublishedPort>, DockerError> {
-    let mut published = Vec::new();
-    for id in docker.running_ids().await? {
-        let id = validate_container_id(&id)?;
-        let container = match docker.inspect(id).await {
-            // Docker can remove a container after the list request returns.
-            Err(DockerError::Collect(DockerCollectError::HttpStatus(404))) => continue,
-            inspected => inspected?,
-        };
-        published.extend(parse_inspected_container(container)?);
+    let ids = docker.running_ids().await?;
+    let ports = stream::iter(&ids)
+        .map(|id| inspect_ports(docker, id))
+        .buffered(MAX_INSPECTS_IN_FLIGHT)
+        .try_collect::<Vec<_>>()
+        .await?;
+    Ok(ports.into_iter().flatten().collect())
+}
+
+async fn inspect_ports(
+    docker: &impl DockerSource,
+    id: &str,
+) -> Result<Vec<PublishedPort>, DockerError> {
+    let id = validate_container_id(id)?;
+    match docker.inspect(id).await {
+        // Docker can remove a container after the list request returns.
+        Err(DockerError::Collect(DockerCollectError::HttpStatus(404))) => Ok(Vec::new()),
+        inspected => Ok(parse_inspected_container(inspected?)?),
     }
-    Ok(published)
 }
 
 fn request_error(error: BollardError, deadline: Duration) -> DockerError {

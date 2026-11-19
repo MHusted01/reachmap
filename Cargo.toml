@@ -21,6 +21,7 @@ tokio = { version = "1.54.1", features = ["net", "rt", "time"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 # Docker Engine models and local socket transport for the Linux collector.
 bollard = { version = "0.21.1", default-features = false, features = ["pipe"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
 rustix = { version = "1.1.6", features = ["net"] }
 
 [dev-dependencies]
