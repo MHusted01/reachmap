@@ -286,6 +286,8 @@ struct ClosedPortReservation {
 }
 
 /// Uses a port as the source of an outgoing TCP connection, without listening on it.
+/// Allocate any other fixture ports first. The reservation holds the allocation
+/// lock until it is dropped, so another call to either helper would block.
 fn closed_port() -> (u16, ClosedPortReservation) {
     let (peer, allocation) = allocate_listener();
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
