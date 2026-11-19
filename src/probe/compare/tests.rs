@@ -195,6 +195,34 @@ fn addresses_on_different_networks_are_compared_apart() {
 }
 
 #[test]
+fn a_port_can_be_unknown_from_one_network_and_differ_from_another() {
+    let claims = claims::parse(
+        r#"{"schema_version": 1, "collector_errors": [], "ports": [
+            {"port": 3000, "protocol": "tcp",
+             "reach": {"kind": "from", "networks": ["this_host", "lan", "tailnet"]},
+             "reason": {"kind": "tailscale_shared", "served_on": [443], "funnel_on": [],
+                        "direct": {"kind": "all_addresses"}}}]}"#,
+    )
+    .unwrap();
+    let results = [
+        probed(3000, LAN_V4, Outcome::Closed),
+        probed(3000, TAILNET_V4, Outcome::Closed),
+    ];
+
+    let comparison = compare(&claims, &results, None);
+
+    assert_eq!(comparison.unknown_ports, BTreeSet::from([3000]));
+    assert_eq!(
+        comparison.differences,
+        [difference(
+            Disagreement::MissingConnection,
+            3000,
+            Network::Lan
+        )]
+    );
+}
+
+#[test]
 fn from_puts_every_address_on_one_network() {
     let results = [
         probed(22, LAN_V4, Outcome::Open),
