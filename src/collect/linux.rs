@@ -65,6 +65,12 @@ pub(super) const IPTABLES_PROGRAM: &str = "iptables";
 /// two seconds if another program holds its lock.
 pub(super) const IPTABLES_ARGS: &[&str] = &["-w", "2", "-S", "DOCKER-USER"];
 
+/// The standard root-owned paths of nftables' command-line client.
+pub(super) const NFT_PATHS: &[&str] = &["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft", "/bin/nft"];
+
+/// Lists the active configuration as JSON without changing it.
+pub(super) const NFT_ARGS: &[&str] = &["-j", "list", "ruleset"];
+
 /// How long a command may run. All of them answer in well under a second on a
 /// healthy host; a hung Docker daemon must not hang the scan.
 pub(super) const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);

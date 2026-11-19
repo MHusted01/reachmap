@@ -26,8 +26,8 @@ new `kind` values, new `listener` values and new `protocol` values can appear
 without a new version, so ignore what you do not know, and treat an unknown
 `kind` or `listener` as unknown rather than as fine.
 
-Every field listed here is always present; a missing value is `null`, not an
-absent key.
+Fields in the main document example are always present. A missing value in
+those fields is `null`. The `nftables` field may be absent in older scans.
 
 ## Exit status
 
@@ -87,6 +87,20 @@ with the document.
 | `ports` | array | One object per row of the table, in the same order: by port, then protocol, then address. Empty when nothing listens. |
 | `warnings` | array | The summary under the table. Any entry means exit status 1. |
 | `collector_errors` | array | Optional facts that could not be collected. |
+| `nftables` | object | The [nftables input check](#nftables-input) for host socket ports. |
+
+## nftables input
+
+The `nftables` object has `status` equal to `checked` or `unknown`. With
+`unknown`, it has a string `reason`. With `checked`, it has a `ports` array.
+Each entry has `port` (number), `protocol` (`tcp` or `udp`), `family` (`ipv4`
+or `ipv6`), and `interfaces` (array). Each interface entry has `interface`
+(name), `verdict` (`accept`, `drop` or `unknown`), and `reason` (string).
+
+These findings apply to packets at the nftables input hook. See
+[nftables input](scan.md#nftables-input) for the supported rules. `reach`,
+`reachmap diff` and `reachmap probe --scan` use the socket reachability estimate
+before firewall filtering.
 
 ## Ports
 

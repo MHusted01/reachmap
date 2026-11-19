@@ -29,6 +29,7 @@ fn report(ports: Vec<ScannedPort>, warnings: Vec<ScanWarning>) -> ScanReport {
         docker_error: None,
         socket_options_error: None,
         tailscale_error: None,
+        nftables: None,
         warnings,
     }
 }

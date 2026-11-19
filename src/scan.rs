@@ -5,6 +5,7 @@
 //! warning. Data flows one way: [`crate::collect`] reads, [`crate::parse`]
 //! decodes, this module joins them.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::ErrorKind;
 use std::net::IpAddr;
@@ -17,6 +18,7 @@ use crate::collect::{self, CollectError, ProcessFds, RawTable};
 use crate::docker::{self, DockerError, PublishedPort};
 use crate::firewall::{self, DockerUserChain, Firewall, UfwState};
 use crate::network::{HostAddress, HostInterfaces};
+use crate::nftables::NftablesReport;
 use crate::parse::ip_addr::parse_ip_addr;
 use crate::parse::proc_net::{ParseError, parse_proc_net};
 use crate::parse::proc_pid::owners_by_inode;
@@ -157,6 +159,8 @@ pub struct ScanReport {
     /// Set when Tailscale could not be asked; rows then show the reach of
     /// their socket alone.
     pub tailscale_error: Option<TailscaleError>,
+    /// The nftables input-chain findings for a live scan.
+    pub nftables: Option<NftablesReport>,
     /// The summary under the table. Any entry makes the scan exit with 1.
     pub warnings: Vec<ScanWarning>,
 }
@@ -175,15 +179,26 @@ pub fn scan() -> Result<ScanReport, ScanError> {
         firewall::read_ufw_state(),
         firewall::read_docker_user_chain,
     );
-    Ok(join(
+    let host = read_host_interfaces();
+    let interfaces: BTreeSet<String> = host
+        .iter()
+        .flat_map(|host| host.names.values().cloned())
+        .collect();
+    let mut report = join(
         sockets,
         &open_files,
-        read_host_interfaces(),
+        host,
         published,
         tailscale::read_shared_ports(),
         options,
         &firewall,
-    ))
+    );
+    report.nftables = Some(NftablesReport::check(
+        collect::read_nftables_rules(),
+        &interfaces,
+        &report.ports,
+    ));
+    Ok(report)
 }
 
 /// Combines UFW's state with the `DOCKER-USER` chain. `iptables` only runs
@@ -305,6 +320,7 @@ pub fn join(
         docker_error,
         socket_options_error,
         tailscale_error,
+        nftables: None,
         warnings,
     }
 }

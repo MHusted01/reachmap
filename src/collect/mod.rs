@@ -254,6 +254,20 @@ pub fn read_docker_user_rules() -> Result<String, CollectError> {
     })
 }
 
+/// Reads the nftables ruleset. This typically needs `CAP_NET_ADMIN`.
+#[cfg(target_os = "linux")]
+pub(crate) fn read_nftables_rules() -> Result<String, CollectError> {
+    let program = command::locate(linux::NFT_PATHS, "/usr/sbin/nft");
+    command::run(program, linux::NFT_ARGS, linux::COMMAND_TIMEOUT)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn read_nftables_rules() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
 /// Reads each source in order, skipping optional sources that do not exist.
 pub fn read_tables(sources: &[TableSource]) -> Result<Vec<RawTable>, CollectError> {
     let mut tables = Vec::with_capacity(sources.len());

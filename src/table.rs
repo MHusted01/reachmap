@@ -88,6 +88,9 @@ impl fmt::Display for Report<'_> {
         if has_udp {
             writeln!(f, "note: {UDP_NOTE}")?;
         }
+        if let Some(nftables) = &self.0.nftables {
+            write!(f, "\n{nftables}")?;
+        }
         Ok(())
     }
 }
@@ -309,6 +312,7 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
             docker_error: None,
             socket_options_error: None,
             tailscale_error: None,
+            nftables: None,
             warnings,
         }
     }
