@@ -7,6 +7,7 @@ use crate::nftables::InputVerdict;
 use crate::sanitize::sanitize;
 use crate::socket::{AddressFamily, Protocol};
 
+use super::matches::{NamedSetEntry, SetIndex};
 use super::{Action, Chain, ChainKey, Entry, Policy, Rule, RuleAction, Ruleset, TableFlags};
 
 #[cfg(test)]
@@ -59,6 +60,14 @@ impl Ruleset {
             family,
             chains,
             index: self.index_chains(),
+            sets: self
+                .nftables
+                .iter()
+                .filter_map(|entry| match entry {
+                    Entry::Set(NamedSetEntry::Supported(set)) => Some((set.key(), set)),
+                    _ => None,
+                })
+                .collect(),
         })
     }
 
@@ -107,6 +116,7 @@ pub(crate) struct InputHook<'a> {
     family: AddressFamily,
     chains: Vec<InputChain<'a>>,
     index: ChainIndex<'a>,
+    sets: SetIndex<'a>,
 }
 
 impl InputHook<'_> {
@@ -114,6 +124,7 @@ impl InputHook<'_> {
         let mut accept_reason = "all applicable input chains accept";
         let mut walk = Walk {
             index: &self.index,
+            sets: &self.sets,
             family: self.family,
             protocol,
             port,
@@ -183,6 +194,7 @@ impl Reason<'_> {
 
 struct Walk<'index, 'rules, 'packet> {
     index: &'index ChainIndex<'rules>,
+    sets: &'index SetIndex<'rules>,
     family: AddressFamily,
     protocol: Protocol,
     port: u16,
@@ -223,7 +235,13 @@ impl<'index, 'rules> Walk<'index, 'rules, '_> {
                 return ControlFlow::Break(Err(reason("input rule visit limit exceeded")));
             }
             self.remaining -= 1;
-            match rule.evaluate(self.family, self.protocol, self.port, self.interface) {
+            match rule.evaluate(
+                self.sets,
+                self.family,
+                self.protocol,
+                self.port,
+                self.interface,
+            ) {
                 Ok(None) => {}
                 Ok(Some(RuleAction::Verdict(action, message))) => {
                     return ControlFlow::Break(Ok((action, reason(message))));

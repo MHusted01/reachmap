@@ -7,7 +7,9 @@ use thiserror::Error;
 use crate::socket::{AddressFamily, Protocol};
 
 mod input;
+mod matches;
 pub(crate) use input::InputHook;
+use matches::{Comparison, NamedSetEntry, SetIndex};
 
 #[derive(Debug, Error)]
 pub(crate) enum RulesetError {
@@ -31,9 +33,9 @@ enum Entry {
     Table(Table),
     Chain(Chain),
     Rule(Rule),
+    Set(NamedSetEntry),
     #[serde(
-        rename = "set",
-        alias = "map",
+        rename = "map",
         alias = "element",
         alias = "flowtable",
         alias = "counter",
@@ -185,28 +187,6 @@ impl RejectReply {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Comparison {
-    op: String,
-    left: Field,
-    right: Literal,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-enum Field {
-    Meta { key: String },
-    Payload { protocol: Protocol, field: String },
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(untagged)]
-enum Literal {
-    Port(u16),
-    Name(String),
-}
-
 pub(crate) fn parse_ruleset(json: &str) -> Result<Ruleset, RulesetError> {
     let rules: Ruleset = serde_json::from_str(json)?;
     for entry in &rules.nftables {
@@ -230,6 +210,7 @@ impl Rule {
     /// unsupported statement reached during evaluation can contain a verdict.
     fn evaluate(
         &self,
+        sets: &SetIndex<'_>,
         family: AddressFamily,
         protocol: Protocol,
         port: u16,
@@ -240,7 +221,10 @@ impl Rule {
             let last = index + 1 == self.expr.len();
             match statement {
                 Statement::Known(Expression::Match(comparison)) => {
-                    match comparison.matches(protocol, port, interface) {
+                    match comparison.matches(protocol, port, interface, |name| {
+                        sets.get(&(self.family.as_str(), self.table.as_str(), name))
+                            .copied()
+                    }) {
                         Some(true) => continue,
                         Some(false) => return Ok(None),
                         None => return Err("unsupported input rule"),
@@ -282,29 +266,6 @@ impl Rule {
             Ok(None)
         } else {
             Err("unsupported input rule")
-        }
-    }
-}
-
-impl Comparison {
-    fn matches(&self, protocol: Protocol, port: u16, interface: &str) -> Option<bool> {
-        if self.op != "==" {
-            return None;
-        }
-        match (&self.left, &self.right) {
-            (Field::Meta { key }, Literal::Name(name))
-                if key == "iifname" && !name.is_empty() && !name.contains(['*', '\\', '\0']) =>
-            {
-                Some(name == interface)
-            }
-            (
-                Field::Payload {
-                    protocol: expected,
-                    field,
-                },
-                Literal::Port(destination),
-            ) if field == "dport" => Some(*expected == protocol && *destination == port),
-            _ => None,
         }
     }
 }
