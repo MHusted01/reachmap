@@ -269,7 +269,7 @@
       },
       "reason": {
         "kind": "all_addresses",
-        "covers": "ipv4_and_ipv6",
+        "covers": "ipv6",
         "checked": false
       },
       "warning": "ufw_bypassed"
@@ -333,5 +333,52 @@
       "kind": "docker_user_rules"
     }
   ],
-  "collector_errors": []
+  "collector_errors": [],
+  "docker_publishes": [
+    {
+      "port": 5353,
+      "protocol": "udp",
+      "address": "0.0.0.0",
+      "container": {
+        "name": "shop-web-1",
+        "compose_service": "web"
+      }
+    },
+    {
+      "port": 8080,
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "container": {
+        "name": "shop-web-1",
+        "compose_service": "web"
+      }
+    },
+    {
+      "port": 8443,
+      "protocol": "tcp",
+      "address": "0.0.0.0",
+      "container": {
+        "name": "shop-web-1",
+        "compose_service": "web"
+      }
+    },
+    {
+      "port": 8443,
+      "protocol": "tcp",
+      "address": "::",
+      "container": {
+        "name": "shop-web-1",
+        "compose_service": "web"
+      }
+    },
+    {
+      "port": 9100,
+      "protocol": "tcp",
+      "address": "::1",
+      "container": {
+        "name": "metrics",
+        "compose_service": null
+      }
+    }
+  ]
 }

@@ -10,6 +10,8 @@ use crate::network::{HostAddress, Network};
 use crate::socket::SocketOptions;
 use crate::tailscale::Sharing;
 
+pub(crate) mod publish;
+
 /// Which networks can reach a socket.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

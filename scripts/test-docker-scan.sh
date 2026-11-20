@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks `reachmap scan` against a real Docker daemon: containers published on
-# 127.0.0.1 and on all interfaces, with and without sudo, and a daemon that
-# cannot be reached. Needs Linux, Docker access, passwordless sudo and UFW off.
+# IPv4 and IPv6 loopback and on all IPv4 interfaces, with and without sudo.
+# It also checks an unreachable daemon. Needs Linux, Docker access, passwordless sudo and UFW off.
 # In GitHub Actions it then turns UFW on and repeats the checks that depend on
 # it. That changes the host's firewall, so nowhere else does it run.
 # Usage: scripts/test-docker-scan.sh target/debug/reachmap   (run by the CI test job)
@@ -12,7 +12,8 @@ image=busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36c
 local_port=18080
 all_port=18081
 hostile_port=18082
-names=(reachmap-test-local reachmap-test-all reachmap-test-hostile)
+ipv6_port=18083
+names=(reachmap-test-local reachmap-test-all reachmap-test-hostile reachmap-test-ipv6)
 unreachable=unix:///nonexistent/docker.sock
 # From the range reserved for documentation, so the rule matches no real host.
 docker_user_rule=(DOCKER-USER -s 192.0.2.1 -j DROP)
@@ -67,6 +68,22 @@ expect_published_rows() {
   [[ "$output" != *'warning:'* ]] || fail "$label: UFW is off, so nothing to warn about" "$output"
   expect_in_row "$output" "$hostile_port" 127.0.0.1 '\u{1b}[2J' "$label"
   printf 'ok: %s\n' "$label"
+}
+
+expect_ipv6_publish() {
+  local output status=0
+  output=$(sudo "$binary" scan) || status=$?
+  if [[ $status != 0 && ( $status != 1 || "$output" != *'warning: nftables has IPv4-only host input coverage'* ) ]]; then
+    fail "IPv6 publish: unexpected exit status $status" "$output"
+  fi
+  expect_in_row "$output" "$ipv6_port" ::1 'container reachmap-test-ipv6' 'IPv6 publish'
+  grep -Fq "  $ipv6_port/tcp ::1 (container reachmap-test-ipv6) | nftables host input: " \
+    <<<"$output" || fail 'IPv6 publish: binding or host input evidence missing' "$output"
+  [[ $(grep -Ec "^  $ipv6_port/.*\(container reachmap-test-ipv6\)" <<<"$output") == 1 ]] ||
+    fail 'IPv6 publish: expected exactly one IPv6 binding' "$output"
+  [[ -z $(row "$output" "$ipv6_port" 0.0.0.0) ]] ||
+    fail 'IPv6 publish: unexpected IPv4 wildcard row' "$output"
+  printf 'ok: IPv6-only Docker publish\n'
 }
 
 # Scans with $DOCKER_HOST on a socket that does not exist; the scan must still
@@ -157,7 +174,8 @@ fi
 
 docker run -d --rm --name reachmap-test-local -p "127.0.0.1:$local_port:80" \
   --label com.docker.compose.service=web "$image" sleep 300 >/dev/null
-docker run -d --rm --name reachmap-test-all -p "$all_port:80" -p "$all_port:80/udp" \
+docker run -d --rm --name reachmap-test-all \
+  -p "0.0.0.0:$all_port:80" -p "0.0.0.0:$all_port:80/udp" \
   "$image" sleep 300 >/dev/null
 docker run -d --rm --name reachmap-test-hostile -p "127.0.0.1:$hostile_port:80" \
   --label "com.docker.compose.service=$(printf 'evil\033[2J')" "$image" sleep 300 >/dev/null
@@ -171,4 +189,7 @@ expect_unreachable_note 'unreachable daemon, without sudo' 'unknown' \
 expect_unreachable_note 'unreachable daemon, with sudo' 'docker-proxy' \
   sudo env "DOCKER_HOST=$unreachable" "$binary"
 expect_sudo_hint
+docker run -d --rm --name reachmap-test-ipv6 -p "[::1]:$ipv6_port:80" \
+  "$image" sleep 300 >/dev/null
+expect_ipv6_publish
 expect_active_ufw_warnings

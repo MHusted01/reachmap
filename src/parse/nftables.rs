@@ -164,7 +164,9 @@ pub(crate) fn parse_ruleset(json: &str) -> Result<Ruleset, RulesetError> {
 }
 
 impl Ruleset {
-    pub(crate) fn input(&self, family: AddressFamily) -> Result<InputChain<'_>, &'static str> {
+    pub(crate) fn input(&self, family: AddressFamily) -> Result<InputChain<'_>, InputChainError> {
+        use InputChainError::{Missing, Unverified};
+
         let family = match family {
             AddressFamily::Ipv4 => "ip",
             AddressFamily::Ipv6 => "ip6",
@@ -190,20 +192,22 @@ impl Ruleset {
                     }
                     _ => None,
                 })
-                .ok_or("input chain's table is missing")?;
+                .ok_or(Unverified("input chain's table is missing"))?;
             if table.flags.as_ref().is_some_and(TableFlags::dormant) {
                 continue;
             }
             // An accept in one base chain still permits a later chain to drop.
             if selected.replace(chain).is_some() {
-                return Err("multiple applicable input chains");
+                return Err(Unverified("multiple applicable input chains"));
             }
         }
-        let chain = selected.ok_or("no applicable input chain")?;
+        let chain = selected.ok_or(Missing)?;
         if chain.kind.as_deref() != Some("filter") {
-            return Err("unsupported input chain type");
+            return Err(Unverified("unsupported input chain type"));
         }
-        let policy = chain.policy.ok_or("input chain policy is missing")?;
+        let policy = chain
+            .policy
+            .ok_or(Unverified("input chain policy is missing"))?;
         let rules = self
             .nftables
             .iter()
@@ -219,6 +223,21 @@ impl Ruleset {
             })
             .collect();
         Ok(InputChain { policy, rules })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InputChainError {
+    Missing,
+    Unverified(&'static str),
+}
+
+impl InputChainError {
+    pub(crate) fn reason(self) -> &'static str {
+        match self {
+            Self::Missing => "no applicable input chain",
+            Self::Unverified(reason) => reason,
+        }
     }
 }
 

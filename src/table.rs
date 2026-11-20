@@ -91,6 +91,12 @@ impl fmt::Display for Report<'_> {
         if let Some(nftables) = &self.0.nftables {
             write!(f, "\n{nftables}")?;
         }
+        if !self.0.docker_publishes.is_empty() {
+            writeln!(f, "\nDocker publishes:")?;
+            for publish in &self.0.docker_publishes {
+                writeln!(f, "  {publish}")?;
+            }
+        }
         Ok(())
     }
 }
@@ -313,6 +319,7 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
             socket_options_error: None,
             tailscale_error: None,
             nftables: None,
+            docker_publishes: Vec::new(),
             warnings,
         }
     }

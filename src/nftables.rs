@@ -9,13 +9,51 @@ use serde::Serialize;
 use crate::collect::CollectError;
 use crate::errors::render_chain;
 use crate::network::HostInterfaces;
-use crate::parse::nftables::parse_ruleset;
+use crate::parse::nftables::{InputChain, InputChainError, Ruleset, parse_ruleset};
 use crate::sanitize::sanitize;
-use crate::scan::ScannedPort;
+use crate::scan::{ScanReport, ScannedPort};
 use crate::socket::{AddressFamily, Protocol};
 
+mod docker;
 mod targets;
+pub use docker::DockerPublish;
 use targets::targets;
+
+const NO_INTERFACES: &str = "no interface addresses available";
+
+struct InputChains<'a> {
+    ipv4: Result<InputChain<'a>, InputChainError>,
+    ipv6: Result<InputChain<'a>, InputChainError>,
+}
+
+impl<'a> InputChains<'a> {
+    fn new(rules: &'a Ruleset) -> Self {
+        Self {
+            ipv4: rules.input(AddressFamily::Ipv4),
+            ipv6: rules.input(AddressFamily::Ipv6),
+        }
+    }
+}
+
+pub(crate) fn check_scan(
+    raw: Result<String, CollectError>,
+    host: Option<&HostInterfaces>,
+    report: &mut ScanReport,
+) {
+    let rules = read_rules(raw);
+    let chains = rules.as_ref().map(InputChains::new);
+    let evidence = chains.as_ref().map_err(|reason| reason.as_str());
+    let host = host.filter(|host| !host.addresses.is_empty());
+    report.nftables = Some(NftablesReport::check(evidence, host, &report.ports));
+    report
+        .warnings
+        .extend(docker::check(&mut report.docker_publishes, evidence, host));
+}
+
+fn read_rules(raw: Result<String, CollectError>) -> Result<Ruleset, String> {
+    let raw = raw.map_err(|error| collect_reason(&error))?;
+    parse_ruleset(&raw).map_err(|error| sanitize(&render_chain(&error)))
+}
 
 /// The result of inspecting the nftables input hook for host socket ports.
 #[derive(Debug, Serialize)]
@@ -60,48 +98,38 @@ pub(crate) enum InputVerdict {
 }
 
 impl NftablesReport {
-    pub(crate) fn check(
-        raw: Result<String, CollectError>,
+    fn check(
+        chains: Result<&InputChains<'_>, &str>,
         host: Option<&HostInterfaces>,
         ports: &[ScannedPort],
     ) -> Self {
-        let raw = match raw {
-            Ok(raw) => raw,
-            Err(error) => {
+        let chains = match chains {
+            Ok(chains) => chains,
+            Err(reason) => {
                 return Self::Unknown {
-                    reason: collect_reason(&error),
-                };
-            }
-        };
-        let rules = match parse_ruleset(&raw) {
-            Ok(rules) => rules,
-            Err(error) => {
-                return Self::Unknown {
-                    reason: sanitize(&render_chain(&error)),
+                    reason: reason.to_string(),
                 };
             }
         };
         let Some(host) = host.filter(|host| !host.addresses.is_empty()) else {
             return Self::Unknown {
-                reason: "no interface addresses available".to_string(),
+                reason: NO_INTERFACES.to_string(),
             };
         };
 
-        let v4 = rules.input(AddressFamily::Ipv4);
-        let v6 = rules.input(AddressFamily::Ipv6);
-        if let (Err(v4_reason), Err(v6_reason)) = (&v4, &v6)
+        if let (Err(v4_reason), Err(v6_reason)) = (&chains.ipv4, &chains.ipv6)
             && v4_reason == v6_reason
         {
             return Self::Unknown {
-                reason: (*v4_reason).to_string(),
+                reason: v4_reason.reason().to_string(),
             };
         }
         let ports = targets(ports, host)
             .into_iter()
             .map(|target| {
                 let chain = match target.family {
-                    AddressFamily::Ipv4 => &v4,
-                    AddressFamily::Ipv6 => &v6,
+                    AddressFamily::Ipv4 => &chains.ipv4,
+                    AddressFamily::Ipv6 => &chains.ipv6,
                 };
                 let interfaces = target
                     .interfaces
@@ -109,7 +137,9 @@ impl NftablesReport {
                     .map(|name| InterfaceInput {
                         interface: sanitize(name),
                         outcome: chain.as_ref().map_or_else(
-                            |reason| InputVerdict::Unknown { reason },
+                            |error| InputVerdict::Unknown {
+                                reason: error.reason(),
+                            },
                             |input| input.evaluate(target.protocol, target.port, name),
                         ),
                     })

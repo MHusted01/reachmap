@@ -11,6 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+mod docker_input;
 mod tailscale;
 
 fn socket(port: u16, inode: u64) -> ListeningSocket {
