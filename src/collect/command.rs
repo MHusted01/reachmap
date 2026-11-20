@@ -46,7 +46,7 @@ pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<Str
 }
 
 /// Run a fixed-path probe without environment variables or shell configuration.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn run_isolated(
     program: &str,
     args: &[&str],
@@ -192,11 +192,15 @@ fn read_in_background(
     receiver
 }
 
-fn read_output(pipe: impl Read, limit: Option<u64>) -> io::Result<Vec<u8>> {
+fn read_output(mut pipe: impl Read, limit: Option<u64>) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    pipe.take(limit.map_or(u64::MAX, |limit| limit + 1))
+    (&mut pipe)
+        .take(limit.map_or(u64::MAX, |limit| limit + 1))
         .read_to_end(&mut bytes)?;
     if limit.is_some_and(|limit| bytes.len() as u64 > limit) {
+        // Let a finite writer finish without holding the remaining bytes or
+        // hitting a broken pipe. The caller still enforces its deadline.
+        io::copy(&mut pipe, &mut io::sink()).ok();
         return Err(io::Error::other("probe output exceeded its size limit"));
     }
     Ok(bytes)
@@ -245,6 +249,35 @@ mod tests {
     const SHORT: Duration = Duration::from_millis(300);
     /// A test that took this long waited for its command instead of giving up.
     const GAVE_UP_IN_TIME: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn bounded_output_accepts_the_limit_and_drains_oversized_pipes() {
+        for length in [3, 4] {
+            assert_eq!(
+                read_output(&[b'a'; 5][..length], Some(4)).unwrap().len(),
+                length
+            );
+        }
+        let mut output = io::Cursor::new(b"12345678");
+        let error = read_output(&mut output, Some(4)).unwrap_err();
+        assert_eq!(error.to_string(), "probe output exceeded its size limit");
+        assert_eq!(output.position(), 8);
+    }
+
+    #[test]
+    fn isolated_commands_only_inherit_the_fixed_locale() {
+        assert_eq!(
+            run_isolated("/usr/bin/env", &[], LONG).unwrap(),
+            "LC_ALL=C\n"
+        );
+    }
+
+    #[test]
+    fn isolated_commands_report_oversized_output() {
+        let error =
+            run_isolated("/usr/bin/head", &["-c", "131072", "/dev/zero"], LONG).unwrap_err();
+        assert!(render_chain(&error).contains("probe output exceeded its size limit"));
+    }
 
     fn assert_times_out(script: &str) {
         let started = Instant::now();

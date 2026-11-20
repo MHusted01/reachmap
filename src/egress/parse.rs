@@ -14,6 +14,27 @@ pub(super) fn parse_ip(text: &str, family: AddressFamily) -> Option<IpAddr> {
     }
 }
 
+pub(super) fn https_observed_ip(response: &str, family: AddressFamily) -> Result<IpAddr, String> {
+    let (body, status) = response
+        .rsplit_once('\n')
+        .ok_or_else(|| "the HTTPS observer response did not include a status".to_string())?;
+    if status != "200" {
+        return Err(format!("the HTTPS observer returned status {status}"));
+    }
+    parse_ip(body, family).ok_or_else(|| {
+        "the HTTPS observer did not return an address in the requested family".into()
+    })
+}
+
+pub(super) fn ipv6_route_unreachable(status: Option<i32>, stderr: &str) -> bool {
+    status == Some(2)
+        && matches!(
+            stderr.trim(),
+            "RTNETLINK answers: Network is unreachable"
+                | "ip: RTNETLINK answers: Network unreachable"
+        )
+}
+
 pub(super) fn nameservers(text: &str) -> Result<Vec<IpAddr>, &'static str> {
     text.lines()
         .filter_map(|line| {
@@ -63,6 +84,35 @@ fn quoted_ip(word: &str) -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_observation_takes_the_ip_from_a_successful_response() {
+        assert_eq!(
+            https_observed_ip("192.0.2.1\n\n200", AddressFamily::Ipv4),
+            Ok("192.0.2.1".parse().unwrap())
+        );
+        assert!(
+            https_observed_ip("192.0.2.1\n301", AddressFamily::Ipv4)
+                .unwrap_err()
+                .contains("status 301")
+        );
+        assert!(https_observed_ip("192.0.2.1", AddressFamily::Ipv4).is_err());
+        assert!(https_observed_ip("192.0.2.1\n200", AddressFamily::Ipv6).is_err());
+    }
+
+    #[test]
+    fn ipv6_no_route_requires_a_known_kernel_diagnostic_and_status() {
+        const IPROUTE: &str = "RTNETLINK answers: Network is unreachable\n";
+        const BUSYBOX: &str = "ip: RTNETLINK answers: Network unreachable";
+        assert!(ipv6_route_unreachable(Some(2), IPROUTE));
+        assert!(ipv6_route_unreachable(Some(2), BUSYBOX));
+        assert!(!ipv6_route_unreachable(Some(1), IPROUTE));
+        assert!(!ipv6_route_unreachable(
+            Some(2),
+            "RTNETLINK answers: Permission denied"
+        ));
+        assert!(!ipv6_route_unreachable(None, BUSYBOX));
+    }
 
     #[test]
     fn parses_nameservers_in_order_and_honors_the_resolver_limit() {

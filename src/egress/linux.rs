@@ -1,6 +1,6 @@
 //! Runs fixed host tools in the host and the pinned container net namespace.
 
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{self, Read};
 use std::net::IpAddr;
 use std::os::fd::AsRawFd;
@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use rustix::fs::{Mode, OFlags, ResolveFlags, open, openat2};
 
-use super::parse::{nameservers, parse_ip, resolver_ip};
+use super::parse::{https_observed_ip, ipv6_route_unreachable, nameservers, parse_ip, resolver_ip};
 use super::{ContainerRef, DnsSample, Observation, Observations, ObserverName, Report, SetupError};
 use crate::collect::{CollectError, command};
 use crate::docker::engine::egress as docker;
@@ -46,7 +46,7 @@ pub(super) fn check(
         dns_name,
         &ipv4,
         &ipv6,
-        fs::read_to_string("/etc/resolv.conf"),
+        File::open("/").and_then(|root| read_resolv_conf(&root)),
     );
     let observed = container.observe(ip_host, dns_name, &ipv4, &ipv6, container_dns);
     let unreachable_ipv6_observer = ipv6
@@ -280,15 +280,7 @@ impl Probe<'_> {
                 ],
             )
             .map_err(|error| render_chain(&error))?;
-        let (body, status) = response
-            .rsplit_once('\n')
-            .ok_or_else(|| "the HTTPS observer response did not include a status".to_string())?;
-        if status != "200" {
-            return Err(format!("the HTTPS observer returned status {status}"));
-        }
-        parse_ip(body, family).ok_or_else(|| {
-            "the HTTPS observer did not return an address in the requested family".into()
-        })
+        https_observed_ip(&response, family)
     }
 
     fn dns(
@@ -317,10 +309,7 @@ impl Probe<'_> {
         matches!(
             self.run(self.tools.ip, &["-6", "route", "get", &destination.to_string()]),
             Err(CollectError::CommandFailed { status, stderr, .. })
-                if status.code() == Some(2) && matches!(
-                    stderr.as_str(),
-                    "RTNETLINK answers: Network is unreachable" | "ip: RTNETLINK answers: Network unreachable"
-                )
+                if ipv6_route_unreachable(status.code(), &stderr)
         )
     }
 }
@@ -348,5 +337,14 @@ mod tests {
         let directory = File::open(root.path()).unwrap();
         let error = read_resolv_conf(&directory).unwrap_err();
         assert!(error.to_string().contains("not a regular file"));
+    }
+
+    #[test]
+    fn resolver_configuration_read_has_a_size_limit() {
+        let root = TempDir::new("egress-resolver-size");
+        root.file("etc/resolv.conf", &" ".repeat(MAX_RESOLV_CONF as usize + 1));
+        let directory = File::open(root.path()).unwrap();
+        let error = read_resolv_conf(&directory).unwrap_err();
+        assert_eq!(error.to_string(), "resolv.conf is too large");
     }
 }
