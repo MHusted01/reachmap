@@ -8,6 +8,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::render_chain;
+use crate::nftables::NftablesReport;
 use crate::scan::{ScanReport, ScannedPort};
 use crate::warning::ScanWarning;
 
@@ -22,6 +23,8 @@ struct JsonReport<'a> {
     ports: &'a [ScannedPort],
     warnings: &'a [ScanWarning],
     collector_errors: Vec<CollectorError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    nftables: Option<&'a NftablesReport>,
 }
 
 /// An optional collector that failed, so scripts need not read standard
@@ -96,6 +99,7 @@ pub fn render(report: &ScanReport) -> Result<String, serde_json::Error> {
             .chain(socket_options)
             .chain(tailscale)
             .collect(),
+        nftables: report.nftables.as_ref(),
     };
     serde_json::to_string_pretty(&document).map(|text| text + "\n")
 }

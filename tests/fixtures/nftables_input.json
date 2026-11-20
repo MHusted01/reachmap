@@ -1,0 +1,27 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "json_schema_version": 1}},
+    {"table": {"family": "inet", "name": "sample", "handle": 1}},
+    {"chain": {"family": "inet", "table": "sample", "name": "inbound", "handle": 1, "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}},
+    {"rule": {"family": "inet", "table": "sample", "chain": "inbound", "handle": 2, "expr": [
+      {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}},
+      {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 8443}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "sample", "chain": "inbound", "handle": 3, "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 8443}},
+      {"drop": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "sample", "chain": "inbound", "handle": 4, "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "udp", "field": "dport"}}, "right": 5353}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "inet", "table": "sample", "chain": "inbound", "handle": 5, "expr": [
+      {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}},
+      {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 9090}},
+      {"jump": {"target": "extra"}}
+    ]}},
+    {"chain": {"family": "inet", "table": "sample", "name": "extra", "handle": 6}},
+    {"chain": {"family": "inet", "table": "sample", "name": "output", "type": "filter", "hook": "output", "prio": 0, "policy": "drop"}}
+  ]
+}

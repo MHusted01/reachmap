@@ -124,10 +124,40 @@ so when only the UDP request fails, TCP rows keep their facts. Docker-forwarded
 ports without a host socket always show this wording, as there is no socket
 to ask about.
 
-**Not a firewall verdict.** REACHABLE FROM says who could connect if no firewall
-interferes. UFW's rules are not evaluated. The one firewall fact reachmap reports
-is that UFW does not apply to Docker's published ports; see
-[Why Docker ports can bypass UFW](docker-and-ufw.md#what-reachmap-reports).
+REACHABLE FROM estimates who could connect before firewall filtering. The
+[nftables input check](#nftables-input) describes one part of that filtering.
+Docker publishes also get the [UFW bypass warning](docker-and-ufw.md#what-reachmap-reports)
+when applicable.
+
+## nftables input
+
+The scan reads `nft -j list ruleset` from a standard system path. Reading the
+ruleset usually needs root or `CAP_NET_ADMIN`. The output below the table shows
+what the input chain does with packets for each native TCP or UDP socket port,
+bind address, IP family and incoming interface. For example, a port might show
+`eth0 accept (matching rule), lo drop (chain policy)`. Each socket is checked
+only on the interfaces it can receive on: a socket bound to a loopback address
+on `lo`, one bound to a host address on the interface that has it, and a
+wildcard such as `0.0.0.0` on every interface with an address of that family.
+A socket bound to an address no interface has is not checked.
+
+For IPv4 and IPv6, reachmap checks the applicable `ip`, `ip6` and `inet` tables.
+It supports one active filter chain at the `input` hook per IP family, with
+exact `iifname` and single numeric TCP or UDP destination-port matches. It reads
+rules in order and uses the chain's policy when none matches. If an unsupported
+rule could affect the decision, more than one input chain applies, or data is
+missing, the result is `unknown` with the reason. These findings are informational
+and do not affect the exit status.
+
+Each check assumes a packet arrives at the input hook on the listed interface.
+Other hooks, upstream filters, routing and whether the socket would receive the
+packet are outside this check. Docker publishes and Tailscale share rows are
+excluded. A socket bound to `::` that is not IPv6-only also takes IPv4 packets,
+so it gets one line for each family. An IPv4-mapped address is checked for IPv4.
+When the scan could not read whether a socket is IPv6-only, it assumes the
+widest case, as the rest of the scan does. With no host socket ports, the output
+says so. If `nft` fails to run, the reason says reading the ruleset usually
+needs root or `CAP_NET_ADMIN`.
 
 ## Reading the service
 
