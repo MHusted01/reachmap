@@ -7,12 +7,11 @@ use serde::Serialize;
 
 use crate::docker::PublishedPort;
 use crate::network::HostInterfaces;
-use crate::parse::nftables::InputChainError;
 use crate::service::Container;
 use crate::socket::Endpoint;
 use crate::warning::ScanWarning;
 
-use super::{InputChains, InputVerdict, NO_INTERFACES};
+use super::{InputChains, InputVerdict, NO_INPUT_CHAINS, NO_INTERFACES};
 
 /// One observed host binding from the Docker Engine API.
 #[derive(Debug, Serialize)]
@@ -56,10 +55,9 @@ pub(super) fn check(
         .filter(|publish| publish.endpoint.address.to_canonical().is_ipv6())
     {
         let evidence = chains
+            .map_err(str::to_string)
             .and_then(|chains| host_input(publish.endpoint, chains, host))
-            .unwrap_or_else(|reason| HostInput::Unknown {
-                reason: reason.to_string(),
-            });
+            .unwrap_or_else(|reason| HostInput::Unknown { reason });
         if matches!(evidence, HostInput::Ipv4Only {}) && !publish.endpoint.address.is_loopback() {
             bindings.insert(publish.endpoint);
         }
@@ -72,8 +70,8 @@ fn host_input(
     endpoint: Endpoint,
     chains: &InputChains<'_>,
     host: Option<&HostInterfaces>,
-) -> Result<HostInput, &'static str> {
-    let host = host.ok_or(NO_INTERFACES)?;
+) -> Result<HostInput, String> {
+    let host = host.ok_or_else(|| NO_INTERFACES.to_string())?;
     let address = endpoint.address;
     let mut interfaces = host
         .addresses
@@ -84,17 +82,18 @@ fn host_input(
         })
         .peekable();
     if interfaces.peek().is_none() {
-        return Err("no matching IPv6 interface addresses");
+        return Err("no matching IPv6 interface addresses".to_string());
     }
     let (input, status) = match &chains.ipv6 {
-        Ok(input) => (input, HostInput::Ipv6Evidence {}),
-        // Only a positively identified IPv4 filter chain and confirmed absence
-        // of an applicable IPv6 chain establish this gap.
-        Err(InputChainError::Missing) => (
-            chains.ipv4.as_ref().map_err(|error| error.reason())?,
+        Some(input) => (input, HostInput::Ipv6Evidence {}),
+        // Confirmed absence of applicable IPv6 chains is needed for this gap.
+        None => (
+            chains
+                .ipv4
+                .as_ref()
+                .ok_or_else(|| NO_INPUT_CHAINS.to_string())?,
             HostInput::Ipv4Only {},
         ),
-        Err(error) => return Err(error.reason()),
     };
     for entry in interfaces {
         if let InputVerdict::Unknown { reason } =

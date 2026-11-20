@@ -117,7 +117,11 @@ fn ipv4_only_input_on_ipv6_loopback_is_informational() {
 
 #[test]
 fn applicable_ipv6_and_dual_family_input_evidence_do_not_warn() {
-    for rules in [INPUT.to_string(), INPUT.replace(r#""inet""#, r#""ip6""#)] {
+    for rules in [
+        INPUT.to_string(),
+        INPUT.replace(r#""inet""#, r#""ip6""#),
+        INPUT.replace(r#""hook": "output""#, r#""hook": "input""#),
+    ] {
         let (report, document) = run(Ok(rules));
         assert!(report.warnings.is_empty());
         assert_eq!(
@@ -175,10 +179,6 @@ fn unavailable_or_ambiguous_input_evidence_is_unknown_with_its_cause() {
         (
             Ok(INPUT.replace(r#""type": "filter""#, r#""type": "nat""#)),
             "unsupported input chain type",
-        ),
-        (
-            Ok(INPUT.replace(r#""hook": "output""#, r#""hook": "input""#)),
-            "multiple applicable input chains",
         ),
         (
             Ok(INPUT

@@ -108,7 +108,10 @@ address seen as one IP family, and has `port` (number), `protocol` (`tcp` or
 `interfaces` (array). A socket bound to `::` that is not IPv6-only has an entry
 for each family. `interfaces` lists only the interfaces the socket can receive
 on. Each interface entry has `interface` (name), `verdict` (`accept`, `drop` or
-`unknown`), and `reason` (string).
+`unknown`), and `reason` (a human-readable string). A drop or chain-specific
+unknown names the nftables family, table and chain, for example
+`chain policy in inet filter input`. When several chains accept, the reason
+is `all applicable input chains accept`.
 
 These findings apply to packets at the nftables input hook. See
 [nftables input](scan.md#nftables-input) for the supported rules. `reach`,
