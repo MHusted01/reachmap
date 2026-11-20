@@ -4,6 +4,7 @@
 pub mod docker;
 pub mod ip_addr;
 pub mod iptables;
+pub(crate) mod nftables;
 pub mod probe_args;
 pub mod proc_net;
 pub mod proc_pid;

@@ -8,6 +8,10 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan` checks simple nftables input rules for TCP and UDP host socket
+  ports by bind address, incoming interface and IP family. The scan shows when
+  the input chain accepts or drops a packet and reports why a check is unknown.
+  `--json` adds an `nftables` object ([#14](https://github.com/MHusted01/reachmap/issues/14)).
 - `reachmap scan` recognises two kinds of broadcast address that `ip -j addr` does
   not list. It works out the broadcast address of a subnet configured without
   `brd`, so such a row names its interface. A socket on `255.255.255.255` shows
