@@ -6,6 +6,10 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-20
+
+This release includes the Probe and diff (v0.2) and Deeper checks (v0.3) milestones.
+
 ### Added
 
 - The nftables input check handles destination-port sets, inclusive ranges,

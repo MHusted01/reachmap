@@ -17,11 +17,10 @@ PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM              
 warning: UFW is active, but it does not apply to these Docker ports: 8080
 ```
 
-> **Status.** v0.1.0 ships Linux TCP inventory, JSON and Docker/UFW warnings.
-> The main branch also includes UDP inventory, Tailscale Serve and Funnel
-> awareness, TCP probes, baseline diffs, macOS socket inventory and Linux
-> container egress checks. Scan results
-> describe potential exposure based on local evidence. [Changelog](CHANGELOG.md) ·
+> **Status.** v0.3.0 adds Linux UDP inventory, Tailscale Serve and Funnel
+> awareness, TCP probes, baseline diffs, macOS socket inventory, and Linux
+> nftables input and Docker egress checks. Scan results describe potential
+> exposure based on local evidence. [Changelog](CHANGELOG.md) ·
 > [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md)
 
 ## Install
@@ -35,8 +34,8 @@ Prebuilt binaries for Linux and macOS (x86_64 and aarch64) are attached to each
 [GitHub Release](https://github.com/MHusted01/reachmap/releases). The Linux
 binaries are static, so they run on any distribution.
 
-On the main branch, `reachmap scan`, `reachmap probe` and `reachmap diff` run on
-Linux and macOS. See the [macOS scan scope](docs/scan.md#macos).
+`reachmap scan`, `reachmap probe` and `reachmap diff` run on Linux and macOS.
+See the [macOS scan scope](docs/scan.md#macos).
 
 ## Features
 
