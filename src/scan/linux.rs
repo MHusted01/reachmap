@@ -3,8 +3,10 @@
 use super::{
     HostCollector, HostInterfaces, InterfacesError, ScanError, ScanReport, join, parse_tables,
 };
+use crate::collect::CollectError;
 use crate::docker::{DockerError, PublishedPort};
 use crate::firewall::{DockerUserChain, Firewall, UfwState};
+use crate::host_input_snapshot::{HostInputSnapshot, HostRef, Status};
 use crate::warning::docker_ufw_bypass;
 use crate::{
     collect, docker, nftables::check_scan, parse::ip_addr::parse_ip_addr,
@@ -15,9 +17,50 @@ pub(super) struct Linux;
 
 impl HostCollector for Linux {
     fn scan(&self) -> Result<ScanReport, ScanError> {
+        let CollectedScan {
+            mut report,
+            host,
+            rules,
+            ..
+        } = Self::collect()?;
+        check_scan(rules, host.as_ref(), &mut report);
+        Ok(report)
+    }
+}
+
+struct CollectedScan {
+    report: ScanReport,
+    host: Option<HostInterfaces>,
+    rules: Result<String, CollectError>,
+    socket_options: Status,
+}
+
+impl Linux {
+    pub(super) fn capture(
+        host_ref: HostRef,
+        timestamp: u64,
+    ) -> Result<HostInputSnapshot, ScanError> {
+        let CollectedScan {
+            report,
+            host,
+            rules,
+            socket_options,
+        } = Self::collect()?;
+        Ok(HostInputSnapshot::from_scan(
+            host_ref,
+            timestamp,
+            host.as_ref(),
+            &report,
+            socket_options,
+            rules,
+        ))
+    }
+
+    fn collect() -> Result<CollectedScan, ScanError> {
         let tables = collect::read_socket_tables()?;
         let sockets = parse_tables(&tables)?;
         let options = read_socket_options();
+        let socket_options = Status::socket_options(&options);
         let open_files = collect::read_open_files()?;
         let published = docker::read_published_ports();
         let firewall = firewall_facts(
@@ -27,7 +70,7 @@ impl HostCollector for Linux {
         );
         let host = read_host_interfaces();
         let host_facts = host.as_ref().ok().cloned();
-        let mut report = join(
+        let report = join(
             sockets,
             &open_files,
             host,
@@ -36,12 +79,12 @@ impl HostCollector for Linux {
             options,
             &firewall,
         );
-        check_scan(
-            collect::read_nftables_rules(),
-            host_facts.as_ref(),
-            &mut report,
-        );
-        Ok(report)
+        Ok(CollectedScan {
+            report,
+            host: host_facts,
+            rules: collect::read_nftables_rules(),
+            socket_options,
+        })
     }
 }
 

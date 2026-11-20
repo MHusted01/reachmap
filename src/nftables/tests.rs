@@ -3,6 +3,7 @@ use std::io;
 use serde_json::{Value, json};
 
 use crate::collect::CollectError;
+use crate::host_input_snapshot::{HostInputSnapshot, Status, replay_document};
 use crate::json::render;
 use crate::network::{HostAddress, HostInterfaces};
 use crate::parse::nftables::parse_ruleset;
@@ -336,6 +337,36 @@ fn entries(report: &NftablesReport) -> Vec<(String, String, Vec<String>)> {
             )
         })
         .collect()
+}
+
+#[test]
+fn a_captured_snapshot_reproduces_live_ipv4_and_ipv6_findings() {
+    let host = host();
+    let ports = vec![
+        host_row(8443, "0.0.0.0"),
+        host_row(8443, "::1"),
+        host_row(9090, "::"),
+    ];
+    let live = check(Ok(RULESET.to_owned()), Some(&host), &ports);
+    let report = report_of(ports, live);
+    let snapshot = HostInputSnapshot::from_scan(
+        "fixture-host".parse().unwrap(),
+        1_700_000_000,
+        Some(&host),
+        &report,
+        Status::Collected,
+        Ok(RULESET.to_owned()),
+    );
+    let replayed = replay_document(&snapshot.render().unwrap()).unwrap();
+    let expected = serde_json::to_value(report.nftables.unwrap()).unwrap();
+    assert_eq!(serde_json::to_value(replayed).unwrap(), expected);
+    let families: Vec<_> = expected["ports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|port| port["family"].as_str().unwrap())
+        .collect();
+    assert!(families.contains(&"ipv4") && families.contains(&"ipv6"));
 }
 
 #[test]

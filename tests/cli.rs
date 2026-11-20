@@ -356,6 +356,9 @@ fn scan_of(rows: &[String]) -> String {
     )
 }
 
+#[path = "cli/host_input_snapshot.rs"]
+mod host_input_snapshot;
+
 // All test listeners take this lock when binding. A closed-port test keeps it
 // through the probe because macOS allows a listener to bind a connected port.
 // The lock protects no data, so a test panic cannot leave inconsistent state.

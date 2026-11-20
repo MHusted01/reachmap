@@ -41,7 +41,7 @@ impl fmt::Display for Protocol {
 
 /// IP version of a kernel socket table: `/proc/net/tcp` and `/proc/net/udp`
 /// hold IPv4 sockets, `/proc/net/tcp6` and `/proc/net/udp6` IPv6 sockets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AddressFamily {
     /// IPv4: addresses are one 32-bit word.

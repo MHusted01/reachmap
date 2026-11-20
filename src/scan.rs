@@ -16,6 +16,7 @@ use thiserror::Error;
 use crate::collect::{CollectError, ProcessFds, RawTable};
 use crate::docker::{self, DockerError, PublishedPort};
 use crate::firewall::Firewall;
+use crate::host_input_snapshot::{HostInputSnapshot, HostRef};
 use crate::network::{HostAddress, HostInterfaces};
 use crate::nftables::{DockerPublish, NftablesReport};
 use crate::parse::proc_net::{ParseError, parse_proc_net};
@@ -197,6 +198,13 @@ pub fn scan() -> Result<ScanReport, ScanError> {
         os => return Err(ScanError::UnsupportedOs { os }),
     };
     collector.scan()
+}
+
+pub(crate) fn capture_linux(
+    host_ref: HostRef,
+    timestamp: u64,
+) -> Result<HostInputSnapshot, ScanError> {
+    linux::Linux::capture(host_ref, timestamp)
 }
 
 /// Parses already-read tables into one list sorted by port. Pure, so it is
