@@ -32,7 +32,8 @@ those fields is `null`. Older scans may omit `nftables` and `docker_publishes`.
 ## macOS inventory
 
 On macOS the report adds a `macos` object. Its `socket_visibility` string
-describes which processes the inventory can see. Its `application_firewall`
+describes which processes the inventory can see and includes any lsof
+diagnostic. Its `application_firewall`
 object has a `state` of `enabled`, `disabled` or `unknown`. An unknown state
 also has a `reason` string. The state describes the global setting.
 

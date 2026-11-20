@@ -23,7 +23,7 @@ use crate::{
 #[derive(Debug, Serialize)]
 pub struct MacosReport {
     /// Why a socket may be missing from the inventory.
-    pub socket_visibility: &'static str,
+    pub socket_visibility: String,
     /// The global application firewall setting.
     pub application_firewall: ApplicationFirewall,
 }
@@ -59,7 +59,7 @@ pub(super) struct Macos;
 #[cfg(target_os = "macos")]
 impl HostCollector for Macos {
     fn scan(&self) -> Result<ScanReport, ScanError> {
-        let output = collect::read_sockets()?;
+        let (output, diagnostic) = collect::read_sockets()?;
         let sockets = lsof::parse(&output).map_err(|error| ScanError::SocketInventory {
             record: error.record,
         })?;
@@ -69,7 +69,7 @@ impl HostCollector for Macos {
             },
             |text| parse_firewall(&text),
         );
-        Ok(report(sockets, firewall))
+        Ok(report(sockets, firewall, diagnostic.as_deref()))
     }
 }
 
@@ -92,6 +92,7 @@ fn parse_firewall(text: &str) -> ApplicationFirewall {
 fn report(
     sockets: Vec<(Endpoint, Process)>,
     application_firewall: ApplicationFirewall,
+    diagnostic: Option<&str>,
 ) -> ScanReport {
     let ports = sockets
         .into_iter()
@@ -109,6 +110,12 @@ fn report(
             }
         })
         .collect();
+    let mut socket_visibility =
+        "Inventory covers processes lsof can inspect. Other listeners may be missing.".to_owned();
+    if let Some(diagnostic) = diagnostic {
+        socket_visibility.push(' ');
+        socket_visibility.push_str(diagnostic);
+    }
     ScanReport {
         ports,
         interfaces_error: None,
@@ -118,7 +125,7 @@ fn report(
         nftables: None,
         docker_publishes: Vec::new(),
         macos: Some(MacosReport {
-            socket_visibility: "Inventory covers processes lsof can inspect. Other listeners may be missing.",
+            socket_visibility,
             application_firewall,
         }),
         warnings: Vec::new(),
@@ -162,8 +169,26 @@ mod tests {
     fn a_disabled_firewall_does_not_make_a_wildcard_port_reachable() {
         let sockets =
             crate::parse::lsof::parse("p42\0cfixture\0\nf3\0tIPv6\0PUDP\0n*:31001\0\n").unwrap();
-        let report = report(sockets, ApplicationFirewall::Disabled);
+        let report = report(sockets, ApplicationFirewall::Disabled, None);
         assert_eq!(report.ports[0].verdict.reach, Reach::Unknown);
         assert_eq!(report.ports[0].verdict.reason, Reason::MacosInventory);
+    }
+
+    #[test]
+    fn a_partial_inventory_diagnostic_appears_in_both_formats() {
+        let diagnostic = "Partial inventory (exit status 1): access denied";
+        let report = report(Vec::new(), ApplicationFirewall::Disabled, Some(diagnostic));
+        assert!(
+            crate::table::Report(&report)
+                .to_string()
+                .contains(diagnostic)
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&crate::json::render(&report).unwrap()).unwrap();
+        assert!(
+            json["macos"]["socket_visibility"]
+                .as_str()
+                .is_some_and(|text| text.ends_with(diagnostic))
+        );
     }
 }

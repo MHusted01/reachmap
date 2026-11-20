@@ -36,19 +36,24 @@ pub(crate) fn parse(text: &str) -> Result<Vec<(Endpoint, Process)>, ParseError> 
             owner = Some(Process { pid, name });
         } else if header.starts_with('f') {
             let process = owner.as_ref().ok_or_else(error)?;
-            if let Some(endpoint) = parse_file(fields).map_err(|()| error())? {
-                sockets.push((endpoint, process.clone()));
+            if let Some((endpoint, zone)) = parse_file(fields).map_err(|()| error())? {
+                sockets.push((endpoint, process.clone(), zone));
             }
         } else {
             return Err(error());
         }
     }
-    sockets.sort_by_key(|(endpoint, process)| (*endpoint, process.pid));
-    sockets.dedup_by_key(|(endpoint, process)| (*endpoint, process.pid));
-    Ok(sockets)
+    sockets.sort_by_key(|(endpoint, process, zone)| (*endpoint, process.pid, *zone));
+    sockets.dedup_by_key(|(endpoint, process, zone)| (*endpoint, process.pid, *zone));
+    Ok(sockets
+        .into_iter()
+        .map(|(endpoint, process, _)| (endpoint, process))
+        .collect())
 }
 
-fn parse_file<'a>(fields: impl Iterator<Item = &'a str>) -> Result<Option<Endpoint>, ()> {
+fn parse_file<'a>(
+    fields: impl Iterator<Item = &'a str>,
+) -> Result<Option<(Endpoint, Option<&'a str>)>, ()> {
     let mut protocol = "";
     let mut family = "";
     let mut name = "";
@@ -72,33 +77,41 @@ fn parse_file<'a>(fields: impl Iterator<Item = &'a str>) -> Result<Option<Endpoi
         return Ok(None);
     }
     let port = port.parse().map_err(|_| ())?;
-    let address = match (family, host) {
-        ("IPv4", "*") => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        ("IPv6", "*") => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        ("IPv4", _) => IpAddr::V4(host.parse().map_err(|_| ())?),
-        ("IPv6", _) => IpAddr::V6(parse_ipv6(host)?),
+    let (address, zone) = match (family, host) {
+        ("IPv4", "*") => (IpAddr::V4(Ipv4Addr::UNSPECIFIED), None),
+        ("IPv6", "*") => (IpAddr::V6(Ipv6Addr::UNSPECIFIED), None),
+        ("IPv4", _) => (IpAddr::V4(host.parse().map_err(|_| ())?), None),
+        ("IPv6", _) => {
+            let (address, zone) = parse_ipv6(host)?;
+            (IpAddr::V6(address), zone)
+        }
         _ => return Err(()),
     };
-    Ok(Some(Endpoint {
-        port,
-        protocol,
-        address,
-    }))
+    Ok(Some((
+        Endpoint {
+            port,
+            protocol,
+            address,
+        },
+        zone,
+    )))
 }
 
-fn parse_ipv6(host: &str) -> Result<Ipv6Addr, ()> {
+fn parse_ipv6(host: &str) -> Result<(Ipv6Addr, Option<&str>), ()> {
     // lsof prints mapped addresses in dotted form, even on an IPv6 record.
     if let Ok(mapped) = host.parse::<Ipv4Addr>() {
-        return Ok(mapped.to_ipv6_mapped());
+        return Ok((mapped.to_ipv6_mapped(), None));
     }
     let address = host
         .strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
         .ok_or(())?;
-    // The report uses an IP address. Keep the address of a scoped socket, but
-    // make no interface or reachability claim from its discarded zone.
-    let address = address.split_once('%').map_or(address, |(ip, _)| ip);
-    address.parse().map_err(|_| ())
+    // A zone can distinguish sockets for deduplication. The shared report
+    // displays the address and makes no reachability claim from the zone.
+    let (address, zone) = address
+        .split_once('%')
+        .map_or((address, None), |(ip, zone)| (ip, Some(zone)));
+    Ok((address.parse().map_err(|_| ())?, zone))
 }
 
 #[cfg(test)]
@@ -178,6 +191,18 @@ mod tests {
             sockets[0].0.address,
             IpAddr::V6(Ipv4Addr::LOCALHOST.to_ipv6_mapped())
         );
+    }
+
+    #[test]
+    fn identical_scoped_binds_from_one_pid_are_kept_for_each_zone() {
+        let sockets = parse(concat!(
+            "p42\0cfixture\0\n",
+            "f3\0tIPv6\0PUDP\0n[fe80::1234%test0]:31001\0\n",
+            "f4\0tIPv6\0PUDP\0n[fe80::1234%test1]:31001\0\n",
+            "f5\0tIPv6\0PUDP\0n[fe80::1234%test0]:31001\0\n",
+        ))
+        .unwrap();
+        assert_eq!(sockets.len(), 2);
     }
 
     #[test]

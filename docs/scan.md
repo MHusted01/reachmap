@@ -32,6 +32,10 @@ limited to processes it can inspect. Running with `sudo` may make more sockets
 visible. Compare saved scans taken with the same privileges because a missing
 row can reflect a change in visibility.
 
+If lsof reports an incomplete inventory with usable records, the scan displays
+those rows with a diagnostic. IPv6 scopes distinguish sockets during collection.
+Two sockets on different scopes may display the same IP address.
+
 Loopback binds show `this host`. For other binds the scan shows the address
 and reports remote reachability as unknown. The application firewall's global
 setting appears below the table as enabled, disabled or unknown. App-specific

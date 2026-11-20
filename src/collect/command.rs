@@ -3,7 +3,7 @@
 use std::io::{self, Read};
 #[cfg(any(target_os = "linux", test))]
 use std::path::Path;
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -41,26 +41,43 @@ pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
 /// left behind with the pipe open, could block those waits forever. Both end
 /// with reachmap at the latest.
 pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, CollectError> {
-    run_command(program, args, timeout, None)
+    let output = capture(program, args, timeout)?;
+    if !output.status.success() {
+        return Err(failed_status(program, args, &output));
+    }
+    decode_stdout(program, args, output.stdout)
 }
 
-/// Also accepts a command's documented no-matches status with empty output.
+/// Accepts an inventory command's extra exit status for empty or partial output.
+/// Partial output and diagnostics are returned for the caller to report.
 #[cfg(any(target_os = "macos", test))]
-pub(super) fn run_allow_empty(
+pub(super) fn run_inventory(
     program: &str,
     args: &[&str],
     timeout: Duration,
-    empty_status: i32,
-) -> Result<String, CollectError> {
-    run_command(program, args, timeout, Some(empty_status))
+    partial_status: i32,
+) -> Result<(String, Option<String>), CollectError> {
+    let output = capture(program, args, timeout)?;
+    if !output.status.success()
+        && (output.status.code() != Some(partial_status)
+            || (output.stdout.is_empty() && !output.stderr.is_empty()))
+    {
+        return Err(failed_status(program, args, &output));
+    }
+    let detail = sanitize(String::from_utf8_lossy(&output.stderr).trim());
+    let partial = !output.status.success() && !output.stdout.is_empty();
+    let note = match (partial, detail.is_empty()) {
+        (false, true) => None,
+        (false, false) => Some(detail),
+        (true, true) => Some(format!("Partial inventory (exit status {partial_status}).")),
+        (true, false) => Some(format!(
+            "Partial inventory (exit status {partial_status}): {detail}"
+        )),
+    };
+    Ok((decode_stdout(program, args, output.stdout)?, note))
 }
 
-fn run_command(
-    program: &str,
-    args: &[&str],
-    timeout: Duration,
-    empty_status: Option<i32>,
-) -> Result<String, CollectError> {
+fn capture(program: &str, args: &[&str], timeout: Duration) -> Result<Output, CollectError> {
     let deadline = Instant::now() + timeout;
     let command = || describe(program, args);
     let timed_out = || CollectError::TimedOut {
@@ -95,19 +112,24 @@ fn run_command(
         .ok_or_else(timed_out)?
         .map_err(failed_to_run)?;
 
-    let no_matches = empty_status.is_some()
-        && status.code() == empty_status
-        && stdout.is_empty()
-        && stderr.is_empty();
-    if !status.success() && !no_matches {
-        return Err(CollectError::CommandFailed {
-            command: command(),
-            status,
-            stderr: sanitize(String::from_utf8_lossy(&stderr).trim()),
-        });
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
+fn failed_status(program: &str, args: &[&str], output: &Output) -> CollectError {
+    CollectError::CommandFailed {
+        command: describe(program, args),
+        status: output.status,
+        stderr: sanitize(String::from_utf8_lossy(&output.stderr).trim()),
     }
+}
+
+fn decode_stdout(program: &str, args: &[&str], stdout: Vec<u8>) -> Result<String, CollectError> {
     String::from_utf8(stdout).map_err(|source| CollectError::NotUtf8 {
-        command: command(),
+        command: describe(program, args),
         source,
     })
 }
@@ -274,17 +296,28 @@ mod tests {
     }
 
     #[test]
-    fn the_no_matches_status_is_only_accepted_with_empty_output() {
+    fn inventory_distinguishes_empty_partial_and_failed_output() {
         assert_eq!(
-            run_allow_empty("sh", &["-c", "exit 1"], LONG, 1).unwrap(),
-            ""
+            run_inventory("sh", &["-c", "exit 1"], LONG, 1).unwrap(),
+            (String::new(), None)
         );
-        for script in [
-            "printf 'error' >&2; exit 1",
-            "printf 'partial'; exit 1",
-            "exit 2",
-        ] {
-            assert!(run_allow_empty("sh", &["-c", script], LONG, 1).is_err());
+        assert_eq!(
+            run_inventory("sh", &["-c", "printf 'rows'; exit 1"], LONG, 1).unwrap(),
+            (
+                "rows".to_owned(),
+                Some("Partial inventory (exit status 1).".to_owned())
+            )
+        );
+        let script = "printf 'rows'; printf 'access denied\\033[2J' >&2; exit 1";
+        assert_eq!(
+            run_inventory("sh", &["-c", script], LONG, 1).unwrap(),
+            (
+                "rows".to_owned(),
+                Some("Partial inventory (exit status 1): access denied\\u{1b}[2J".to_owned())
+            )
+        );
+        for script in ["printf 'error' >&2; exit 1", "printf 'rows'; exit 2"] {
+            assert!(run_inventory("sh", &["-c", script], LONG, 1).is_err());
         }
     }
 
