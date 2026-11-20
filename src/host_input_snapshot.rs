@@ -285,12 +285,14 @@ pub(crate) fn replay_document(text: &str) -> Result<NftablesReport, SnapshotErro
         }
         Err(reason) => Err(reason),
     };
-    let targets = match snapshot.collectors.interfaces {
-        Evidence::Collected {
-            data: InterfaceTargets::WithAddresses(targets),
-        } => Some(targets),
-        _ => None,
-    };
+    let targets = snapshot
+        .collectors
+        .interfaces
+        .result()
+        .map(|data| match data {
+            InterfaceTargets::WithAddresses(targets) => Some(targets),
+            InterfaceTargets::NoAddresses(()) => None,
+        });
     Ok(nftables::replay(
         rules.as_ref().map_err(String::as_str),
         targets,
@@ -313,3 +315,6 @@ pub fn replay(path: &Path) -> Result<NftablesReport, SnapshotError> {
     let text = read_limited(file, MAX_BYTES)?.ok_or(SnapshotError::TooLarge)?;
     replay_document(&text)
 }
+
+#[cfg(test)]
+mod tests;

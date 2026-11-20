@@ -46,8 +46,13 @@ pub(crate) fn check_scan(
     let rules = read_rules(raw);
     let chains = rules.as_ref().map(InputChains::new);
     let evidence = chains.as_ref().map_err(|reason| reason.as_str());
+    report.nftables = Some(NftablesReport::check_targets(evidence, || {
+        match &report.interfaces_error {
+            Some(error) => Err(sanitize(&render_chain(error))),
+            None => Ok(socket_targets(host, &report.ports)),
+        }
+    }));
     let host = host.filter(|host| !host.addresses.is_empty());
-    report.nftables = Some(NftablesReport::check(evidence, host, &report.ports));
     report
         .warnings
         .extend(docker::check(&mut report.docker_publishes, evidence, host));
@@ -68,7 +73,7 @@ pub(crate) fn socket_targets(
 
 pub(crate) fn replay(
     rules: Result<&Ruleset, &str>,
-    targets: Option<BTreeSet<Target>>,
+    targets: Result<Option<BTreeSet<Target>>, String>,
 ) -> NftablesReport {
     let chains = rules.map(InputChains::new);
     NftablesReport::check_targets(chains.as_ref().map_err(|&reason| reason), || targets)
@@ -117,17 +122,9 @@ pub(crate) enum InputVerdict {
 }
 
 impl NftablesReport {
-    fn check(
-        chains: Result<&InputChains<'_>, &str>,
-        host: Option<&HostInterfaces>,
-        ports: &[ScannedPort],
-    ) -> Self {
-        Self::check_targets(chains, || socket_targets(host, ports))
-    }
-
     fn check_targets(
         chains: Result<&InputChains<'_>, &str>,
-        targets: impl FnOnce() -> Option<BTreeSet<Target>>,
+        targets: impl FnOnce() -> Result<Option<BTreeSet<Target>>, String>,
     ) -> Self {
         let chains = match chains {
             Ok(chains) => chains,
@@ -137,10 +134,14 @@ impl NftablesReport {
                 };
             }
         };
-        let Some(targets) = targets() else {
-            return Self::Unknown {
-                reason: NO_INTERFACES.to_string(),
-            };
+        let targets = match targets() {
+            Ok(Some(targets)) => targets,
+            Ok(None) => {
+                return Self::Unknown {
+                    reason: NO_INTERFACES.to_string(),
+                };
+            }
+            Err(reason) => return Self::Unknown { reason },
         };
         if chains.ipv4.is_none() && chains.ipv6.is_none() {
             return Self::Unknown {

@@ -231,10 +231,12 @@ routing and other hooks are outside the replay scope.
 
 The snapshot records which collectors succeeded, failed or were unavailable.
 An empty ruleset indicates a successful read with no rules. A socket options
-collector that failed after reporting some options is marked `partial`. Replay
-uses the same socket targets selected during capture, including the live scan's
-fallback when socket options are missing. JSON replay emits the same finding
-shape as the `nftables` object in a scan report.
+collector that failed after reporting some options is marked `partial`.
+When the ruleset is available, a failed interface read gives an unknown
+finding with the collector's diagnostic. Replay uses the socket targets
+selected during capture, including the live scan's fallback when socket
+options are missing. JSON replay emits the same finding shape as the
+`nftables` object in a scan report.
 
 Treat snapshots as sensitive. The full ruleset may reveal internal addresses,
 networks, comments and firewall configuration outside the input check. The

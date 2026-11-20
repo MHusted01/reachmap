@@ -170,6 +170,29 @@ fn collected_interface_evidence_requires_data_even_when_empty() {
     );
 }
 
+#[test]
+fn replay_reports_why_interface_evidence_is_missing() {
+    for (status, reason, expected) in [
+        (
+            "failed",
+            "could not list interfaces\npermission denied",
+            "could not list interfaces\\npermission denied",
+        ),
+        ("unavailable", "ip is missing", "ip is missing"),
+    ] {
+        let mut value = snapshot();
+        value["collectors"]["interfaces"] = json!({"status": status, "reason": reason});
+        let out = replay(&format!("host_input_interfaces_{status}.json"), &value);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&out.stdout).unwrap(),
+            json!({
+                "status": "unknown", "reason": expected
+            })
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_scan_exports_a_replayable_snapshot_when_requested() {

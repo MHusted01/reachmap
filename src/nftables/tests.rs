@@ -13,7 +13,7 @@ use crate::service::{Container, Service, UnknownReason};
 use crate::socket::{AddressFamily, Endpoint, Protocol};
 use crate::table::Report;
 
-use super::{InputChains, InputVerdict, NftablesReport, read_rules};
+use super::{InputChains, InputVerdict, NftablesReport, read_rules, socket_targets};
 
 const RULESET: &str = include_str!("../../tests/fixtures/nftables_input.json");
 const EXTRA_CHAIN: &str = include_str!("../../tests/fixtures/nftables_input_chains.json");
@@ -309,11 +309,9 @@ fn check(
 ) -> NftablesReport {
     let rules = read_rules(raw);
     let chains = rules.as_ref().map(InputChains::new);
-    NftablesReport::check(
-        chains.as_ref().map_err(|reason| reason.as_str()),
-        host,
-        ports,
-    )
+    NftablesReport::check_targets(chains.as_ref().map_err(|reason| reason.as_str()), || {
+        Ok(socket_targets(host, ports))
+    })
 }
 
 /// The `(address, family, interfaces)` of every entry in the JSON report.
