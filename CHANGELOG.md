@@ -8,6 +8,10 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- The nftables input check handles destination-port sets, inclusive ranges,
+  named sets, negation and `meta l4proto` with `th dport`. It also handles
+  exact interface sets and negation
+  ([#72](https://github.com/MHusted01/reachmap/issues/72)).
 - The nftables input check follows `jump`, `goto` and `return` and skips
   `counter` and `log` statements
   ([#71](https://github.com/MHusted01/reachmap/issues/71)).

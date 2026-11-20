@@ -3,6 +3,8 @@ use serde_json::{Value, json};
 use crate::parse::nftables::parse_ruleset;
 use crate::socket::{AddressFamily, Protocol};
 
+mod matches;
+
 fn evaluate(ruleset: &str, port: u16) -> String {
     parse_ruleset(ruleset)
         .unwrap()

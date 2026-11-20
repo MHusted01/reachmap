@@ -163,8 +163,20 @@ A socket bound to an address no interface has is not checked.
 
 For IPv4 and IPv6, reachmap checks active base chains at the `input` hook in
 the applicable `ip`, `ip6` and `inet` tables, from lowest to highest priority
-value. It supports filter chains with exact `iifname` and single numeric TCP or
-UDP destination-port matches and skips `counter` and `log` statements.
+value. It checks filter chains and skips `counter` and `log` statements.
+
+- TCP and UDP `dport` support numbers, inclusive ranges, anonymous sets and named
+  `inet_service` sets. `!=` negates membership and still checks the protocol.
+- `iifname` supports exact names, anonymous sets and named `ifname` sets, with
+  equality or `!=`. Wildcard names stay `unknown`.
+- `meta l4proto` matches TCP and UDP by name or protocol number. `th dport`
+  reads the destination port of the TCP or UDP socket being checked.
+
+Named sets come from the same family and table as the rule. Missing sets,
+unsupported element types and timed sets can produce `unknown`. nft can print
+a named interface set and a quoted interface name like `"@ingress"` as the same
+JSON string. If those two interpretations disagree, the verdict is `unknown`.
+Conditions on source addresses, connection state and marks are also unsupported.
 
 A `jump` into a regular chain resumes after the jump if that chain returns
 explicitly or reaches its end. A `goto` skips the rest of the current chain.
