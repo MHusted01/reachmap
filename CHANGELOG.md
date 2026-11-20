@@ -99,6 +99,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Fixed
 
+- `reachmap scan` recognizes both the configured `brd` address and the usual
+  subnet broadcast address when they differ
+  ([#58](https://github.com/MHusted01/reachmap/issues/58)).
 - A failed request for socket options no longer discards what the kernel already
   reported, so those sockets keep their checked verdicts
   ([#9](https://github.com/MHusted01/reachmap/issues/9)).

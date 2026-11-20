@@ -21,11 +21,13 @@ fn run_with_bindings(
         interface: "eth0".to_string(),
         ip: "2001:db8::20".parse().unwrap(),
         broadcast: None,
+        subnet_broadcast: None,
     });
     host.addresses.push(HostAddress {
         interface: "lo".to_string(),
         ip: Ipv6Addr::LOCALHOST.into(),
         broadcast: None,
+        subnet_broadcast: None,
     });
     let mut published = parse_docker_inspect(DOCKER).unwrap();
     published.push(PublishedPort {
@@ -132,6 +134,7 @@ fn an_ipv6_wildcard_publish_without_a_socket_does_not_include_ipv4_interfaces() 
         interface: "lo".to_string(),
         ip: Ipv6Addr::LOCALHOST.into(),
         broadcast: None,
+        subnet_broadcast: None,
     });
     let published = parse_docker_inspect(DOCKER).unwrap();
     let report = join_without_ufw(Vec::new(), &open_files(false), Ok(host), Ok(published));

@@ -129,6 +129,7 @@ fn host() -> HostInterfaces {
         interface: interface.to_string(),
         ip: ip.parse().unwrap(),
         broadcast: None,
+        subnet_broadcast: None,
     };
     HostInterfaces {
         addresses: vec![

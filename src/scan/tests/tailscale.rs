@@ -172,6 +172,7 @@ fn tailnet_host() -> HostInterfaces {
         interface: "tailscale0".to_string(),
         ip: ip.parse().unwrap(),
         broadcast: None,
+        subnet_broadcast: None,
     };
     let lan = lan_host();
     HostInterfaces {
