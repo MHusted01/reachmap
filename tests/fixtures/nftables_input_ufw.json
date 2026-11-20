@@ -1,0 +1,30 @@
+{
+  "nftables": [
+    {"metainfo": {"version": "1.0.9", "json_schema_version": 1}},
+    {"table": {"family": "ip", "name": "filter"}},
+    {"chain": {"family": "ip", "table": "filter", "name": "INPUT", "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}},
+    {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-input"}},
+    {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-input"}},
+    {"rule": {"family": "ip", "table": "filter", "chain": "INPUT", "expr": [
+      {"counter": {"packets": 0, "bytes": 0}},
+      {"jump": {"target": "ufw-before-input"}}
+    ]}},
+    {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "expr": [
+      {"log": {"prefix": "sample input"}}
+    ]}},
+    {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "expr": [
+      {"jump": {"target": "ufw-user-input"}}
+    ]}},
+    {"rule": {"family": "ip", "table": "filter", "chain": "ufw-user-input", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 8443}},
+      {"counter": {"packets": 0, "bytes": 0}},
+      {"log": {"prefix": "sample allow"}},
+      {"accept": null}
+    ]}},
+    {"rule": {"family": "ip", "table": "filter", "chain": "ufw-user-input", "expr": [
+      {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 9090}},
+      {"match": {"op": "==", "left": {"ct": {"key": "state"}}, "right": "established"}},
+      {"drop": null}
+    ]}}
+  ]
+}

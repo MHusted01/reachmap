@@ -91,14 +91,20 @@ struct Chain {
     policy: Option<Policy>,
 }
 
+type ChainKey<'a> = (&'a str, &'a str, &'a str);
+
+impl Chain {
+    fn key(&self) -> ChainKey<'_> {
+        (&self.family, &self.table, &self.name)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Action {
     Accept,
     Drop,
 }
-
-type ChainDecision = Result<(Action, &'static str), &'static str>;
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
@@ -129,6 +135,24 @@ enum Expression {
     Accept(()),
     Drop(()),
     Reject(Option<RejectReply>),
+    #[serde(rename = "counter", alias = "log")]
+    Passive(IgnoredAny),
+    Jump(ChainTarget),
+    Goto(ChainTarget),
+    Return(()),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChainTarget {
+    target: String,
+}
+
+enum RuleAction<'a> {
+    Verdict(Action, &'static str),
+    Jump(&'a str),
+    Goto(&'a str),
+    Return,
 }
 
 #[derive(Debug, Deserialize)]
@@ -198,30 +222,38 @@ pub(crate) fn parse_ruleset(json: &str) -> Result<Ruleset, RulesetError> {
 }
 
 impl Rule {
-    /// `None` means a known condition rules this rule out. An unsupported
-    /// statement reached during evaluation can also contain a verdict.
+    fn chain_key(&self) -> ChainKey<'_> {
+        (&self.family, &self.table, &self.chain)
+    }
+
+    /// `Ok(None)` means evaluation can proceed to the next rule. An
+    /// unsupported statement reached during evaluation can contain a verdict.
     fn evaluate(
         &self,
         family: AddressFamily,
         protocol: Protocol,
         port: u16,
         interface: &str,
-    ) -> Option<ChainDecision> {
+    ) -> Result<Option<RuleAction<'_>>, &'static str> {
+        let mut has_passive_statement = false;
         for (index, statement) in self.expr.iter().enumerate() {
             let last = index + 1 == self.expr.len();
             match statement {
                 Statement::Known(Expression::Match(comparison)) => {
                     match comparison.matches(protocol, port, interface) {
                         Some(true) => continue,
-                        Some(false) => return None,
-                        None => break,
+                        Some(false) => return Ok(None),
+                        None => return Err("unsupported input rule"),
                     }
                 }
+                Statement::Known(Expression::Passive(_)) => {
+                    has_passive_statement = true;
+                }
                 Statement::Known(Expression::Accept(())) if last => {
-                    return Some(Ok((Action::Accept, "matching rule")));
+                    return Ok(Some(RuleAction::Verdict(Action::Accept, "matching rule")));
                 }
                 Statement::Known(Expression::Drop(())) if last => {
-                    return Some(Ok((Action::Drop, "matching rule")));
+                    return Ok(Some(RuleAction::Verdict(Action::Drop, "matching rule")));
                 }
                 Statement::Known(Expression::Reject(reply))
                     if last
@@ -229,12 +261,28 @@ impl Rule {
                             .as_ref()
                             .is_none_or(|reply| reply.applies_to(family, protocol)) =>
                 {
-                    return Some(Ok((Action::Drop, "matching reject rule")));
+                    return Ok(Some(RuleAction::Verdict(
+                        Action::Drop,
+                        "matching reject rule",
+                    )));
                 }
-                _ => break,
+                Statement::Known(Expression::Jump(target)) if last => {
+                    return Ok(Some(RuleAction::Jump(&target.target)));
+                }
+                Statement::Known(Expression::Goto(target)) if last => {
+                    return Ok(Some(RuleAction::Goto(&target.target)));
+                }
+                Statement::Known(Expression::Return(())) if last => {
+                    return Ok(Some(RuleAction::Return));
+                }
+                _ => return Err("unsupported input rule"),
             }
         }
-        Some(Err("unsupported input rule"))
+        if has_passive_statement {
+            Ok(None)
+        } else {
+            Err("unsupported input rule")
+        }
     }
 }
 

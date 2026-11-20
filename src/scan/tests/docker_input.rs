@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 
 const DOCKER: &str = include_str!("../../../tests/fixtures/docker_inspect.json");
 const INPUT: &str = include_str!("../../../tests/fixtures/nftables_input.json");
+const INPUT_JUMPS: &str = include_str!("../../../tests/fixtures/nftables_input_ufw.json");
 
 fn run(raw: Result<String, CollectError>) -> (ScanReport, Value) {
     run_with_bindings(raw, |_| true)
@@ -121,6 +122,7 @@ fn applicable_ipv6_and_dual_family_input_evidence_do_not_warn() {
         INPUT.to_string(),
         INPUT.replace(r#""inet""#, r#""ip6""#),
         INPUT.replace(r#""hook": "output""#, r#""hook": "input""#),
+        INPUT_JUMPS.replace(r#""ip""#, r#""inet""#),
     ] {
         let (report, document) = run(Ok(rules));
         assert!(report.warnings.is_empty());
@@ -181,9 +183,11 @@ fn unavailable_or_ambiguous_input_evidence_is_unknown_with_its_cause() {
             "unsupported input chain type",
         ),
         (
-            Ok(INPUT
-                .replace("9090", "8443")
-                .replace(r#"{"accept": null}"#, r#"{"jump": {"target": "extra"}}"#)),
+            Ok(INPUT.replace(r#"{"accept": null}"#, r#"{"jump": {"target": "extra"}}"#)),
+            "missing input rule chain target",
+        ),
+        (
+            Ok(INPUT.replace("8443", "8444").replace("9090", "8443")),
             "unsupported input rule",
         ),
     ];

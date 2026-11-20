@@ -164,14 +164,21 @@ A socket bound to an address no interface has is not checked.
 For IPv4 and IPv6, reachmap checks active base chains at the `input` hook in
 the applicable `ip`, `ip6` and `inet` tables, from lowest to highest priority
 value. It supports filter chains with exact `iifname` and single numeric TCP or
-UDP destination-port matches. It reads rules in order and uses the chain's
-policy when none matches. Every applicable chain must accept for the result
-to be `accept`. A drop or supported reject ends the check if the chain is
-guaranteed to run. An unsupported rule, unsupported chain type or missing
-chain data can make the result `unknown`. Chains with the same priority can
-run in either order, so an unknown in that group takes precedence over a drop
-in the same group. Drop and chain-specific unknown reasons include the
-family, table and chain. The socket findings are informational.
+UDP destination-port matches and skips `counter` and `log` statements.
+
+A `jump` into a regular chain resumes after the jump if that chain returns
+explicitly or reaches its end. A `goto` skips the rest of the current chain.
+When execution returns with no pending jump, the check uses the base chain's
+policy. Missing or recursive targets, more than 32 nested chain transfers, or
+more than 4,096 rules visited for a packet produce `unknown`.
+
+Every applicable base chain must accept for the result to be `accept`. A drop
+or supported reject ends the check if the chain is guaranteed to run. An earlier
+known mismatch skips the rule. Reaching an unsupported statement, unsupported
+chain type or missing chain data can make the result `unknown`. Chains with the
+same priority can run in either order, so an unknown in that group takes
+precedence over a drop in the same group. Drop and chain-specific unknown reasons
+include the family, table and chain. The socket findings are informational.
 
 Each check assumes a packet arrives at the input hook on the listed interface.
 Other hooks, upstream filters, routing and whether the socket would receive the

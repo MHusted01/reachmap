@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- The nftables input check follows `jump`, `goto` and `return` and skips
+  `counter` and `log` statements
+  ([#71](https://github.com/MHusted01/reachmap/issues/71)).
 - `reachmap scan` evaluates applicable nftables input chains in priority order
   and names the table and chain behind a drop or a chain-specific unknown
   ([#70](https://github.com/MHusted01/reachmap/issues/70)).
