@@ -64,6 +64,47 @@ fn scan_help_lists_the_json_flag() {
     assert!(stdout(&out).contains("--json"), "help: {}", stdout(&out));
 }
 
+#[test]
+fn egress_requires_explicit_observers() {
+    let out = run(&["egress", "app"]);
+    assert_eq!(out.status.code(), Some(2));
+    let error = stderr(&out);
+    assert!(error.contains("--ip-host"), "{error}");
+    assert!(error.contains("--dns-name"), "{error}");
+}
+
+#[test]
+fn egress_rejects_non_dns_observer_names() {
+    let out = run(&[
+        "egress",
+        "app",
+        "--ip-host",
+        "echo.example/path",
+        "--dns-name",
+        "resolver.example",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("DNS name"), "{}", stderr(&out));
+}
+
+#[test]
+fn egress_rejects_a_container_name_that_is_an_api_path() {
+    let out = run(&[
+        "egress",
+        "app/../../other",
+        "--ip-host",
+        "echo.example",
+        "--dns-name",
+        "resolver.example",
+    ]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("container name or ID"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn scan_prints_a_table_or_the_empty_message() {

@@ -17,7 +17,7 @@ use crate::service::Container;
 use crate::socket::{Endpoint, ListeningSocket, Protocol};
 
 #[cfg(target_os = "linux")]
-mod engine;
+pub(crate) mod engine;
 
 /// Why published ports are unknown. The scan still finishes: Docker is
 /// optional, and sockets keep the owner found in `/proc`.

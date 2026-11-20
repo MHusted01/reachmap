@@ -12,6 +12,7 @@ use clap::{Args, Parser, Subcommand};
 use reachmap::baseline::{self, Snapshot};
 use reachmap::diff::report::{Report as DiffTable, render_json as render_diff_json};
 use reachmap::diff::{Diff, DiffError, compare};
+use reachmap::egress::{self, ContainerRef, ObserverName};
 use reachmap::errors::render_chain;
 use reachmap::network::Network;
 use reachmap::parse::probe_args::{PortList, parse_timeout};
@@ -63,6 +64,17 @@ enum Command {
         /// Print the results as JSON instead of a table
         #[arg(long)]
         json: bool,
+    },
+    /// Compare Docker container egress with the Linux host using named observers
+    Egress {
+        /// Container that shares a network namespace with another container
+        container: ContainerRef,
+        /// Dual-stack HTTPS host whose root path returns the source IP as plain text
+        #[arg(long)]
+        ip_host: ObserverName,
+        /// DNS name whose TXT response identifies the querying recursive resolver
+        #[arg(long)]
+        dns_name: ObserverName,
     },
     /// Compare a saved `reachmap scan --json` with this host, or with a second file
     Diff {
@@ -127,6 +139,24 @@ fn main() -> ExitCode {
             ignore,
             json,
         } => run_diff(&baseline, current.as_deref(), ignore.as_ref(), json),
+        Command::Egress {
+            container,
+            ip_host,
+            dns_name,
+        } => match egress::check(container, &ip_host, &dns_name) {
+            Ok(report) => {
+                let status = if report.is_clean() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
+                };
+                write_stdout(&report, status)
+            }
+            Err(error) => {
+                eprintln!("error: {}", render_chain(&error));
+                ExitCode::FAILURE
+            }
+        },
     }
 }
 
