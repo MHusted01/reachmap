@@ -2,10 +2,10 @@
 
 **Which services on this host can be reached, from where, and why?**
 
-reachmap inventories listening services on Linux, identifies the process or
-container behind each, and explains which networks their bind addresses and
-local configuration expose them to. A separate probe can check TCP access
-from another machine.
+reachmap inventories listening services and identifies the process behind each.
+On Linux it also identifies published Docker ports and estimates which networks
+can reach a service from its bind address and local configuration. A separate
+probe can check TCP access from another machine.
 
 ```
 $ sudo reachmap scan
@@ -19,8 +19,8 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 
 > **Status.** v0.1.0 ships Linux TCP inventory, JSON and Docker/UFW warnings.
 > The main branch also includes UDP inventory, Tailscale Serve and Funnel
-> awareness, TCP probes and baseline diffs. Scan results describe potential
-> exposure based on the local evidence collected. [Changelog](CHANGELOG.md) ·
+> awareness, TCP probes, baseline diffs and macOS socket inventory. Scan results
+> describe potential exposure based on local evidence. [Changelog](CHANGELOG.md) ·
 > [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md)
 
 ## Install
@@ -34,8 +34,8 @@ Prebuilt binaries for Linux and macOS (x86_64 and aarch64) are attached to each
 [GitHub Release](https://github.com/MHusted01/reachmap/releases). The Linux
 binaries are static, so they run on any distribution.
 
-`reachmap scan` needs Linux for now. On the main branch, `reachmap probe` and
-diffs between two saved scans run on Linux and macOS.
+On the main branch, `reachmap scan`, `reachmap probe` and `reachmap diff` run on
+Linux and macOS. See the [macOS scan scope](docs/scan.md#macos).
 
 ## Features
 

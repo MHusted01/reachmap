@@ -31,10 +31,10 @@ mod tests {
 
     #[test]
     fn an_error_without_causes_is_just_its_message() {
-        let error = CollectError::UnsupportedOs { os: "macos" };
+        let error = CollectError::UnsupportedOs { os: "freebsd" };
         assert_eq!(
             render_chain(&error),
-            "reachmap scan is Linux only for now (this system is macos)"
+            "the Linux collector is unavailable on freebsd"
         );
     }
 }

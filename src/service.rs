@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 pub struct Process {
     /// Process ID.
     pub pid: u32,
-    /// Short program name from `/proc/<pid>/comm`, e.g. `sshd` (the kernel
-    /// cuts it to 15 bytes).
+    /// Short program name from `/proc/<pid>/comm` or the macOS socket inventory.
     pub name: String,
 }
 

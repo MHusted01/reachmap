@@ -186,6 +186,7 @@ fn report_of(ports: Vec<ScannedPort>, nftables: NftablesReport) -> ScanReport {
         tailscale_error: None,
         nftables: Some(nftables),
         docker_publishes: Vec::new(),
+        macos: None,
         warnings: Vec::new(),
     }
 }

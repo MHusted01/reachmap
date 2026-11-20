@@ -130,6 +130,8 @@ pub enum Reason {
     },
     /// The host's interfaces could not be listed.
     InterfacesUnknown,
+    /// macOS inventory provides bind addresses but no remote reachability evidence.
+    MacosInventory,
     /// Tailscale forwards connections to this socket, on top of what the
     /// socket's own address allows.
     TailscaleShared {
@@ -201,6 +203,7 @@ impl fmt::Display for Reason {
                 write!(f, "bound to {interface}, which has no address it can use")
             }
             Reason::InterfacesUnknown => f.write_str("could not list interfaces"),
+            Reason::MacosInventory => f.write_str("remote reachability not checked on macOS"),
             Reason::TailscaleShared {
                 served_on,
                 funnel_on,

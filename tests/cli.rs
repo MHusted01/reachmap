@@ -179,22 +179,77 @@ fn scan_json_is_one_document_with_the_socket_the_test_is_listening_on() {
     assert_eq!(row["reason"]["kind"], "loopback");
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_scan_reports_ipv4_and_ipv6_sockets_and_their_owner() {
+    use std::net::UdpSocket;
+
+    let tcp4 = TcpListener::bind("127.0.0.1:0").unwrap();
+    let tcp6 = TcpListener::bind("[::1]:0").unwrap();
+    let udp4 = UdpSocket::bind("127.0.0.1:0").unwrap();
+    let udp6 = UdpSocket::bind("[::1]:0").unwrap();
+    let sockets = [
+        (tcp4.local_addr().unwrap(), "tcp", "tcp"),
+        (tcp6.local_addr().unwrap(), "tcp", "tcp6"),
+        (udp4.local_addr().unwrap(), "udp", "udp"),
+        (udp6.local_addr().unwrap(), "udp", "udp6"),
+    ];
+    let pid = std::process::id();
+    let out = run(&["scan", "--json"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let ports = report["ports"].as_array().unwrap();
+    assert!(matches!(
+        report["macos"]["application_firewall"]["state"].as_str(),
+        Some("enabled" | "disabled" | "unknown")
+    ));
+    assert!(report["macos"]["socket_visibility"].is_string());
+    let out = run(&["scan"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let table = stdout(&out);
+    assert!(table.contains("macOS application firewall"));
+    assert!(table.contains("processes lsof can inspect"));
+    for (address, protocol, table_protocol) in sockets {
+        let row = ports.iter().find(|row| {
+            row["port"] == address.port()
+                && row["address"] == address.ip().to_string()
+                && row["protocol"] == protocol
+                && row["service"]["pid"] == pid
+        });
+        let row = row.unwrap_or_else(|| panic!("missing {protocol} {address} for PID {pid}"));
+        assert_eq!(row["service"]["kind"], "process");
+        assert!(
+            row["service"]["name"]
+                .as_str()
+                .is_some_and(|name| !name.is_empty() && name != "unknown")
+        );
+        assert_eq!(row["reach"]["networks"], serde_json::json!(["this_host"]));
+        assert!(table.lines().any(|line| {
+            line.split_whitespace().take(3).eq([
+                address.port().to_string().as_str(),
+                table_protocol,
+                address.ip().to_string().as_str(),
+            ]) && line.contains(&format!("({pid})"))
+        }));
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
 fn scan_json_prints_nothing_on_stdout_when_the_scan_fails() {
     let out = run(&["scan", "--json"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty(), "stdout: {}", stdout(&out));
-    assert!(stderr(&out).contains("Linux only for now"));
+    assert!(stderr(&out).contains("supports Linux and macOS"));
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
-fn scan_explains_it_is_linux_only_and_fails() {
+fn scan_explains_which_systems_it_supports_and_fails() {
     let out = run(&["scan"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(
-        stderr(&out).contains("Linux only for now"),
+        stderr(&out).contains("supports Linux and macOS"),
         "stderr: {}",
         stderr(&out)
     );

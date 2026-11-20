@@ -4,6 +4,8 @@
 pub mod docker;
 pub mod ip_addr;
 pub mod iptables;
+#[cfg(any(target_os = "macos", test))]
+pub(crate) mod lsof;
 pub(crate) mod nftables;
 pub mod probe_args;
 pub mod proc_net;

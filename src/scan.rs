@@ -13,24 +13,25 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::collect::{self, CollectError, ProcessFds, RawTable};
+use crate::collect::{CollectError, ProcessFds, RawTable};
 use crate::docker::{self, DockerError, PublishedPort};
-use crate::firewall::{self, DockerUserChain, Firewall, UfwState};
+use crate::firewall::Firewall;
 use crate::network::{HostAddress, HostInterfaces};
-use crate::nftables::{DockerPublish, NftablesReport, check_scan};
-use crate::parse::ip_addr::parse_ip_addr;
+use crate::nftables::{DockerPublish, NftablesReport};
 use crate::parse::proc_net::{ParseError, parse_proc_net};
 use crate::parse::proc_pid::owners_by_inode;
 use crate::reach::{SocketScope, Verdict, classify, publish::classify_publish};
 use crate::service::{Service, UnknownReason, service_of};
 use crate::socket::{Endpoint, ListeningSocket, sort_by_port};
-use crate::socket_options::{
-    OptionsByInode, OptionsReport, SocketOptionsError, read_socket_options,
-};
+use crate::socket_options::{OptionsByInode, OptionsReport, SocketOptionsError};
 use crate::tailscale::{self, SharedPort, TailscaleError};
 use crate::warning::{
     ScanWarning, Warning, docker_ufw_bypass, summarise, tailscale_no_row, tailscale_warning,
 };
+
+mod linux;
+mod macos;
+pub use macos::{ApplicationFirewall, MacosReport};
 
 /// Where users report problems reachmap cannot handle.
 pub(crate) const ISSUES_URL: &str = "https://github.com/MHusted01/reachmap/issues";
@@ -39,6 +40,12 @@ pub(crate) const ISSUES_URL: &str = "https://github.com/MHusted01/reachmap/issue
 /// cause is reachable through `Error::source` (see [`crate::errors`]).
 #[derive(Debug, Error)]
 pub enum ScanError {
+    /// No local backend is available on this platform.
+    #[error("reachmap scan supports Linux and macOS (this system is {os})")]
+    UnsupportedOs {
+        /// Value of `std::env::consts::OS`.
+        os: &'static str,
+    },
     /// The system could not be read.
     #[error(transparent)]
     Collect(#[from] CollectError),
@@ -50,6 +57,12 @@ pub enum ScanError {
         /// The row and what was wrong with it.
         #[source]
         source: ParseError,
+    },
+    /// macOS socket inventory output was incomplete or unrecognised.
+    #[error("could not understand lsof socket inventory at record {record}")]
+    SocketInventory {
+        /// One-based location of the malformed record.
+        record: usize,
     },
 }
 
@@ -63,7 +76,10 @@ impl ScanError {
                 source.line,
                 path.display()
             )),
-            ScanError::Collect(_) => None,
+            ScanError::Collect(_) | ScanError::UnsupportedOs { .. } => None,
+            ScanError::SocketInventory { .. } => {
+                Some(format!("please report this lsof format at {ISSUES_URL}"))
+            }
         }
     }
 }
@@ -162,66 +178,25 @@ pub struct ScanReport {
     pub nftables: Option<NftablesReport>,
     /// The bindings reported directly by Docker, with input evidence for IPv6.
     pub docker_publishes: Vec<DockerPublish>,
+    /// Host facts reported with the macOS socket inventory.
+    pub macos: Option<MacosReport>,
     /// The summary under the table. Any entry makes the scan exit with 1.
     pub warnings: Vec<ScanWarning>,
 }
 
-/// Reads this host's socket tables, socket options, processes, interfaces, Docker
-/// containers, Tailscale's shared ports and firewall facts and returns its ports,
-/// sorted by port number.
+trait HostCollector {
+    fn scan(&self) -> Result<ScanReport, ScanError>;
+}
+
+/// Collects local socket inventory and the platform's supported host facts.
 pub fn scan() -> Result<ScanReport, ScanError> {
-    let tables = collect::read_socket_tables()?;
-    let sockets = parse_tables(&tables)?;
-    let options = read_socket_options();
-    let open_files = collect::read_open_files()?;
-    let published = docker::read_published_ports();
-    let firewall = firewall_facts(
-        &published,
-        firewall::read_ufw_state(),
-        firewall::read_docker_user_chain,
-    );
-    let host = read_host_interfaces();
-    let host_facts = host.as_ref().ok().cloned();
-    let mut report = join(
-        sockets,
-        &open_files,
-        host,
-        published,
-        tailscale::read_shared_ports(),
-        options,
-        &firewall,
-    );
-    check_scan(
-        collect::read_nftables_rules(),
-        host_facts.as_ref(),
-        &mut report,
-    );
-    Ok(report)
-}
-
-/// Combines UFW's state with the `DOCKER-USER` chain. `iptables` only runs
-/// when a port makes the chain matter, because it is one more program to
-/// start and most hosts have no such port.
-fn firewall_facts(
-    published: &Result<Vec<PublishedPort>, DockerError>,
-    ufw: UfwState,
-    read_chain: impl FnOnce() -> DockerUserChain,
-) -> Firewall {
-    let chain_matters = published.as_ref().is_ok_and(|ports| {
-        ports
-            .iter()
-            .any(|port| docker_ufw_bypass(port, &ufw).is_some())
-    });
-    Firewall {
-        ufw,
-        docker_user: chain_matters.then(read_chain),
-    }
-}
-
-/// Lists this host's interfaces and their addresses.
-fn read_host_interfaces() -> Result<HostInterfaces, InterfacesError> {
-    let json = collect::read_interfaces().map_err(InterfacesError::Collect)?;
-    parse_ip_addr(&json).map_err(InterfacesError::Parse)
+    let collector: &dyn HostCollector = match std::env::consts::OS {
+        "linux" => &linux::Linux,
+        #[cfg(target_os = "macos")]
+        "macos" => &macos::Macos,
+        os => return Err(ScanError::UnsupportedOs { os }),
+    };
+    collector.scan()
 }
 
 /// Parses already-read tables into one list sorted by port. Pure, so it is
@@ -326,6 +301,7 @@ pub fn join(
         tailscale_error,
         nftables: None,
         docker_publishes,
+        macos: None,
         warnings,
     }
 }

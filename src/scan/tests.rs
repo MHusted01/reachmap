@@ -1,7 +1,9 @@
+use super::linux::firewall_facts;
 use super::*;
 use crate::collect::RawProcess;
 use crate::docker::DockerCollectError;
 use crate::errors::render_chain;
+use crate::firewall::{DockerUserChain, UfwState};
 use crate::network::{HostAddress, Network};
 use crate::parse::sock_diag::SockDiagError;
 use crate::reach::{Coverage, Reach, Reason};

@@ -97,6 +97,14 @@ impl fmt::Display for Report<'_> {
                 writeln!(f, "  {publish}")?;
             }
         }
+        if let Some(macos) = &self.0.macos {
+            writeln!(
+                f,
+                "\nmacOS application firewall: {}",
+                macos.application_firewall
+            )?;
+            writeln!(f, "note: {}", macos.socket_visibility)?;
+        }
         Ok(())
     }
 }
@@ -320,6 +328,7 @@ PORT  PROTO  ADDRESS       SERVICE                              REACHABLE FROM  
             tailscale_error: None,
             nftables: None,
             docker_publishes: Vec::new(),
+            macos: None,
             warnings,
         }
     }

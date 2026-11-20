@@ -29,6 +29,13 @@ without a new version, so ignore what you do not know, and treat an unknown
 Fields in the main document example are always present. A missing value in
 those fields is `null`. Older scans may omit `nftables` and `docker_publishes`.
 
+## macOS inventory
+
+On macOS the report adds a `macos` object. Its `socket_visibility` string
+describes which processes the inventory can see. Its `application_firewall`
+object has a `state` of `enabled`, `disabled` or `unknown`. An unknown state
+also has a `reason` string. The state describes the global setting.
+
 ## Exit status
 
 The same as without `--json` (see [the scan page](scan.md#exit-status)):
@@ -172,6 +179,7 @@ nothing upstream filters it. reachmap cannot see such filters. Like the table,
 | `no_addresses` | `covers` | Bound to a wildcard address, but no interface has an address it covers. |
 | `no_addresses_on_device` | `interface` (string) | Bound to a device that has no address the socket can use. |
 | `interfaces_unknown` | | The interfaces could not be listed. |
+| `macos_inventory` | | The macOS inventory shows the bind address. Remote reachability is unknown. |
 | `tailscale_shared` | `served_on`, `funnel_on` (arrays of numbers), `direct` (object) | Tailscale forwards connections to this socket. `served_on` lists the ports shared with the tailnet, `funnel_on` those shared with the internet; one of them can be empty. `direct` is the socket's own `reason`, any `kind` in this table. See [Tailscale](scan.md#tailscale). |
 | `tailscale_accepts` | `sharing` (string) | Tailscale shares this port and forwards to no port with a row. `sharing` is `tailnet` for Serve and `funnel` for Funnel. See [Tailscale](scan.md#tailscale). |
 

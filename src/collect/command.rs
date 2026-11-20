@@ -1,6 +1,7 @@
 //! Running a read-only system command and capturing what it prints.
 
 use std::io::{self, Read};
+#[cfg(any(target_os = "linux", test))]
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -21,6 +22,7 @@ const MAX_SHOWN_ARGS: usize = 4;
 /// is. Running a program by absolute path keeps a directory early in `PATH`
 /// from supplying its own copy, which matters under `sudo`; the fallback is
 /// looked up through `PATH` for systems that keep it elsewhere.
+#[cfg(any(target_os = "linux", test))]
 pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
     candidates
         .iter()
@@ -39,6 +41,26 @@ pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
 /// left behind with the pipe open, could block those waits forever. Both end
 /// with reachmap at the latest.
 pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, CollectError> {
+    run_command(program, args, timeout, None)
+}
+
+/// Also accepts a command's documented no-matches status with empty output.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn run_allow_empty(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    empty_status: i32,
+) -> Result<String, CollectError> {
+    run_command(program, args, timeout, Some(empty_status))
+}
+
+fn run_command(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    empty_status: Option<i32>,
+) -> Result<String, CollectError> {
     let deadline = Instant::now() + timeout;
     let command = || describe(program, args);
     let timed_out = || CollectError::TimedOut {
@@ -73,7 +95,11 @@ pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<Str
         .ok_or_else(timed_out)?
         .map_err(failed_to_run)?;
 
-    if !status.success() {
+    let no_matches = empty_status.is_some()
+        && status.code() == empty_status
+        && stdout.is_empty()
+        && stderr.is_empty();
+    if !status.success() && !no_matches {
         return Err(CollectError::CommandFailed {
             command: command(),
             status,
@@ -245,6 +271,21 @@ mod tests {
     #[test]
     fn returns_what_the_command_prints() {
         assert_eq!(run("sh", &["-c", "printf '[]'"], LONG).unwrap(), "[]");
+    }
+
+    #[test]
+    fn the_no_matches_status_is_only_accepted_with_empty_output() {
+        assert_eq!(
+            run_allow_empty("sh", &["-c", "exit 1"], LONG, 1).unwrap(),
+            ""
+        );
+        for script in [
+            "printf 'error' >&2; exit 1",
+            "printf 'partial'; exit 1",
+            "exit 2",
+        ] {
+            assert!(run_allow_empty("sh", &["-c", script], LONG, 1).is_err());
+        }
     }
 
     #[test]

@@ -8,6 +8,10 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan` on macOS lists IPv4 and IPv6 TCP listeners and bound UDP
+  sockets with their visible owning processes. It reports the global macOS
+  application firewall setting in the table and in the new optional `macos`
+  JSON object ([#16](https://github.com/MHusted01/reachmap/issues/16)).
 - `reachmap scan` lists Docker's published addresses and protocols separately
   from the socket table. For IPv6 publishes it reports the available nftables
   host input evidence and warns with exit status 1 when coverage is IPv4-only
