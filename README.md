@@ -18,10 +18,10 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 ```
 
 > **Status.** v0.1.0 ships Linux TCP inventory, JSON and Docker/UFW warnings.
-> The main branch adds UDP inventory, Tailscale Serve and Funnel awareness,
-> TCP probes and baseline diffs. Scan results describe potential exposure
-> based on the local evidence collected. [Scan](docs/scan.md) ·
-> [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md)
+> The main branch also includes UDP inventory, Tailscale Serve and Funnel
+> awareness, TCP probes and baseline diffs. Scan results describe potential
+> exposure based on the local evidence collected. [Changelog](CHANGELOG.md) ·
+> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md)
 
 ## Install
 

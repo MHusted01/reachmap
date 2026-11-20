@@ -16,11 +16,14 @@ evidence behind each result and identify where the evidence runs out.
 
 ## Current capabilities
 
+This baseline covers the v0.1.0 release, the completed v0.2 work and the start
+of v0.3. The [changelog](../CHANGELOG.md) and linked issues track later changes.
+
 | Status | Capabilities | Evidence limits |
 | --- | --- | --- |
 | Released in [v0.1.0](https://github.com/MHusted01/reachmap/releases/tag/v0.1.0) | Linux TCP socket and process inventory, address coverage, Docker published ports, UFW warnings and JSON output. Linux and macOS binaries are available. | Bind scope and warning signals describe potential exposure. Local scanning requires Linux. |
 | Merged on main, unreleased | [v0.2 Probe and diff](https://github.com/MHusted01/reachmap/milestone/2) adds Linux UDP inventory, Tailscale Serve and Funnel configuration, TCP probes with saved-scan comparison, and baseline diffs with port exclusions. [#13](https://github.com/MHusted01/reachmap/issues/13) starts [v0.3 Deeper checks](https://github.com/MHusted01/reachmap/milestone/3) with Docker Engine API collection over a local Unix socket. | Probes observe TCP from the initiating machine. The saved-scan comparison can infer a network label from the target address, and the saved scan lacks host identity. Tailscale status and Docker bindings describe configuration. Full firewall, forwarding and upstream paths remain unmodeled. |
-| Open PR | [#14](https://github.com/MHusted01/reachmap/issues/14) ([PR #69](https://github.com/MHusted01/reachmap/pull/69)) evaluates simple nftables input rules for native Linux sockets. | One applicable filter base chain per family, exact interface and transport destination-port matches, and accept/drop or chain policy. It assumes the packet reaches the input hook. Multiple applicable chains, relevant unsupported rules and unavailable evidence yield unknown. Docker publishes and Tailscale shares are outside this check. |
+| Open at this baseline | [#14](https://github.com/MHusted01/reachmap/issues/14) ([PR #69](https://github.com/MHusted01/reachmap/pull/69)) evaluates simple nftables input rules for native Linux sockets. | One applicable filter base chain per family, exact interface and transport destination-port matches, and accept/drop or chain policy. It assumes the packet reaches the input hook. Multiple applicable chains, relevant unsupported rules and unavailable evidence yield unknown. Docker publishes and Tailscale shares are outside this check. |
 
 See the current command and output contracts in [scan](scan.md), [probe](probe.md),
 [diff](diff.md), [JSON](json.md) and [Docker and UFW](docker-and-ufw.md).
@@ -81,8 +84,8 @@ v0.3 milestone and its issue order.
 
 - Finish [#14](https://github.com/MHusted01/reachmap/issues/14) through its
   existing PR. From there, the next implementation issue is
-  [#15](https://github.com/MHusted01/reachmap/issues/15). Inventory IPv6 and
-  dual-stack Docker publishes and identify gaps in IPv6 firewall evidence.
+  [#15](https://github.com/MHusted01/reachmap/issues/15). Verify IPv6 and
+  dual-stack Docker inventory and identify gaps in IPv6 firewall evidence.
   Base any IPv4-only finding on positive evidence about both families and
   leave effective Docker forwarding to the packet-path milestone below.
 - Build on #14 with [#70](https://github.com/MHusted01/reachmap/issues/70)
