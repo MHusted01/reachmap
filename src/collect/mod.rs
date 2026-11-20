@@ -1,11 +1,12 @@
 //! Collectors: the only code that reads from the running system. They gather
 //! raw text and hand it to the pure parsers in [`crate::parse`].
 
-// Only the Linux collectors run commands so far; tests run it everywhere.
-#[cfg(any(target_os = "linux", test))]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 mod command;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
+pub(crate) mod macos;
 mod processes;
 #[cfg(target_os = "linux")]
 mod sock_diag;
@@ -64,8 +65,8 @@ pub enum CollectError {
         #[source]
         source: io::Error,
     },
-    /// This operating system has no collector yet.
-    #[error("reachmap scan is Linux only for now (this system is {os})")]
+    /// A Linux-specific collector was called on another operating system.
+    #[error("the Linux collector is unavailable on {os}")]
     UnsupportedOs {
         /// Value of `std::env::consts::OS`, e.g. `macos`.
         os: &'static str,

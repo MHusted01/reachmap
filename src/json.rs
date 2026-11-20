@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::errors::render_chain;
 use crate::nftables::{DockerPublish, NftablesReport};
-use crate::scan::{ScanReport, ScannedPort};
+use crate::scan::{MacosReport, ScanReport, ScannedPort};
 use crate::warning::ScanWarning;
 
 /// Raised when a change to the output would break existing scripts.
@@ -27,6 +27,8 @@ struct JsonReport<'a> {
     nftables: Option<&'a NftablesReport>,
     #[serde(skip_serializing_if = "<[DockerPublish]>::is_empty")]
     docker_publishes: &'a [DockerPublish],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    macos: Option<&'a MacosReport>,
 }
 
 /// An optional collector that failed, so scripts need not read standard
@@ -103,6 +105,7 @@ pub fn render(report: &ScanReport) -> Result<String, serde_json::Error> {
             .collect(),
         nftables: report.nftables.as_ref(),
         docker_publishes: &report.docker_publishes,
+        macos: report.macos.as_ref(),
     };
     serde_json::to_string_pretty(&document).map(|text| text + "\n")
 }

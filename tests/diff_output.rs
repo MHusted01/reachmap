@@ -218,17 +218,17 @@ fn help_lists_the_diff_command() {
     assert!(stdout(&run(&["--help"])).contains("diff"));
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[test]
-fn one_file_needs_a_scan_so_it_exits_with_2_off_linux() {
+fn one_file_requires_a_supported_scan_platform() {
     let out = run(&["diff", BASELINE]);
 
     assert_eq!(stdout(&out), "");
-    assert!(stderr(&out).contains("Linux only"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("supports Linux and macOS"));
     assert_eq!(out.status.code(), Some(2));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn one_file_compares_it_with_a_live_scan() {
     let out = run(&["diff", BASELINE, "--json"]);

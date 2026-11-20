@@ -38,7 +38,7 @@ OS-specific verification. Each support level can ship independently.
 | --- | --- | --- | --- | --- |
 | **P0 Linux** | Released | First collector target and an audit operator platform | TCP/UDP sockets, owning processes and containers on main. Extend to native service ownership where evidence is available. | Reference platform for Netfilter, routing, NAT, namespaces, Docker and stateful packet paths. |
 | **P1 Windows 11 and supported Windows Server versions** | Planned | Planned as operator and audited host, with transport and privilege support validated separately | Native listening ports, owning processes, services and network inventory | Windows Firewall profiles and policy, Windows Filtering Platform (WFP), and relevant enterprise, virtual and container networking. |
-| **P2 macOS** | Released. TCP probes and offline diffs are on main. | Planned as operator and audited host. The audit command is pending. | Native sockets, owning processes and services, starting with [#16](https://github.com/MHusted01/reachmap/issues/16) | pf and the application firewall, with emphasis on local development and virtualized networking. |
+| **P2 macOS** | Released. Local scans, TCP probes and diffs are on main. | Planned as operator and audited host. The audit command is pending. | TCP/UDP sockets and visible owning processes on main ([#16](https://github.com/MHusted01/reachmap/issues/16)). | Global application firewall state on main. Planned analysis of pf and app rules, with emphasis on local development and virtualized networking. |
 
 The lightweight macOS inventory can ship before deep Windows analysis. Building
 a CLI for an OS, running it as an audit client, collecting evidence from that OS

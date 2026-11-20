@@ -1,6 +1,6 @@
 # reachmap scan
 
-`reachmap scan` lists every TCP socket on this host that is waiting for
+On Linux, `reachmap scan` lists every TCP socket on this host that is waiting for
 connections (the LISTEN state), every UDP socket that can receive from any peer
 (see [UDP](#udp)) and every port Docker publishes, sorted by port, with the
 program or container behind it and the networks it can be reached from.
@@ -22,6 +22,25 @@ PORT  PROTO  ADDRESS          SERVICE                     REACHABLE FROM        
 
 note: UDP has no connection handshake, so a connect probe cannot confirm that UDP rows are reachable
 ```
+
+## macOS
+
+Run `reachmap scan` to list IPv4 and IPv6 TCP listeners and UDP sockets bound
+to receive from any peer. Each row includes the bind address, port and process
+name and PID. The scan uses the bundled `/usr/sbin/lsof`, so the inventory is
+limited to processes it can inspect. Running with `sudo` may make more sockets
+visible. Compare saved scans taken with the same privileges because a missing
+row can reflect a change in visibility.
+
+If lsof reports an incomplete inventory with usable records, the scan displays
+those rows with a diagnostic. IPv6 scopes distinguish sockets during collection.
+Two sockets on different scopes may display the same IP address.
+
+Loopback binds show `this host`. For other binds the scan shows the address
+and reports remote reachability as unknown. The application firewall's global
+setting appears below the table as enabled, disabled or unknown. App-specific
+rules, pf, Docker publishes and Tailscale shares are outside the macOS scan
+scope.
 
 ## Columns
 
@@ -332,8 +351,8 @@ when you share the port on purpose. Serve alone is no warning.
 
 ## Requirements and limits
 
-- **Linux only for now.** On other systems `scan` prints
-  `reachmap scan is Linux only for now` and exits with status 1.
+- **Linux and macOS.** On other systems `scan` exits with status 1 and lists
+  the supported platforms. The remaining requirements below are for Linux.
 - **Root shows more.** The sockets come from `/proc/net/tcp`, `/proc/net/udp`
   and their IPv6 twins `tcp6` and `udp6`, which every user can read. Finding the process behind a
   socket means reading `/proc/<pid>/fd`, which only works for your own
