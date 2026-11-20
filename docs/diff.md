@@ -103,12 +103,16 @@ a note. Expect this to set off an unattended check now and then, unless you
 
 ## Leaving ports out
 
-`--ignore` leaves ports out of the comparison, so an unattended check stays quiet
-about noise you know. It takes the same list as `reachmap probe --ports`: ports
-and ranges, separated by commas.
+`--ignore` leaves differences on selected ports out of the report. It takes
+ports and ranges separated by commas, like `reachmap probe --ports`. Put `udp:`
+or `tcp:` before the list to apply it to one protocol across IPv4 and IPv6.
+For example, `--ignore udp:5353,32768-60999` leaves out UDP differences on those
+ports while still reporting TCP differences. Rows with an unknown protocol stay
+in the report when you use a prefix. Without a prefix, the list applies to every
+protocol.
 
 ```
-$ reachmap diff baseline.json --ignore 5353,32768-60999
+$ reachmap diff baseline.json --ignore udp:5353,32768-60999
 CHANGE   PORT  PROTO  ADDRESS  DETAIL
 changed  22    tcp    0.0.0.0  reachable from: this host, LAN -> this host, tailnet, LAN
 
@@ -121,11 +125,6 @@ when `--ignore` is, even with 0, so a filter never goes unnoticed in a report.
 Left-out differences do not change the exit status: if nothing else differs, the
 status is 0. Facts a scan lacks are not tied to a port, so they still set status
 1 and print their note.
-
-`--ignore` works on port numbers, on every protocol. A range you pick for UDP
-noise hides a new TCP listener in that range as well, and only the count shows
-it. Keep ranges as narrow as the noise allows, and compare without `--ignore`
-now and then.
 
 ## Exit status
 

@@ -5,14 +5,59 @@ pub mod report;
 
 use std::collections::BTreeSet;
 use std::iter;
+use std::str::FromStr;
 
 use serde::Serialize;
 use thiserror::Error;
 
 use crate::baseline::{Exposure, LoadError, RowKey, Snapshot, Tolerant};
 use crate::json::Collector;
-use crate::parse::probe_args::PortList;
+use crate::parse::probe_args::{PortList, PortListError};
 use crate::scan::{Listener, ScanError};
+use crate::socket::Protocol;
+
+/// Ports to leave out of a diff, optionally limited to one transport protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IgnoreFilter {
+    ports: PortList,
+    protocol: Option<Protocol>,
+}
+
+/// Why a `--ignore` value was refused.
+#[derive(Debug, Error)]
+pub enum IgnoreFilterError {
+    /// The protocol prefix is neither `tcp` nor `udp`.
+    #[error("unknown protocol {protocol:?} (expected tcp or udp)")]
+    UnknownProtocol {
+        /// The prefix that was given.
+        protocol: String,
+    },
+    /// The port list did not parse.
+    #[error(transparent)]
+    Ports(#[from] PortListError),
+}
+
+impl FromStr for IgnoreFilter {
+    type Err = IgnoreFilterError;
+
+    /// Reads a port list, optionally prefixed with `tcp:` or `udp:`.
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (protocol, ports) = match text.split_once(':') {
+            Some(("tcp", ports)) => (Some(Protocol::Tcp), ports),
+            Some(("udp", ports)) => (Some(Protocol::Udp), ports),
+            Some((protocol, _)) => {
+                return Err(IgnoreFilterError::UnknownProtocol {
+                    protocol: protocol.to_string(),
+                });
+            }
+            None => (None, text),
+        };
+        Ok(Self {
+            ports: ports.parse()?,
+            protocol,
+        })
+    }
+}
 
 /// What happened to one row.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -83,10 +128,23 @@ impl Diff {
     /// Facts a scan lacks are not tied to a port, so they still count.
     #[must_use]
     pub fn ignoring(self, ports: &PortList) -> Self {
-        let (ignored, differences): (Vec<_>, Vec<_>) = self
-            .differences
-            .into_iter()
-            .partition(|difference| ports.contains(difference.key.port));
+        self.ignoring_ports(ports, None)
+    }
+
+    /// Leaves out and counts differences matching the filter. A protocol prefix
+    /// matches only rows with that known protocol, across both IP families.
+    #[must_use]
+    pub fn ignoring_filter(self, filter: &IgnoreFilter) -> Self {
+        self.ignoring_ports(&filter.ports, filter.protocol)
+    }
+
+    fn ignoring_ports(self, ports: &PortList, protocol: Option<Protocol>) -> Self {
+        let (ignored, differences): (Vec<_>, Vec<_>) =
+            self.differences.into_iter().partition(|difference| {
+                ports.contains(difference.key.port)
+                    && protocol
+                        .is_none_or(|protocol| difference.key.protocol.known() == Some(protocol))
+            });
         Diff {
             differences,
             ignored: Some(ignored.len()),

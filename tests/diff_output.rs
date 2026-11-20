@@ -12,6 +12,7 @@ const BASELINE: &str = "tests/fixtures/diff_baseline.json";
 const CURRENT: &str = "tests/fixtures/diff_current.json";
 const BROADCAST_BEFORE: &str = "tests/fixtures/diff_broadcast_before.json";
 const BROADCAST_AFTER: &str = "tests/fixtures/diff_broadcast_after.json";
+const SHARED_PORT: &str = "tests/fixtures/diff_shared_port.json";
 
 fn run(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_reachmap"))
@@ -155,12 +156,51 @@ fn json_counts_what_the_filter_left_out() {
 }
 
 #[test]
-fn a_bad_ignore_value_exits_with_2_and_says_why() {
-    let out = run(&["diff", BASELINE, CURRENT, "--ignore", "http"]);
+fn ignore_matches_the_selected_protocol_on_a_shared_port() {
+    for (filter, ignored, remaining) in [
+        ("udp:5353", 2, &["tcp", "unknown"][..]),
+        ("udp:5000-6000", 2, &["tcp", "unknown"][..]),
+        ("tcp:5353", 1, &["udp", "udp", "unknown"][..]),
+        ("5353", 4, &[][..]),
+    ] {
+        let out = run(&["diff", BASELINE, SHARED_PORT, "--ignore", filter, "--json"]);
+        assert_eq!(out.status.code(), Some(1), "{filter}: {}", stderr(&out));
+        let document: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let protocols: Vec<_> = document["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["port"] == 5353)
+            .map(|row| row["protocol"].as_str().unwrap())
+            .collect();
+
+        assert_eq!(document["ignored"], ignored, "{filter}");
+        assert_eq!(protocols, remaining, "{filter}");
+    }
+}
+
+#[test]
+fn an_unknown_ignore_protocol_exits_with_2_and_names_it() {
+    let out = run(&["diff", BASELINE, CURRENT, "--ignore", "sctp:5353"]);
 
     assert_eq!(stdout(&out), "");
-    assert!(stderr(&out).contains("is not a port"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("unknown protocol \"sctp\" (expected tcp or udp)"),
+        "{}",
+        stderr(&out)
+    );
     assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
+fn a_bad_ignore_value_exits_with_2_and_says_why() {
+    for filter in ["http", "udp:http"] {
+        let out = run(&["diff", BASELINE, CURRENT, "--ignore", filter]);
+
+        assert_eq!(stdout(&out), "");
+        assert!(stderr(&out).contains("is not a port"), "{}", stderr(&out));
+        assert_eq!(out.status.code(), Some(2));
+    }
 }
 
 #[test]
