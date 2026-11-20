@@ -4,7 +4,11 @@ All notable changes to reachmap are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
 ## [0.3.0] - 2026-11-20
+
+This release includes the Probe and diff (v0.2) and Deeper checks (v0.3) milestones.
 
 ### Added
 

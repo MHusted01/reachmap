@@ -16,17 +16,19 @@ evidence behind each result and identify where the evidence runs out.
 
 ## Current capabilities
 
-This baseline covers the v0.1.0 release, the completed v0.2 work and the start
-of v0.3. The [changelog](../CHANGELOG.md) and linked issues track later changes.
+v0.3.0 includes the completed [v0.2 Probe and diff](https://github.com/MHusted01/reachmap/milestone/2)
+and [v0.3 Deeper checks](https://github.com/MHusted01/reachmap/milestone/3) milestones.
+The [changelog](../CHANGELOG.md) lists the changes by release.
 
-| Status | Capabilities | Evidence limits |
+| Release | Capabilities | Evidence limits |
 | --- | --- | --- |
-| Released in [v0.1.0](https://github.com/MHusted01/reachmap/releases/tag/v0.1.0) | Linux TCP socket and process inventory, address coverage, Docker published ports, UFW warnings and JSON output. Linux and macOS binaries are available. | Bind scope and warning signals describe potential exposure. Local scanning requires Linux. |
-| Merged on main, unreleased | [v0.2 Probe and diff](https://github.com/MHusted01/reachmap/milestone/2) adds Linux UDP inventory, Tailscale Serve and Funnel configuration, TCP probes with saved-scan comparison, and baseline diffs with port exclusions. [#13](https://github.com/MHusted01/reachmap/issues/13) starts [v0.3 Deeper checks](https://github.com/MHusted01/reachmap/milestone/3) with Docker Engine API collection over a local Unix socket. | Probes observe TCP from the initiating machine. The saved-scan comparison can infer a network label from the target address, and the saved scan lacks host identity. Tailscale status and Docker bindings describe configuration. Full firewall, forwarding and upstream paths remain unmodeled. |
-| Merged in v0.3, unreleased | [#14](https://github.com/MHusted01/reachmap/issues/14) ([PR #69](https://github.com/MHusted01/reachmap/pull/69)) evaluates simple nftables input rules for native Linux sockets. | One applicable filter base chain per family, exact interface and transport destination-port matches, and accept/drop or chain policy. It assumes the packet reaches the input hook. Multiple applicable chains, relevant unsupported rules and unavailable evidence yield unknown. Docker publishes and Tailscale shares are outside this check. |
+| [v0.1.0](https://github.com/MHusted01/reachmap/releases/tag/v0.1.0) | Linux TCP socket and process inventory, address coverage, Docker published ports, UFW warnings and JSON output. Linux and macOS binaries are available. | Bind scope and warning signals describe potential exposure. Local scanning requires Linux. |
+| v0.3.0 | Linux UDP inventory, Tailscale Serve and Funnel configuration, TCP probes with saved-scan comparison, baseline diffs with protocol-specific port exclusions, and Docker Engine API collection over a local Unix socket. | Probes observe TCP from the initiating machine. The saved-scan comparison can infer a network label from the target address, and the saved scan lacks host identity. Tailscale status and Docker bindings describe configuration. |
+| v0.3.0 | Linux nftables input checks for native TCP and UDP sockets, with multiple base chains, chain transfers, and supported interface and port matches. IPv6 Docker publishes report host-input evidence. | The check assumes a packet reaches the input hook. Missing evidence and relevant unsupported rules can yield unknown. Effective Docker forwarding and upstream paths remain outside the evaluation. |
+| v0.3.0 | macOS TCP and UDP socket inventory and global application firewall state. Linux Docker egress checks compare the host and workload using named observers. | macOS reports visible process ownership and the global firewall setting. Egress observations cover the selected observers and workload network namespace. |
 
 See the current command and output contracts in [scan](scan.md), [probe](probe.md),
-[diff](diff.md), [JSON](json.md) and [Docker and UFW](docker-and-ufw.md).
+[diff](diff.md), [JSON](json.md), [egress](egress.md) and [Docker and UFW](docker-and-ufw.md).
 
 ## Platform targets
 
@@ -36,9 +38,9 @@ OS-specific verification. Each support level can ship independently.
 
 | Priority and platform | CLI availability | Remote auditing | Local service discovery | Reachability analysis target |
 | --- | --- | --- | --- | --- |
-| **P0 Linux** | Released | First collector target and an audit operator platform | TCP/UDP sockets, owning processes and containers on main. Extend to native service ownership where evidence is available. | Reference platform for Netfilter, routing, NAT, namespaces, Docker and stateful packet paths. |
+| **P0 Linux** | Released | First collector target and an audit operator platform | TCP/UDP sockets, owning processes and containers. Extend to native service ownership where evidence is available. | Reference platform for Netfilter, routing, NAT, namespaces, Docker and stateful packet paths. |
 | **P1 Windows 11 and supported Windows Server versions** | Planned | Planned as operator and audited host, with transport and privilege support validated separately | Native listening ports, owning processes, services and network inventory | Windows Firewall profiles and policy, Windows Filtering Platform (WFP), and relevant enterprise, virtual and container networking. |
-| **P2 macOS** | Released. Local scans, TCP probes and diffs are on main. | Planned as operator and audited host. The audit command is pending. | TCP/UDP sockets and visible owning processes on main ([#16](https://github.com/MHusted01/reachmap/issues/16)). | Global application firewall state on main. Planned analysis of pf and app rules, with emphasis on local development and virtualized networking. |
+| **P2 macOS** | Released with local scans, TCP probes and diffs. | Planned as operator and audited host. The audit command is pending. | TCP/UDP sockets and visible owning processes ([#16](https://github.com/MHusted01/reachmap/issues/16)). | Global application firewall state. Planned analysis of pf and app rules, with emphasis on local development and virtualized networking. |
 
 The lightweight macOS inventory can ship before deep Windows analysis. Building
 a CLI for an OS, running it as an audit client, collecting evidence from that OS
@@ -74,48 +76,33 @@ transport and application access. Record application authentication separately,
 with its own evidence and limits. A public address, an accepting rule or a
 client failing to connect is insufficient evidence for a general safety claim.
 
-## Next actionable milestone: trustworthy Linux input checks
+## Completed milestone: Linux input checks
 
 **Outcome.** Explain a bounded Linux host-input decision for IPv4 and IPv6 and
-identify Docker publishes that need IPv6-specific evidence. Use the existing
-v0.3 milestone and its issue order.
+identify Docker publishes that need IPv6-specific evidence.
 
-**Dependencies and scope.**
+**Delivered scope.**
 
-- [#13](https://github.com/MHusted01/reachmap/issues/13) and
-  [#14](https://github.com/MHusted01/reachmap/issues/14) are complete.
-  Start with [#15](https://github.com/MHusted01/reachmap/issues/15) to verify
-  IPv6 and dual-stack Docker inventory and identify gaps in IPv6 firewall
-  evidence. Base any IPv4-only finding on positive evidence about both
-  families and leave effective Docker forwarding to the packet-path
-  milestone below.
-- Build on #14 with [#70](https://github.com/MHusted01/reachmap/issues/70)
-  for base-chain priority and combined verdicts,
-  [#71](https://github.com/MHusted01/reachmap/issues/71) for bounded
-  jump/goto/return traversal and observational statements, and
-  [#72](https://github.com/MHusted01/reachmap/issues/72) for interface and
-  port sets, ranges, negation and transport matches.
-- Keep the existing companion work in the v0.3 queue.
-  [#16](https://github.com/MHusted01/reachmap/issues/16) starts macOS inventory.
-  [#17](https://github.com/MHusted01/reachmap/issues/17) explores explicit VPN
-  egress observations for containers. [#56](https://github.com/MHusted01/reachmap/issues/56)
-  and [#58](https://github.com/MHusted01/reachmap/issues/58) improve diff and
-  broadcast reporting. These issues have their own acceptance criteria and
-  do not gate the Linux input or packet-path design.
+- The local Docker Engine collector in [#13](https://github.com/MHusted01/reachmap/issues/13)
+  and the input evaluator in [#14](https://github.com/MHusted01/reachmap/issues/14)
+  provide the basis for the IPv6 Docker publish evidence in
+  [#15](https://github.com/MHusted01/reachmap/issues/15).
+  Effective Docker forwarding is in the packet-path stage below.
+- The input evaluator handles base-chain priority and combined verdicts
+  ([#70](https://github.com/MHusted01/reachmap/issues/70)),
+  bounded jump/goto/return traversal with counter and log statements skipped
+  ([#71](https://github.com/MHusted01/reachmap/issues/71)), and supported interface
+  and port sets, ranges, negation and transport matches
+  ([#72](https://github.com/MHusted01/reachmap/issues/72)).
 
-**Done when.** Supported native TCP and UDP input decisions identify the IP
-family, ingress interface, decisive chain or rule and any relevant uncertainty.
-Fixtures cover multiple chains, control flow, sets and missing or unsupported
-inputs. Repeatable Linux network tests compare decisions with observed delivery
-and blocking on representative IPv4 and IPv6 paths. Docker findings distinguish
-known publish configuration, firewall evidence for each family and unknown
-effective forwarding. Existing JSON and exit behavior retain documented
-compatibility.
+See the [nftables input scope](scan.md#nftables-input) and
+[IPv6 Docker publish findings](scan.md#ipv6-docker-publishes) for output,
+evidence limits and exit behavior.
 
-**Open questions.** What can be proved when base-chain priority ties or an
-earlier unsupported action could change the packet or control flow? Which
-Docker versions and firewall backends expose reliable family-specific
-evidence? Keep the supported subset explicit and test it against kernel
+**Open questions for packet-path work.** Which Docker versions and firewall
+backends expose reliable family-specific forwarding evidence? Which further
+rules can be evaluated reliably when an earlier action could change the packet
+or control flow? Keep the supported subset explicit and test it against kernel
 behavior. An accept in one base chain permits processing to continue.
 [Netfilter hook order](https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks) ·
 [nftables base-chain behavior](https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains) ·
@@ -320,10 +307,10 @@ a coordinator architecture or operational targets.
 The roadmap defines outcomes and dependencies. The
 [issue tracker](https://github.com/MHusted01/reachmap/issues) holds actionable
 work, and [milestones](https://github.com/MHusted01/reachmap/milestones) track
-its delivery. Keep the completed [v0.1](https://github.com/MHusted01/reachmap/milestone/1)
-and [v0.2](https://github.com/MHusted01/reachmap/milestone/2) issue history.
-Use the existing v0.3 queue for the next work. Later headings above describe
-development stages without assigning release numbers or dates.
+its delivery. Keep the completed [v0.1](https://github.com/MHusted01/reachmap/milestone/1),
+[v0.2](https://github.com/MHusted01/reachmap/milestone/2) and
+[v0.3](https://github.com/MHusted01/reachmap/milestone/3) issue history.
+The future stages above have no assigned release numbers or dates.
 
 Before opening an issue, check open and closed issues for the scope and
 dependencies. Refine an existing issue when it covers the work. File only
