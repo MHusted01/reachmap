@@ -27,7 +27,7 @@ without a new version, so ignore what you do not know, and treat an unknown
 `kind` or `listener` as unknown rather than as fine.
 
 Fields in the main document example are always present. A missing value in
-those fields is `null`. The `nftables` field may be absent in older scans.
+those fields is `null`. Older scans may omit `nftables` and `docker_publishes`.
 
 ## Exit status
 
@@ -88,6 +88,7 @@ with the document.
 | `warnings` | array | The summary under the table. Any entry means exit status 1. |
 | `collector_errors` | array | Optional facts that could not be collected. |
 | `nftables` | object | The [nftables input check](#nftables-input) for host socket ports. |
+| `docker_publishes` | array | [Docker bindings](#docker-publishes) from the Engine API. Omitted when no bindings were collected. |
 
 ## nftables input
 
@@ -105,6 +106,22 @@ These findings apply to packets at the nftables input hook. See
 [nftables input](scan.md#nftables-input) for the supported rules. `reach`,
 `reachmap diff` and `reachmap probe --scan` use the socket reachability estimate
 before firewall filtering.
+
+## Docker publishes
+
+Each entry has `port` (number), `protocol` (`tcp` or `udp`), `address`
+(the observed host bind address) and `container` (an object with `name` and
+`compose_service`, which may be `null`). The entries are sorted by port,
+protocol, address and container. Check `collector_errors` for a `docker`
+entry when the array is absent.
+
+For an IPv6 binding in a live scan, `host_input` is an object with a
+`status` field. Its values are `ipv4_only`, `ipv6_evidence` and `unknown`.
+`unknown` also has a string `reason`. An `ipv4_only` finding on a binding
+outside loopback adds a `docker_ipv6_input_gap` summary warning and makes the
+scan exit with status 1. On loopback, the finding is informational.
+See [IPv6 Docker publishes](scan.md#ipv6-docker-publishes) for the scope and
+meaning of each status.
 
 ## Ports
 
@@ -149,7 +166,7 @@ nothing upstream filters it. reachmap cannot see such filters. Like the table,
 | `on_interfaces` | `interfaces` (array of strings) | Bound to one address, carried by these interfaces. |
 | `broadcast` | `interfaces` (array of strings) | Bound to the broadcast address of a subnet on these interfaces. |
 | `limited_broadcast` | | Bound to `255.255.255.255`. `reach` lists every network with an IPv4 address on this host. |
-| `all_addresses` | `covers`, `checked` (boolean) | Bound to a wildcard address. `checked` is true when the kernel confirmed that no device restricts the socket, and whether it is IPv6-only. When false, the widest case is assumed; a Docker-forwarded port without a socket is always false. |
+| `all_addresses` | `covers`, `checked` (boolean) | Bound to a wildcard address. `checked` is true when the kernel confirmed that no device restricts the socket, and whether it is IPv6-only. With unverified socket options, the widest case is assumed. A Docker-forwarded port without a socket uses the reported bind address's family and has `checked: false`. |
 | `not_on_host` | | Bound to an address no interface has. |
 | `multicast` | | A UDP socket bound to a multicast group. Which networks reach it depends on the groups this host joined, which reachmap does not read. |
 | `no_addresses` | `covers` | Bound to a wildcard address, but no interface has an address it covers. |
@@ -180,6 +197,7 @@ overstates the risk.
 | `docker_unknown` | `ufw_reason` (string or null) | Docker could not be asked, so ports that bypass UFW may be missing. `ufw_reason` says why UFW's state is unknown too, when it is. |
 | `docker_user_rules` | | `DOCKER-USER` has rules that may filter these ports. Not verified. |
 | `docker_user_unchecked` | `reason` (string) | `DOCKER-USER` could not be read. |
+| `docker_ipv6_input_gap` | `bindings` (array of objects with `address`, `port` and `protocol`) | The nftables check found IPv4-only host input coverage for these IPv6 Docker publishes. |
 | `tailscale_funnel` | `ports` (array of numbers) | Tailscale Funnel shares these ports with the internet. They are the ports clients connect to, which may have no row of their own. |
 | `tailscale_unknown` | | Tailscale could not be asked, so it may share ports that do not show. |
 | `tailscale_no_row` | `ports` (array of numbers) | Tailscale shares these ports with the tailnet, and no row shows them, because no Tailscale address of this host is known. |

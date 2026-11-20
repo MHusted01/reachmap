@@ -17,11 +17,11 @@ use crate::collect::{self, CollectError, ProcessFds, RawTable};
 use crate::docker::{self, DockerError, PublishedPort};
 use crate::firewall::{self, DockerUserChain, Firewall, UfwState};
 use crate::network::{HostAddress, HostInterfaces};
-use crate::nftables::NftablesReport;
+use crate::nftables::{DockerPublish, NftablesReport, check_scan};
 use crate::parse::ip_addr::parse_ip_addr;
 use crate::parse::proc_net::{ParseError, parse_proc_net};
 use crate::parse::proc_pid::owners_by_inode;
-use crate::reach::{SocketScope, Verdict, classify};
+use crate::reach::{SocketScope, Verdict, classify, publish::classify_publish};
 use crate::service::{Service, UnknownReason, service_of};
 use crate::socket::{Endpoint, ListeningSocket, sort_by_port};
 use crate::socket_options::{
@@ -160,6 +160,8 @@ pub struct ScanReport {
     pub tailscale_error: Option<TailscaleError>,
     /// The nftables input-chain findings for a live scan.
     pub nftables: Option<NftablesReport>,
+    /// The bindings reported directly by Docker, with input evidence for IPv6.
+    pub docker_publishes: Vec<DockerPublish>,
     /// The summary under the table. Any entry makes the scan exit with 1.
     pub warnings: Vec<ScanWarning>,
 }
@@ -189,11 +191,11 @@ pub fn scan() -> Result<ScanReport, ScanError> {
         options,
         &firewall,
     );
-    report.nftables = Some(NftablesReport::check(
+    check_scan(
         collect::read_nftables_rules(),
         host_facts.as_ref(),
-        &report.ports,
-    ));
+        &mut report,
+    );
     Ok(report)
 }
 
@@ -290,7 +292,7 @@ pub fn join(
         endpoint: port.endpoint(),
         listener: Listener::DockerForward,
         service: Service::Container(port.container.clone()),
-        verdict: classify(port.address, None, addresses),
+        verdict: classify_publish(port.address, addresses),
         warning: docker_ufw_bypass(port, &firewall.ufw),
     });
     let mut ports: Vec<ScannedPort> = on_sockets
@@ -310,6 +312,12 @@ pub fn join(
         .chain(tailscale_warning(&shared, tailscale_error.as_ref()))
         .chain(tailscale_no_row(&unjoined, &tailnet))
         .collect();
+    let mut docker_publishes: Vec<_> = published.into_iter().map(DockerPublish::from).collect();
+    docker_publishes.sort_by(|a, b| {
+        a.endpoint
+            .cmp(&b.endpoint)
+            .then_with(|| a.container.cmp(&b.container))
+    });
     ScanReport {
         ports,
         interfaces_error,
@@ -317,6 +325,7 @@ pub fn join(
         socket_options_error,
         tailscale_error,
         nftables: None,
+        docker_publishes,
         warnings,
     }
 }

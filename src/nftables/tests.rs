@@ -12,7 +12,7 @@ use crate::service::{Container, Service, UnknownReason};
 use crate::socket::{AddressFamily, Endpoint, Protocol};
 use crate::table::Report;
 
-use super::{InputVerdict, NftablesReport};
+use super::{InputChains, InputVerdict, NftablesReport, read_rules};
 
 const RULESET: &str = include_str!("../../tests/fixtures/nftables_input.json");
 
@@ -79,7 +79,7 @@ fn only_input_chains_of_the_packet_family_count() {
     );
     let rules = parse_ruleset(&json).unwrap();
     assert_eq!(
-        rules.input(AddressFamily::Ipv4).unwrap_err(),
+        rules.input(AddressFamily::Ipv4).unwrap_err().reason(),
         "multiple applicable input chains"
     );
     assert!(rules.input(AddressFamily::Ipv6).is_ok());
@@ -93,7 +93,7 @@ fn a_dormant_table_does_not_filter_packets() {
     );
     let rules = parse_ruleset(&json).unwrap();
     assert_eq!(
-        rules.input(AddressFamily::Ipv4).unwrap_err(),
+        rules.input(AddressFamily::Ipv4).unwrap_err().reason(),
         "no applicable input chain"
     );
 }
@@ -117,7 +117,7 @@ fn wildcard_interface_matches_are_unverified() {
 fn missing_chain_and_malformed_ruleset_are_unverified() {
     let rules = parse_ruleset(r#"{"nftables": []}"#).unwrap();
     assert_eq!(
-        rules.input(AddressFamily::Ipv4).unwrap_err(),
+        rules.input(AddressFamily::Ipv4).unwrap_err().reason(),
         "no applicable input chain"
     );
     assert!(parse_ruleset(r#"{"nftables": [{"rule": {"expr": []}}]}"#).is_err());
@@ -185,8 +185,23 @@ fn report_of(ports: Vec<ScannedPort>, nftables: NftablesReport) -> ScanReport {
         socket_options_error: None,
         tailscale_error: None,
         nftables: Some(nftables),
+        docker_publishes: Vec::new(),
         warnings: Vec::new(),
     }
+}
+
+fn check(
+    raw: Result<String, CollectError>,
+    host: Option<&HostInterfaces>,
+    ports: &[ScannedPort],
+) -> NftablesReport {
+    let rules = read_rules(raw);
+    let chains = rules.as_ref().map(InputChains::new);
+    NftablesReport::check(
+        chains.as_ref().map_err(|reason| reason.as_str()),
+        host,
+        ports,
+    )
 }
 
 /// The `(address, family, interfaces)` of every entry in the JSON report.
@@ -231,7 +246,7 @@ fn scan_output_checks_each_socket_on_the_interfaces_it_can_receive_on() {
             Service::Tailscale,
         ),
     ];
-    let nftables = NftablesReport::check(Ok(RULESET.to_string()), Some(&host()), &ports);
+    let nftables = check(Ok(RULESET.to_string()), Some(&host()), &ports);
     let report = report_of(ports, nftables);
 
     let text = Report(&report).to_string();
@@ -271,7 +286,7 @@ fn scan_output_checks_each_socket_on_the_interfaces_it_can_receive_on() {
 #[test]
 fn a_dual_stack_wildcard_is_checked_as_ipv4_and_ipv6() {
     let ports = vec![host_row(8443, "::")];
-    let report = NftablesReport::check(Ok(RULESET.to_string()), Some(&host()), &ports);
+    let report = check(Ok(RULESET.to_string()), Some(&host()), &ports);
     assert_eq!(
         entries(&report),
         vec![
@@ -309,7 +324,7 @@ fn an_ipv6_only_wildcard_is_checked_as_ipv6_alone() {
             reason: UnknownReason::NeedsRoot,
         },
     )];
-    let report = NftablesReport::check(Ok(RULESET.to_string()), Some(&host()), &ports);
+    let report = check(Ok(RULESET.to_string()), Some(&host()), &ports);
     assert_eq!(
         entries(&report),
         vec![(
@@ -323,7 +338,7 @@ fn an_ipv6_only_wildcard_is_checked_as_ipv6_alone() {
 #[test]
 fn a_specific_ipv6_address_uses_only_its_interface() {
     let ports = vec![host_row(8443, "2001:db8::20"), host_row(8443, "::1")];
-    let report = NftablesReport::check(Ok(RULESET.to_string()), Some(&host()), &ports);
+    let report = check(Ok(RULESET.to_string()), Some(&host()), &ports);
     assert_eq!(
         entries(&report),
         vec![
@@ -343,7 +358,7 @@ fn a_specific_ipv6_address_uses_only_its_interface() {
 
 #[test]
 fn no_host_socket_ports_is_said_explicitly_without_a_stray_blank_line() {
-    let nftables = NftablesReport::check(Ok(RULESET.to_string()), Some(&host()), &[]);
+    let nftables = check(Ok(RULESET.to_string()), Some(&host()), &[]);
     let report = report_of(Vec::new(), nftables);
     let text = Report(&report).to_string();
     assert!(text.ends_with("\nnftables input: no host socket ports to check\n"));
@@ -354,7 +369,7 @@ fn no_host_socket_ports_is_said_explicitly_without_a_stray_blank_line() {
 fn unlisted_interfaces_make_the_check_unknown() {
     let ports = vec![host_row(8443, "0.0.0.0")];
     for host in [None, Some(&HostInterfaces::default())] {
-        let report = NftablesReport::check(Ok(RULESET.to_string()), host, &ports);
+        let report = check(Ok(RULESET.to_string()), host, &ports);
         assert_eq!(
             serde_json::to_value(report).unwrap(),
             json!({"status": "unknown", "reason": "no interface addresses available"})
@@ -368,7 +383,7 @@ fn failed_collection_keeps_an_unknown_result_with_a_reason() {
         command: "/usr/sbin/nft -j list ruleset".to_string(),
         source: io::Error::from(io::ErrorKind::NotFound),
     };
-    let report = NftablesReport::check(Err(error), None, &[]);
+    let report = check(Err(error), None, &[]);
     assert_eq!(
         serde_json::to_value(report).unwrap(),
         json!({
@@ -388,7 +403,7 @@ fn a_failed_nft_run_points_at_the_privilege_it_needs() {
         status: std::process::ExitStatus::from_raw(1 << 8),
         stderr: "Operation not permitted".to_string(),
     };
-    let report = NftablesReport::check(Err(error), None, &[]);
+    let report = check(Err(error), None, &[]);
     let json = serde_json::to_value(report).unwrap();
     let reason = json["reason"].as_str().unwrap();
     assert!(reason.contains("Operation not permitted"), "{reason}");

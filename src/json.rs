@@ -8,7 +8,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::render_chain;
-use crate::nftables::NftablesReport;
+use crate::nftables::{DockerPublish, NftablesReport};
 use crate::scan::{ScanReport, ScannedPort};
 use crate::warning::ScanWarning;
 
@@ -25,6 +25,8 @@ struct JsonReport<'a> {
     collector_errors: Vec<CollectorError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     nftables: Option<&'a NftablesReport>,
+    #[serde(skip_serializing_if = "<[DockerPublish]>::is_empty")]
+    docker_publishes: &'a [DockerPublish],
 }
 
 /// An optional collector that failed, so scripts need not read standard
@@ -100,6 +102,7 @@ pub fn render(report: &ScanReport) -> Result<String, serde_json::Error> {
             .chain(tailscale)
             .collect(),
         nftables: report.nftables.as_ref(),
+        docker_publishes: &report.docker_publishes,
     };
     serde_json::to_string_pretty(&document).map(|text| text + "\n")
 }

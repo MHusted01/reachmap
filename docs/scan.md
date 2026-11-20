@@ -146,14 +146,15 @@ It supports one active filter chain at the `input` hook per IP family, with
 exact `iifname` and single numeric TCP or UDP destination-port matches. It reads
 rules in order and uses the chain's policy when none matches. If an unsupported
 rule could affect the decision, more than one input chain applies, or data is
-missing, the result is `unknown` with the reason. These findings are informational
-and do not affect the exit status.
+missing, the result is `unknown` with the reason. The socket findings are
+informational.
 
 Each check assumes a packet arrives at the input hook on the listed interface.
 Other hooks, upstream filters, routing and whether the socket would receive the
-packet are outside this check. Docker publishes and Tailscale share rows are
-excluded. A socket bound to `::` that is not IPv6-only also takes IPv4 packets,
-so it gets one line for each family. An IPv4-mapped address is checked for IPv4.
+packet are outside this check. It covers native host sockets. Docker publishes
+have their own [IPv6 evidence](#ipv6-docker-publishes). A dual-stack socket
+bound to `::` gets one line for each family. An IPv4-mapped address is checked
+for IPv4.
 When the scan could not read whether a socket is IPv6-only, it assumes the
 widest case, as the rest of the scan does. With no host socket ports, the output
 says so. If `nft` fails to run, the reason says reading the ruleset usually
@@ -220,8 +221,10 @@ the `0.0.0.0` row stays. If the socket's options are unknown it counts as
 serving the port; its row then lists IPv4 networks, so reach is not understated.
 
 A published port that no socket listens on still gets a row, marked in WHY,
-with the verdict for the published address. A port that is only exposed
-(`EXPOSE`, or `expose:` in Compose) is not reachable from the host's networks
+with the verdict for the published address. A Docker `::` binding without a
+socket covers IPv6 addresses. Docker reports any IPv4 binding separately.
+A port that is only exposed (`EXPOSE`, or `expose:` in Compose) is not
+reachable from the host's networks
 and gets no row. Containers on the host network (`network_mode: host`) publish
 nothing: their sockets show up as ordinary processes.
 
@@ -238,6 +241,28 @@ stderr. Sockets of published ports then show `docker-proxy`, `dockerd` or
 Set `DOCKER_HOST` to an absolute Unix endpoint such as
 `unix:///run/user/1000/docker.sock` to use another local socket. Reachmap ignores
 Docker contexts and accepts only Unix endpoints.
+
+### IPv6 Docker publishes
+
+The **Docker publishes** section lists each address, port, protocol and
+container that Docker reports. A dual-stack publish can show both `0.0.0.0`
+and `::` even when the main table has one row for the socket.
+
+- **IPv4 only** means the nftables ruleset has an active IPv4 input filter
+  chain that reachmap can evaluate for this binding's protocol, port and
+  interfaces, and no active `ip6` or `inet` input chain. The scan emits a
+  warning for affected bindings outside loopback and exits with status 1.
+  Loopback bindings show the same evidence as an informational finding.
+- **IPv6 evidence** means an applicable `ip6` or `inet` input filter chain
+  can be evaluated for the binding's protocol, port and interfaces. Either
+  an accept or a drop decision counts as evidence.
+- **Unknown** is informational and includes the reason, such as missing
+  privileges, no applicable chain, an unsupported rule, several applicable
+  chains or missing interface addresses.
+
+These findings describe the nftables host input hook. Effective Docker
+reachability depends on the packet path, including routing, NAT and forwarding
+rules.
 
 ## Tailscale
 
@@ -354,5 +379,5 @@ same exit status. See [JSON output](json.md).
 | Status | Meaning |
 |--------|---------|
 | 0 | The scan finished without warnings (also when nothing is listening). |
-| 1 | The scan finished with warnings under the table (see [Docker and UFW](docker-and-ufw.md#what-reachmap-reports) and [Tailscale](#tailscale)), or it failed and printed the reason on stderr. |
+| 1 | The scan finished with warnings under the table (see [Docker and UFW](docker-and-ufw.md#what-reachmap-reports), [IPv6 Docker publishes](#ipv6-docker-publishes) and [Tailscale](#tailscale)), or it failed and printed the reason on stderr. |
 | 2 | Invalid arguments. |

@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::docker::{DockerError, PublishedPort};
 use crate::firewall::{DockerUserChain, Firewall, UfwState};
 use crate::scan::ScannedPort;
+use crate::socket::Endpoint;
 use crate::tailscale::{SharedPort, Sharing, TailscaleError};
 
 /// What is wrong with one published port.
@@ -51,6 +52,11 @@ pub enum ScanWarning {
     DockerUserUnchecked {
         /// Why not.
         reason: String,
+    },
+    /// A host-input filter chain covers IPv4, and none applies to IPv6.
+    DockerIpv6InputGap {
+        /// Observed IPv6 Docker bindings outside loopback.
+        bindings: BTreeSet<Endpoint>,
     },
     /// Tailscale Funnel shares these ports with the internet.
     TailscaleFunnel {
@@ -214,6 +220,22 @@ impl fmt::Display for ScanWarning {
             }
             ScanWarning::DockerUserUnchecked { reason } => {
                 write!(f, "DOCKER-USER rules were not checked: {reason}")
+            }
+            ScanWarning::DockerIpv6InputGap { bindings } => {
+                f.write_str(
+                    "nftables has IPv4-only host input coverage for these IPv6 Docker publishes: ",
+                )?;
+                for (index, binding) in bindings.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    write!(
+                        f,
+                        "[{}]:{}/{}",
+                        binding.address, binding.port, binding.protocol
+                    )?;
+                }
+                Ok(())
             }
             ScanWarning::TailscaleFunnel { ports } => write!(
                 f,

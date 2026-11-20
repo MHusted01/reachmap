@@ -276,6 +276,7 @@ fn a_saved_scan_reads_back_as_the_scan_it_came_from() {
         tailscale_error: Some(TailscaleError::Parse(TailscaleParseError::HostPort(
             "host".to_string(),
         ))),
+        docker_publishes: Vec::new(),
         nftables: Some(crate::nftables::NftablesReport::Unknown {
             reason: "no applicable input chain".to_string(),
         }),
