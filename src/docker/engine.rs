@@ -13,12 +13,17 @@ use bollard::errors::Error as BollardError;
 use bollard::models::ContainerInspectResponse;
 use bollard::{API_DEFAULT_VERSION, Docker};
 use futures_util::{StreamExt, TryStreamExt, stream};
-use tokio::{runtime::Builder, time};
+use tokio::{
+    runtime::{Builder, Runtime},
+    time,
+};
 
 use super::{DockerCollectError, DockerError, PublishedPort};
 use crate::errors::render_chain;
 use crate::parse::docker::{DockerParseError, parse_inspected_container, validate_container_id};
 use crate::sanitize::sanitize;
+
+pub(crate) mod egress;
 
 const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
 const DAEMON_PATHS: &[&str] = &[
@@ -58,6 +63,15 @@ fn socket_override(host: Option<&OsStr>) -> Result<Option<&str>, DockerCollectEr
 }
 
 fn read_socket(path: &str, deadline: Duration) -> Result<Vec<PublishedPort>, DockerError> {
+    let (docker, runtime) = connect(path, deadline)?;
+    runtime.block_on(async {
+        time::timeout(deadline, published_ports(&docker))
+            .await
+            .map_err(|_| DockerCollectError::Timeout(deadline))?
+    })
+}
+
+fn connect(path: &str, deadline: Duration) -> Result<(Docker, Runtime), DockerError> {
     let docker = Docker::connect_with_unix(
         &format!("unix://{path}"),
         deadline.as_secs().max(1),
@@ -69,11 +83,7 @@ fn read_socket(path: &str, deadline: Duration) -> Result<Vec<PublishedPort>, Doc
         .enable_time()
         .build()
         .map_err(DockerCollectError::Runtime)?;
-    runtime.block_on(async {
-        time::timeout(deadline, published_ports(&docker))
-            .await
-            .map_err(|_| DockerCollectError::Timeout(deadline))?
-    })
+    Ok((docker, runtime))
 }
 
 trait DockerSource {

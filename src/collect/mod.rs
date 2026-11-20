@@ -2,7 +2,7 @@
 //! raw text and hand it to the pure parsers in [`crate::parse`].
 
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
-mod command;
+pub(crate) mod command;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -11,7 +11,7 @@ mod processes;
 #[cfg(target_os = "linux")]
 mod sock_diag;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 use std::fs;
 use std::io::{self, ErrorKind};

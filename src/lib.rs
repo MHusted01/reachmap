@@ -7,7 +7,7 @@
 //! decides what deserves attention, and [`table`], [`json`] and [`errors`] format
 //! results for the terminal and for scripts. [`sanitize`] cleans text from other programs before it can
 //! reach the terminal. [`baseline`] reads saved scans and [`diff`] compares them.
-//! [`probe`] is the only part that sends traffic: it connects to ports of a host the user names.
+//! [`probe`] and [`egress`] send traffic only to perform checks the user starts.
 //!
 //! The library exists for reachmap's own binary and tests. It is not a
 //! stable API and may change in any release.
@@ -18,6 +18,7 @@ pub mod baseline;
 pub mod collect;
 pub mod diff;
 pub mod docker;
+pub mod egress;
 pub mod errors;
 pub mod firewall;
 pub mod json;

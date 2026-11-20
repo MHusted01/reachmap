@@ -17,6 +17,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// How many arguments error messages show.
 const MAX_SHOWN_ARGS: usize = 4;
+const MAX_PROBE_OUTPUT: u64 = 64 * 1024;
 
 /// The first of `candidates` that is an existing file, or `fallback` when none
 /// is. Running a program by absolute path keeps a directory early in `PATH`
@@ -41,7 +42,20 @@ pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
 /// left behind with the pipe open, could block those waits forever. Both end
 /// with reachmap at the latest.
 pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, CollectError> {
-    let output = capture(program, args, timeout)?;
+    checked_output(program, args, capture(program, args, timeout, false)?)
+}
+
+/// Run a fixed-path probe without environment variables or shell configuration.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn run_isolated(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<String, CollectError> {
+    checked_output(program, args, capture(program, args, timeout, true)?)
+}
+
+fn checked_output(program: &str, args: &[&str], output: Output) -> Result<String, CollectError> {
     if !output.status.success() {
         return Err(failed_status(program, args, &output));
     }
@@ -59,7 +73,7 @@ pub(super) fn run_inventory(
 ) -> Result<(String, Option<String>), CollectError> {
     const MAX_DIAGNOSTIC_CHARS: usize = 200;
 
-    let output = capture(program, args, timeout)?;
+    let output = capture(program, args, timeout, false)?;
     if !output.status.success()
         && (output.status.code() != Some(partial_status)
             || (output.stdout.is_empty() && !output.stderr.is_empty()))
@@ -83,7 +97,12 @@ pub(super) fn run_inventory(
     Ok((decode_stdout(program, args, output.stdout)?, note))
 }
 
-fn capture(program: &str, args: &[&str], timeout: Duration) -> Result<Output, CollectError> {
+fn capture(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    isolated: bool,
+) -> Result<Output, CollectError> {
     let deadline = Instant::now() + timeout;
     let command = || describe(program, args);
     let timed_out = || CollectError::TimedOut {
@@ -95,15 +114,20 @@ fn capture(program: &str, args: &[&str], timeout: Duration) -> Result<Output, Co
         source,
     };
 
-    let mut child = Command::new(program)
+    let mut process = Command::new(program);
+    if isolated {
+        process.env_clear().env("LC_ALL", "C");
+    }
+    let mut child = process
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(failed_to_run)?;
-    let stdout = read_in_background(child.stdout.take());
-    let stderr = read_in_background(child.stderr.take());
+    let limit = isolated.then_some(MAX_PROBE_OUTPUT);
+    let stdout = read_in_background(child.stdout.take(), limit);
+    let stderr = read_in_background(child.stderr.take(), limit);
 
     let Some(status) = wait_until(&mut child, deadline).map_err(failed_to_run)? else {
         // Failing to kill means it already exited; the timeout is still the
@@ -155,18 +179,31 @@ fn describe(program: &str, args: &[&str]) -> String {
 
 /// Reads `pipe` to its end on a new thread, so that a full pipe never blocks
 /// the command, and sends the bytes back once it is done.
-fn read_in_background(pipe: Option<impl Read + Send + 'static>) -> Receiver<io::Result<Vec<u8>>> {
+fn read_in_background(
+    pipe: Option<impl Read + Send + 'static>,
+    limit: Option<u64>,
+) -> Receiver<io::Result<Vec<u8>>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = match pipe {
-            Some(mut pipe) => pipe.read_to_end(&mut bytes).map(|_| bytes),
-            None => Ok(bytes),
-        };
+        let result = pipe.map_or_else(|| Ok(Vec::new()), |pipe| read_output(pipe, limit));
         // The receiver is gone after a timeout; nobody wants the bytes then.
         sender.send(result).ok();
     });
     receiver
+}
+
+fn read_output(mut pipe: impl Read, limit: Option<u64>) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    (&mut pipe)
+        .take(limit.map_or(u64::MAX, |limit| limit + 1))
+        .read_to_end(&mut bytes)?;
+    if limit.is_some_and(|limit| bytes.len() as u64 > limit) {
+        // Let a finite writer finish without holding the remaining bytes or
+        // hitting a broken pipe. The caller still enforces its deadline.
+        io::copy(&mut pipe, &mut io::sink()).ok();
+        return Err(io::Error::other("probe output exceeded its size limit"));
+    }
+    Ok(bytes)
 }
 
 /// Waits for `child` to exit. `None` means it was still running at `deadline`.
@@ -212,6 +249,35 @@ mod tests {
     const SHORT: Duration = Duration::from_millis(300);
     /// A test that took this long waited for its command instead of giving up.
     const GAVE_UP_IN_TIME: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn bounded_output_accepts_the_limit_and_drains_oversized_pipes() {
+        for length in [3, 4] {
+            assert_eq!(
+                read_output(&[b'a'; 5][..length], Some(4)).unwrap().len(),
+                length
+            );
+        }
+        let mut output = io::Cursor::new(b"12345678");
+        let error = read_output(&mut output, Some(4)).unwrap_err();
+        assert_eq!(error.to_string(), "probe output exceeded its size limit");
+        assert_eq!(output.position(), 8);
+    }
+
+    #[test]
+    fn isolated_commands_only_inherit_the_fixed_locale() {
+        assert_eq!(
+            run_isolated("/usr/bin/env", &[], LONG).unwrap(),
+            "LC_ALL=C\n"
+        );
+    }
+
+    #[test]
+    fn isolated_commands_report_oversized_output() {
+        let error =
+            run_isolated("/usr/bin/head", &["-c", "131072", "/dev/zero"], LONG).unwrap_err();
+        assert!(render_chain(&error).contains("probe output exceeded its size limit"));
+    }
 
     fn assert_times_out(script: &str) {
         let started = Instant::now();

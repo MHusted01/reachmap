@@ -8,6 +8,10 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap egress` compares IPv4, IPv6 and observed DNS resolvers between the
+  Linux host and a Docker workload using a shared network namespace. The command
+  requires explicitly named observers and reports inconclusive checks
+  ([#17](https://github.com/MHusted01/reachmap/issues/17)).
 - `reachmap scan` on macOS lists IPv4 and IPv6 TCP listeners and bound UDP
   sockets with their visible owning processes. It reports the global macOS
   application firewall setting in the table and in the new optional `macos`

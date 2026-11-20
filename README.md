@@ -19,9 +19,10 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 
 > **Status.** v0.1.0 ships Linux TCP inventory, JSON and Docker/UFW warnings.
 > The main branch also includes UDP inventory, Tailscale Serve and Funnel
-> awareness, TCP probes, baseline diffs and macOS socket inventory. Scan results
+> awareness, TCP probes, baseline diffs, macOS socket inventory and Linux
+> container egress checks. Scan results
 > describe potential exposure based on local evidence. [Changelog](CHANGELOG.md) ·
-> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md)
+> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md)
 
 ## Install
 
@@ -46,7 +47,7 @@ Linux and macOS. See the [macOS scan scope](docs/scan.md#macos).
   root), it says so instead of guessing "safe".
 - **Notices changes.** `reachmap diff` compares a host with a saved scan and
   exits with 1 when something changed, for cron jobs.
-- **No telemetry.** The only network traffic is a probe you start yourself.
+- **No telemetry.** Network traffic comes from the `probe` and `egress` checks you start yourself.
 
 Background: [why Docker ports can bypass UFW](docs/docker-and-ufw.md).
 
