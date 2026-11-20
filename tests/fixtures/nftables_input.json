@@ -19,9 +19,9 @@
     {"rule": {"family": "inet", "table": "sample", "chain": "inbound", "handle": 5, "expr": [
       {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "eth0"}},
       {"match": {"op": "==", "left": {"payload": {"protocol": "tcp", "field": "dport"}}, "right": 9090}},
-      {"jump": {"target": "extra"}}
+      {"match": {"op": "==", "left": {"ct": {"key": "state"}}, "right": "established"}},
+      {"drop": null}
     ]}},
-    {"chain": {"family": "inet", "table": "sample", "name": "extra", "handle": 6}},
     {"chain": {"family": "inet", "table": "sample", "name": "output", "type": "filter", "hook": "output", "prio": 0, "policy": "drop"}}
   ]
 }
