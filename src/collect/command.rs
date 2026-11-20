@@ -57,6 +57,8 @@ pub(super) fn run_inventory(
     timeout: Duration,
     partial_status: i32,
 ) -> Result<(String, Option<String>), CollectError> {
+    const MAX_DIAGNOSTIC_CHARS: usize = 200;
+
     let output = capture(program, args, timeout)?;
     if !output.status.success()
         && (output.status.code() != Some(partial_status)
@@ -64,7 +66,11 @@ pub(super) fn run_inventory(
     {
         return Err(failed_status(program, args, &output));
     }
-    let detail = sanitize(String::from_utf8_lossy(&output.stderr).trim());
+    let mut detail = sanitize(String::from_utf8_lossy(&output.stderr).trim());
+    if let Some((end, _)) = detail.char_indices().nth(MAX_DIAGNOSTIC_CHARS) {
+        detail.truncate(end);
+        detail.push_str(" (truncated)");
+    }
     let partial = !output.status.success() && !output.stdout.is_empty();
     let note = match (partial, detail.is_empty()) {
         (false, true) => None,
@@ -319,6 +325,19 @@ mod tests {
         for script in ["printf 'error' >&2; exit 1", "printf 'rows'; exit 2"] {
             assert!(run_inventory("sh", &["-c", script], LONG, 1).is_err());
         }
+    }
+
+    #[test]
+    fn inventory_diagnostic_truncates_long_unicode_text() {
+        let diagnostic = "ø".repeat(210);
+        let (_, note) = run_inventory(
+            "sh",
+            &["-c", "printf '%s' \"$1\" >&2", "sh", &diagnostic],
+            LONG,
+            1,
+        )
+        .unwrap();
+        assert_eq!(note, Some(format!("{} (truncated)", "ø".repeat(200))));
     }
 
     #[test]
