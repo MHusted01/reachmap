@@ -9,7 +9,7 @@ use serde::Serialize;
 use crate::collect::CollectError;
 use crate::errors::render_chain;
 use crate::network::HostInterfaces;
-use crate::parse::nftables::{InputChain, InputChainError, Ruleset, parse_ruleset};
+use crate::parse::nftables::{InputHook, Ruleset, parse_ruleset};
 use crate::sanitize::sanitize;
 use crate::scan::{ScanReport, ScannedPort};
 use crate::socket::{AddressFamily, Protocol};
@@ -20,10 +20,11 @@ pub use docker::DockerPublish;
 use targets::targets;
 
 const NO_INTERFACES: &str = "no interface addresses available";
+const NO_INPUT_CHAINS: &str = "no applicable input chain";
 
 struct InputChains<'a> {
-    ipv4: Result<InputChain<'a>, InputChainError>,
-    ipv6: Result<InputChain<'a>, InputChainError>,
+    ipv4: Option<InputHook<'a>>,
+    ipv6: Option<InputHook<'a>>,
 }
 
 impl<'a> InputChains<'a> {
@@ -88,13 +89,13 @@ struct InterfaceInput {
     outcome: InputVerdict,
 }
 
-/// What the selected input chain does for a packet matching the check.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+/// What the applicable input chains do for a packet matching the check.
+#[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub(crate) enum InputVerdict {
-    Accept { reason: &'static str },
-    Drop { reason: &'static str },
-    Unknown { reason: &'static str },
+    Accept { reason: String },
+    Drop { reason: String },
+    Unknown { reason: String },
 }
 
 impl NftablesReport {
@@ -117,11 +118,9 @@ impl NftablesReport {
             };
         };
 
-        if let (Err(v4_reason), Err(v6_reason)) = (&chains.ipv4, &chains.ipv6)
-            && v4_reason == v6_reason
-        {
+        if chains.ipv4.is_none() && chains.ipv6.is_none() {
             return Self::Unknown {
-                reason: v4_reason.reason().to_string(),
+                reason: NO_INPUT_CHAINS.to_string(),
             };
         }
         let ports = targets(ports, host)
@@ -137,8 +136,8 @@ impl NftablesReport {
                     .map(|name| InterfaceInput {
                         interface: sanitize(name),
                         outcome: chain.as_ref().map_or_else(
-                            |error| InputVerdict::Unknown {
-                                reason: error.reason(),
+                            || InputVerdict::Unknown {
+                                reason: NO_INPUT_CHAINS.to_string(),
                             },
                             |input| input.evaluate(target.protocol, target.port, name),
                         ),

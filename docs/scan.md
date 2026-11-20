@@ -152,21 +152,26 @@ when applicable.
 
 The scan reads `nft -j list ruleset` from a standard system path. Reading the
 ruleset usually needs root or `CAP_NET_ADMIN`. The output below the table shows
-what the input chain does with packets for each native TCP or UDP socket port,
+what the input chains do with packets for each native TCP or UDP socket port,
 bind address, IP family and incoming interface. For example, a port might show
-`eth0 accept (matching rule), lo drop (chain policy)`. Each socket is checked
+`eth0 accept (all applicable input chains accept)` or
+`lo drop (chain policy in inet filter input)`. Each socket is checked
 only on the interfaces it can receive on: a socket bound to a loopback address
 on `lo`, one bound to a host address on the interface that has it, and a
 wildcard such as `0.0.0.0` on every interface with an address of that family.
 A socket bound to an address no interface has is not checked.
 
-For IPv4 and IPv6, reachmap checks the applicable `ip`, `ip6` and `inet` tables.
-It supports one active filter chain at the `input` hook per IP family, with
-exact `iifname` and single numeric TCP or UDP destination-port matches. It reads
-rules in order and uses the chain's policy when none matches. If an unsupported
-rule could affect the decision, more than one input chain applies, or data is
-missing, the result is `unknown` with the reason. The socket findings are
-informational.
+For IPv4 and IPv6, reachmap checks active base chains at the `input` hook in
+the applicable `ip`, `ip6` and `inet` tables, from lowest to highest priority
+value. It supports filter chains with exact `iifname` and single numeric TCP or
+UDP destination-port matches. It reads rules in order and uses the chain's
+policy when none matches. Every applicable chain must accept for the result
+to be `accept`. A drop or supported reject ends the check if the chain is
+guaranteed to run. An unsupported rule, unsupported chain type or missing
+chain data can make the result `unknown`. Chains with the same priority can
+run in either order, so an unknown in that group takes precedence over a drop
+in the same group. Drop and chain-specific unknown reasons include the
+family, table and chain. The socket findings are informational.
 
 Each check assumes a packet arrives at the input hook on the listed interface.
 Other hooks, upstream filters, routing and whether the socket would receive the
@@ -267,17 +272,17 @@ The **Docker publishes** section lists each address, port, protocol and
 container that Docker reports. A dual-stack publish can show both `0.0.0.0`
 and `::` even when the main table has one row for the socket.
 
-- **IPv4 only** means the nftables ruleset has an active IPv4 input filter
-  chain that reachmap can evaluate for this binding's protocol, port and
-  interfaces, and no active `ip6` or `inet` input chain. The scan emits a
-  warning for affected bindings outside loopback and exits with status 1.
+- **IPv4 only** means reachmap can evaluate the active IPv4 input chains
+  for this binding's protocol, port and interfaces, and the ruleset has no
+  active `ip6` or `inet` input chain. The scan emits a warning for affected
+  bindings outside loopback and exits with status 1.
   Loopback bindings show the same evidence as an informational finding.
-- **IPv6 evidence** means an applicable `ip6` or `inet` input filter chain
-  can be evaluated for the binding's protocol, port and interfaces. Either
+- **IPv6 evidence** means reachmap can evaluate the applicable `ip6` and
+  `inet` input chains for the binding's protocol, port and interfaces. Either
   an accept or a drop decision counts as evidence.
 - **Unknown** is informational and includes the reason, such as missing
-  privileges, no applicable chain, an unsupported rule, several applicable
-  chains or missing interface addresses.
+  privileges, no applicable chain, an unsupported rule or missing interface
+  addresses.
 
 These findings describe the nftables host input hook. Effective Docker
 reachability depends on the packet path, including routing, NAT and forwarding

@@ -15,6 +15,7 @@ use crate::table::Report;
 use super::{InputChains, InputVerdict, NftablesReport, read_rules};
 
 const RULESET: &str = include_str!("../../tests/fixtures/nftables_input.json");
+const EXTRA_CHAIN: &str = include_str!("../../tests/fixtures/nftables_input_chains.json");
 
 #[test]
 fn matches_protocol_port_and_interface_in_rule_order() {
@@ -23,25 +24,25 @@ fn matches_protocol_port_and_interface_in_rule_order() {
     assert_eq!(
         input.evaluate(Protocol::Tcp, 8443, "eth0"),
         InputVerdict::Accept {
-            reason: "matching rule"
+            reason: "matching rule".into()
         }
     );
     assert_eq!(
         input.evaluate(Protocol::Tcp, 8443, "lo"),
         InputVerdict::Drop {
-            reason: "matching rule"
+            reason: "matching rule in inet sample inbound".into()
         }
     );
     assert_eq!(
         input.evaluate(Protocol::Udp, 8443, "eth0"),
         InputVerdict::Drop {
-            reason: "chain policy"
+            reason: "chain policy in inet sample inbound".into()
         }
     );
     assert_eq!(
         input.evaluate(Protocol::Udp, 5353, "eth0"),
         InputVerdict::Accept {
-            reason: "matching rule"
+            reason: "matching rule".into()
         }
     );
 }
@@ -53,36 +54,150 @@ fn unsupported_rule_only_matters_if_reached_and_could_match() {
     assert_eq!(
         input.evaluate(Protocol::Tcp, 9090, "eth0"),
         InputVerdict::Unknown {
-            reason: "unsupported input rule"
+            reason: "unsupported input rule in inet sample inbound".into()
         }
     );
     assert_eq!(
         input.evaluate(Protocol::Tcp, 9090, "lo"),
         InputVerdict::Drop {
-            reason: "chain policy"
+            reason: "chain policy in inet sample inbound".into()
         }
     );
     assert_eq!(
         input.evaluate(Protocol::Tcp, 8443, "eth0"),
         InputVerdict::Accept {
-            reason: "matching rule"
+            reason: "matching rule".into()
         }
     );
 }
 
+fn combined_rules(extra: &str) -> Value {
+    let mut json: Value = serde_json::from_str(RULESET).unwrap();
+    let extra: Value = serde_json::from_str(extra).unwrap();
+    json["nftables"]
+        .as_array_mut()
+        .unwrap()
+        .extend(extra["nftables"].as_array().unwrap().iter().cloned());
+    json
+}
+
+fn combined_outcome(extra: &str, family: AddressFamily, port: u16, interface: &str) -> String {
+    let rules = parse_ruleset(&combined_rules(extra).to_string()).unwrap();
+    rules
+        .input(family)
+        .unwrap()
+        .evaluate(Protocol::Tcp, port, interface)
+        .to_string()
+}
+
 #[test]
-fn only_input_chains_of_the_packet_family_count() {
-    let json = RULESET.replace(
-        r#"{"chain": {"family": "inet", "table": "sample", "name": "output", "type": "filter", "hook": "output", "prio": 0, "policy": "drop"}}"#,
-        r#"{"table": {"family": "ip", "name": "other"}},
-        {"chain": {"family": "ip", "table": "other", "name": "inbound", "type": "filter", "hook": "input", "prio": 10, "policy": "accept"}}"#,
-    );
-    let rules = parse_ruleset(&json).unwrap();
+fn every_applicable_chain_must_accept() {
     assert_eq!(
-        rules.input(AddressFamily::Ipv4).unwrap_err().reason(),
-        "multiple applicable input chains"
+        combined_outcome(EXTRA_CHAIN, AddressFamily::Ipv4, 8443, "eth0"),
+        "accept (all applicable input chains accept)"
     );
-    assert!(rules.input(AddressFamily::Ipv6).is_ok());
+    let drop = EXTRA_CHAIN.replace(r#""policy": "accept""#, r#""policy": "drop""#);
+    for priority in ["10", "-10", "0"] {
+        let extra = drop.replace("10", priority);
+        assert_eq!(
+            combined_outcome(&extra, AddressFamily::Ipv4, 8443, "eth0"),
+            "drop (chain policy in ip extra input)"
+        );
+    }
+    assert_eq!(
+        combined_outcome(EXTRA_CHAIN, AddressFamily::Ipv4, 8443, "lo"),
+        "drop (matching rule in inet sample inbound)"
+    );
+    assert_eq!(
+        combined_outcome(&drop, AddressFamily::Ipv6, 8443, "eth0"),
+        "accept (matching rule)"
+    );
+}
+
+#[test]
+fn a_drop_wins_only_if_its_chain_is_reached_for_sure() {
+    let drop = EXTRA_CHAIN.replace(r#""policy": "accept""#, r#""policy": "drop""#);
+    for priority in ["10", "0"] {
+        let extra = drop.replace("10", priority);
+        assert_eq!(
+            combined_outcome(&extra, AddressFamily::Ipv4, 9090, "eth0"),
+            "unknown (unsupported input rule in inet sample inbound)"
+        );
+    }
+    assert_eq!(
+        combined_outcome(
+            &drop.replace("10", "-10"),
+            AddressFamily::Ipv4,
+            9090,
+            "eth0"
+        ),
+        "drop (chain policy in ip extra input)"
+    );
+    let mut reversed = combined_rules(&drop.replace("10", "0"));
+    reversed["nftables"].as_array_mut().unwrap().reverse();
+    let rules = parse_ruleset(&reversed.to_string()).unwrap();
+    assert_eq!(
+        rules
+            .input(AddressFamily::Ipv4)
+            .unwrap()
+            .evaluate(Protocol::Tcp, 9090, "eth0")
+            .to_string(),
+        "unknown (unsupported input rule in inet sample inbound)"
+    );
+}
+
+#[test]
+fn a_reject_terminates_input_before_a_later_chain() {
+    let mut extra: Value = serde_json::from_str(EXTRA_CHAIN).unwrap();
+    extra["nftables"][1]["chain"]["prio"] = json!(-10);
+    extra["nftables"].as_array_mut().unwrap().push(json!({
+        "rule": {"family": "ip", "table": "extra", "chain": "input", "expr": [
+            {"reject": {"type": "icmp", "expr": "port-unreachable"}}
+        ]}
+    }));
+    assert_eq!(
+        combined_outcome(&extra.to_string(), AddressFamily::Ipv4, 9090, "eth0"),
+        "drop (matching reject rule in ip extra input)"
+    );
+}
+
+#[test]
+fn an_unusable_chain_names_its_table_and_chain() {
+    let cases = [
+        (
+            EXTRA_CHAIN.replace(r#""type": "filter""#, r#""type": "nat""#),
+            "unsupported input chain type",
+        ),
+        (
+            EXTRA_CHAIN.replace(r#", "policy": "accept""#, ""),
+            "input chain policy is missing",
+        ),
+        (
+            EXTRA_CHAIN.replace(r#""policy": "accept""#, r#""policy": "other""#),
+            "unsupported input chain policy",
+        ),
+        (
+            EXTRA_CHAIN.replace(r#", "prio": 10"#, ""),
+            "input chain priority is missing",
+        ),
+    ];
+    for (extra, reason) in cases {
+        assert_eq!(
+            combined_outcome(&extra, AddressFamily::Ipv4, 8443, "eth0"),
+            format!("unknown ({reason} in ip extra input)")
+        );
+    }
+}
+
+#[test]
+fn chain_names_in_reasons_are_sanitized() {
+    let extra = EXTRA_CHAIN
+        .replace(r#""name": "input""#, r#""name": "input\nnext""#)
+        .replace(r#""policy": "accept""#, r#""policy": "drop""#);
+    assert_eq!(
+        combined_outcome(&extra, AddressFamily::Ipv4, 8443, "eth0"),
+        r"drop (chain policy in ip extra input\nnext)"
+    );
 }
 
 #[test]
@@ -92,10 +207,7 @@ fn a_dormant_table_does_not_filter_packets() {
         r#""name": "sample", "handle": 1, "flags": ["dormant"]"#,
     );
     let rules = parse_ruleset(&json).unwrap();
-    assert_eq!(
-        rules.input(AddressFamily::Ipv4).unwrap_err().reason(),
-        "no applicable input chain"
-    );
+    assert!(rules.input(AddressFamily::Ipv4).is_none());
 }
 
 #[test]
@@ -108,7 +220,7 @@ fn wildcard_interface_matches_are_unverified() {
             .unwrap()
             .evaluate(Protocol::Tcp, 8443, "eth0"),
         InputVerdict::Unknown {
-            reason: "unsupported input rule"
+            reason: "unsupported input rule in inet sample inbound".into()
         }
     );
 }
@@ -116,10 +228,7 @@ fn wildcard_interface_matches_are_unverified() {
 #[test]
 fn missing_chain_and_malformed_ruleset_are_unverified() {
     let rules = parse_ruleset(r#"{"nftables": []}"#).unwrap();
-    assert_eq!(
-        rules.input(AddressFamily::Ipv4).unwrap_err().reason(),
-        "no applicable input chain"
-    );
+    assert!(rules.input(AddressFamily::Ipv4).is_none());
     assert!(parse_ruleset(r#"{"nftables": [{"rule": {"expr": []}}]}"#).is_err());
     assert!(parse_ruleset(r#"{"nftables": [{"metainfo": {"json_schema_version": 2}}]}"#).is_err());
 }
@@ -254,8 +363,8 @@ fn scan_output_checks_each_socket_on_the_interfaces_it_can_receive_on() {
     let text = Report(&report).to_string();
     assert!(text.ends_with(
         "nftables input for host socket ports:\n  \
-         8443/tcp 0.0.0.0 (IPv4): eth0 accept (matching rule), lo drop (matching rule)\n  \
-         8443/tcp 127.0.0.1 (IPv4): lo drop (matching rule)\n"
+         8443/tcp 0.0.0.0 (IPv4): eth0 accept (matching rule), lo drop (matching rule in inet sample inbound)\n  \
+         8443/tcp 127.0.0.1 (IPv4): lo drop (matching rule in inet sample inbound)\n"
     ));
     let json: Value = serde_json::from_str(&render(&report).unwrap()).unwrap();
     assert_eq!(
@@ -271,17 +380,35 @@ fn scan_output_checks_each_socket_on_the_interfaces_it_can_receive_on() {
                     "port": 8443, "protocol": "tcp", "address": "0.0.0.0", "family": "ipv4",
                     "interfaces": [
                         {"interface": "eth0", "verdict": "accept", "reason": "matching rule"},
-                        {"interface": "lo", "verdict": "drop", "reason": "matching rule"}
+                        {"interface": "lo", "verdict": "drop", "reason": "matching rule in inet sample inbound"}
                     ]
                 },
                 {
                     "port": 8443, "protocol": "tcp", "address": "127.0.0.1", "family": "ipv4",
                     "interfaces": [
-                        {"interface": "lo", "verdict": "drop", "reason": "matching rule"}
+                        {"interface": "lo", "verdict": "drop", "reason": "matching rule in inet sample inbound"}
                     ]
                 }
             ]
         })
+    );
+}
+
+#[test]
+fn scan_output_includes_the_decisive_chain_and_reason() {
+    let ports = vec![host_row(8443, "0.0.0.0"), host_row(9090, "0.0.0.0")];
+    let raw = combined_rules(EXTRA_CHAIN).to_string();
+    let nftables = check(Ok(raw), Some(&host()), &ports);
+    let report = report_of(ports, nftables);
+    let json: Value = serde_json::from_str(&render(&report).unwrap()).unwrap();
+    let ports = &json["nftables"]["ports"];
+    assert_eq!(
+        ports[0]["interfaces"][0],
+        json!({"interface": "eth0", "verdict": "accept", "reason": "all applicable input chains accept"})
+    );
+    assert_eq!(
+        ports[1]["interfaces"][0],
+        json!({"interface": "eth0", "verdict": "unknown", "reason": "unsupported input rule in inet sample inbound"})
     );
 }
 
@@ -307,7 +434,7 @@ fn a_dual_stack_wildcard_is_checked_as_ipv4_and_ipv6() {
     assert!(
         Report(&report_of(ports, report))
             .to_string()
-            .contains("8443/tcp :: (IPv4): eth0 accept (matching rule), lo drop (matching rule)")
+            .contains("8443/tcp :: (IPv4): eth0 accept (matching rule), lo drop (matching rule in inet sample inbound)")
     );
 }
 

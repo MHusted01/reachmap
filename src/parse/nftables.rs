@@ -4,8 +4,10 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use thiserror::Error;
 
-use crate::nftables::InputVerdict;
 use crate::socket::{AddressFamily, Protocol};
+
+mod input;
+pub(crate) use input::InputHook;
 
 #[derive(Debug, Error)]
 pub(crate) enum RulesetError {
@@ -85,7 +87,8 @@ struct Chain {
     hook: Option<String>,
     #[serde(rename = "type")]
     kind: Option<String>,
-    policy: Option<Action>,
+    prio: Option<i32>,
+    policy: Option<Policy>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -95,13 +98,13 @@ enum Action {
     Drop,
 }
 
-impl Action {
-    fn verdict(self, reason: &'static str) -> InputVerdict {
-        match self {
-            Self::Accept => InputVerdict::Accept { reason },
-            Self::Drop => InputVerdict::Drop { reason },
-        }
-    }
+type ChainDecision = Result<(Action, &'static str), &'static str>;
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum Policy {
+    Known(Action),
+    Unsupported(IgnoredAny),
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +128,37 @@ enum Expression {
     Match(Comparison),
     Accept(()),
     Drop(()),
+    Reject(Option<RejectReply>),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RejectReply {
+    #[serde(rename = "type")]
+    kind: Option<RejectKind>,
+    #[serde(rename = "expr")]
+    _code: Option<IgnoredAny>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RejectKind {
+    Icmp,
+    Icmpv6,
+    Icmpx,
+    #[serde(rename = "tcp reset")]
+    TcpReset,
+}
+
+impl RejectReply {
+    fn applies_to(&self, family: AddressFamily, protocol: Protocol) -> bool {
+        match self.kind {
+            None | Some(RejectKind::Icmpx) => true,
+            Some(RejectKind::Icmp) => family == AddressFamily::Ipv4,
+            Some(RejectKind::Icmpv6) => family == AddressFamily::Ipv6,
+            Some(RejectKind::TcpReset) => protocol == Protocol::Tcp,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,103 +197,16 @@ pub(crate) fn parse_ruleset(json: &str) -> Result<Ruleset, RulesetError> {
     Ok(rules)
 }
 
-impl Ruleset {
-    pub(crate) fn input(&self, family: AddressFamily) -> Result<InputChain<'_>, InputChainError> {
-        use InputChainError::{Missing, Unverified};
-
-        let family = match family {
-            AddressFamily::Ipv4 => "ip",
-            AddressFamily::Ipv6 => "ip6",
-        };
-        let mut selected = None;
-        for chain in self.nftables.iter().filter_map(|entry| match entry {
-            Entry::Chain(chain)
-                if chain.hook.as_deref() == Some("input")
-                    && (chain.family == family || chain.family == "inet") =>
-            {
-                Some(chain)
-            }
-            _ => None,
-        }) {
-            let table = self
-                .nftables
-                .iter()
-                .find_map(|entry| match entry {
-                    Entry::Table(table)
-                        if table.family == chain.family && table.name == chain.table =>
-                    {
-                        Some(table)
-                    }
-                    _ => None,
-                })
-                .ok_or(Unverified("input chain's table is missing"))?;
-            if table.flags.as_ref().is_some_and(TableFlags::dormant) {
-                continue;
-            }
-            // An accept in one base chain still permits a later chain to drop.
-            if selected.replace(chain).is_some() {
-                return Err(Unverified("multiple applicable input chains"));
-            }
-        }
-        let chain = selected.ok_or(Missing)?;
-        if chain.kind.as_deref() != Some("filter") {
-            return Err(Unverified("unsupported input chain type"));
-        }
-        let policy = chain
-            .policy
-            .ok_or(Unverified("input chain policy is missing"))?;
-        let rules = self
-            .nftables
-            .iter()
-            .filter_map(|entry| match entry {
-                Entry::Rule(rule)
-                    if rule.family == chain.family
-                        && rule.table == chain.table
-                        && rule.chain == chain.name =>
-                {
-                    Some(rule)
-                }
-                _ => None,
-            })
-            .collect();
-        Ok(InputChain { policy, rules })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum InputChainError {
-    Missing,
-    Unverified(&'static str),
-}
-
-impl InputChainError {
-    pub(crate) fn reason(self) -> &'static str {
-        match self {
-            Self::Missing => "no applicable input chain",
-            Self::Unverified(reason) => reason,
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct InputChain<'a> {
-    policy: Action,
-    rules: Vec<&'a Rule>,
-}
-
-impl InputChain<'_> {
-    pub(crate) fn evaluate(&self, protocol: Protocol, port: u16, interface: &str) -> InputVerdict {
-        self.rules
-            .iter()
-            .find_map(|rule| rule.evaluate(protocol, port, interface))
-            .unwrap_or_else(|| self.policy.verdict("chain policy"))
-    }
-}
-
 impl Rule {
     /// `None` means a known condition rules this rule out. An unsupported
     /// statement reached during evaluation can also contain a verdict.
-    fn evaluate(&self, protocol: Protocol, port: u16, interface: &str) -> Option<InputVerdict> {
+    fn evaluate(
+        &self,
+        family: AddressFamily,
+        protocol: Protocol,
+        port: u16,
+        interface: &str,
+    ) -> Option<ChainDecision> {
         for (index, statement) in self.expr.iter().enumerate() {
             let last = index + 1 == self.expr.len();
             match statement {
@@ -271,17 +218,23 @@ impl Rule {
                     }
                 }
                 Statement::Known(Expression::Accept(())) if last => {
-                    return Some(Action::Accept.verdict("matching rule"));
+                    return Some(Ok((Action::Accept, "matching rule")));
                 }
                 Statement::Known(Expression::Drop(())) if last => {
-                    return Some(Action::Drop.verdict("matching rule"));
+                    return Some(Ok((Action::Drop, "matching rule")));
+                }
+                Statement::Known(Expression::Reject(reply))
+                    if last
+                        && reply
+                            .as_ref()
+                            .is_none_or(|reply| reply.applies_to(family, protocol)) =>
+                {
+                    return Some(Ok((Action::Drop, "matching reject rule")));
                 }
                 _ => break,
             }
         }
-        Some(InputVerdict::Unknown {
-            reason: "unsupported input rule",
-        })
+        Some(Err("unsupported input rule"))
     }
 }
 

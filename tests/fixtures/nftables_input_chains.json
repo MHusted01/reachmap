@@ -1,0 +1,6 @@
+{
+  "nftables": [
+    {"table": {"family": "ip", "name": "extra"}},
+    {"chain": {"family": "ip", "table": "extra", "name": "input", "type": "filter", "hook": "input", "prio": 10, "policy": "accept"}}
+  ]
+}
