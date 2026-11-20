@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap diff --ignore` accepts `tcp:` or `udp:` before a port list to leave
+  out differences on that protocol. An unprefixed list still applies to every
+  protocol ([#56](https://github.com/MHusted01/reachmap/issues/56)).
 - `reachmap egress` compares IPv4, IPv6 and observed DNS resolvers between the
   Linux host and a Docker workload using a shared network namespace. The command
   requires explicitly named observers and reports inconclusive checks

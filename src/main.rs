@@ -11,7 +11,7 @@ use std::time::Duration;
 use clap::{Args, Parser, Subcommand};
 use reachmap::baseline::{self, Snapshot};
 use reachmap::diff::report::{Report as DiffTable, render_json as render_diff_json};
-use reachmap::diff::{Diff, DiffError, compare};
+use reachmap::diff::{Diff, DiffError, IgnoreFilter, compare};
 use reachmap::egress::{self, ContainerRef, ObserverName};
 use reachmap::errors::render_chain;
 use reachmap::network::Network;
@@ -82,9 +82,9 @@ enum Command {
         baseline: PathBuf,
         /// A saved scan to use instead of scanning this host
         current: Option<PathBuf>,
-        /// Ports to leave out on every protocol, for example 5353,32768-60999
-        #[arg(long, value_name = "PORTS")]
-        ignore: Option<PortList>,
+        /// Ports to leave out, optionally prefixed with tcp: or udp: (e.g. udp:5353,32768-60999)
+        #[arg(long, value_name = "[PROTOCOL:]PORTS")]
+        ignore: Option<IgnoreFilter>,
         /// Print the differences as JSON instead of a table
         #[arg(long)]
         json: bool,
@@ -165,7 +165,7 @@ fn main() -> ExitCode {
 fn run_diff(
     baseline: &Path,
     current: Option<&Path>,
-    ignore: Option<&PortList>,
+    ignore: Option<&IgnoreFilter>,
     json: bool,
 ) -> ExitCode {
     match diff_with(baseline, current, ignore) {
@@ -182,7 +182,7 @@ fn run_diff(
 fn diff_with(
     baseline: &Path,
     current: Option<&Path>,
-    ignore: Option<&PortList>,
+    ignore: Option<&IgnoreFilter>,
 ) -> Result<Diff, DiffError> {
     let baseline = baseline::load(baseline)?;
     let current = match current {
@@ -191,7 +191,7 @@ fn diff_with(
     };
     let diff = compare(&baseline, &current);
     Ok(match ignore {
-        Some(ports) => diff.ignoring(ports),
+        Some(filter) => diff.ignoring_filter(filter),
         None => diff,
     })
 }

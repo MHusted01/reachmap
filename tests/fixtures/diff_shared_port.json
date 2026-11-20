@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 5353,
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "listener": "host_socket",
+      "service": { "kind": "process", "pid": 141, "name": "example" },
+      "reach": { "kind": "from", "networks": ["this_host"] },
+      "reason": { "kind": "loopback" },
+      "warning": null
+    },
+    {
+      "port": 5353,
+      "protocol": "udp",
+      "address": "127.0.0.1",
+      "listener": "host_socket",
+      "service": { "kind": "process", "pid": 142, "name": "example" },
+      "reach": { "kind": "from", "networks": ["this_host"] },
+      "reason": { "kind": "loopback" },
+      "warning": null
+    },
+    {
+      "port": 5353,
+      "protocol": "udp",
+      "address": "::1",
+      "listener": "host_socket",
+      "service": { "kind": "process", "pid": 142, "name": "example" },
+      "reach": { "kind": "from", "networks": ["this_host"] },
+      "reason": { "kind": "loopback" },
+      "warning": null
+    },
+    {
+      "port": 5353,
+      "protocol": "future_protocol",
+      "address": "127.0.0.1",
+      "listener": "host_socket",
+      "service": { "kind": "process", "pid": 143, "name": "example" },
+      "reach": { "kind": "from", "networks": ["this_host"] },
+      "reason": { "kind": "loopback" },
+      "warning": null
+    }
+  ],
+  "warnings": [],
+  "collector_errors": []
+}
