@@ -4,6 +4,8 @@
 use std::collections::BTreeSet;
 use std::net::IpAddr;
 
+use serde::{Deserialize, Serialize};
+
 use crate::network::{HostAddress, HostInterfaces};
 use crate::reach::{Coverage, Reason};
 use crate::scan::{Listener, ScannedPort};
@@ -12,8 +14,8 @@ use crate::socket::{AddressFamily, Protocol};
 
 /// One group of packets to check: a socket's port and bind address, seen as
 /// one IP family on a set of interfaces.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Target {
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub(crate) struct Target {
     pub(super) port: u16,
     pub(super) protocol: Protocol,
     pub(super) address: IpAddr,

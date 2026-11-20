@@ -6,6 +6,12 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `reachmap scan --snapshot --host-ref LABEL` saves Linux host-input evidence,
+  and `reachmap replay FILE` reevaluates it offline
+  ([#83](https://github.com/MHusted01/reachmap/issues/83)).
+
 ## [0.3.0] - 2026-11-20
 
 This release includes the Probe and diff (v0.2) and Deeper checks (v0.3) milestones.

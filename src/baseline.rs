@@ -9,13 +9,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs::File;
-use std::io::{self, ErrorKind, Read};
+use std::io;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::artifact::read_limited;
 use crate::json::{Collector, SCHEMA_VERSION};
 use crate::reach::Reach;
 use crate::sanitize::sanitize;
@@ -315,18 +316,6 @@ pub enum LoadError {
         #[source]
         source: ParseError,
     },
-}
-
-/// Reads `reader` to its end, or `None` when it holds more than `limit` bytes.
-fn read_limited(reader: impl Read, limit: u64) -> io::Result<Option<String>> {
-    let mut bytes = Vec::new();
-    let read = reader.take(limit + 1).read_to_end(&mut bytes)?;
-    if u64::try_from(read).map_or(true, |read| read > limit) {
-        return Ok(None);
-    }
-    String::from_utf8(bytes)
-        .map(Some)
-        .map_err(|error| io::Error::new(ErrorKind::InvalidData, error))
 }
 
 /// Refuses a document this version of reachmap cannot read.

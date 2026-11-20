@@ -1,5 +1,6 @@
 //! Input-chain checks for host sockets.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::io::ErrorKind;
 use std::net::IpAddr;
@@ -17,6 +18,7 @@ use crate::socket::{AddressFamily, Protocol};
 mod docker;
 mod targets;
 pub use docker::DockerPublish;
+pub(crate) use targets::Target;
 use targets::targets;
 
 const NO_INTERFACES: &str = "no interface addresses available";
@@ -44,8 +46,13 @@ pub(crate) fn check_scan(
     let rules = read_rules(raw);
     let chains = rules.as_ref().map(InputChains::new);
     let evidence = chains.as_ref().map_err(|reason| reason.as_str());
+    report.nftables = Some(NftablesReport::check_targets(evidence, || {
+        match &report.interfaces_error {
+            Some(error) => Err(sanitize(&render_chain(error))),
+            None => Ok(socket_targets(host, &report.ports)),
+        }
+    }));
     let host = host.filter(|host| !host.addresses.is_empty());
-    report.nftables = Some(NftablesReport::check(evidence, host, &report.ports));
     report
         .warnings
         .extend(docker::check(&mut report.docker_publishes, evidence, host));
@@ -54,6 +61,22 @@ pub(crate) fn check_scan(
 fn read_rules(raw: Result<String, CollectError>) -> Result<Ruleset, String> {
     let raw = raw.map_err(|error| collect_reason(&error))?;
     parse_ruleset(&raw).map_err(|error| sanitize(&render_chain(&error)))
+}
+
+pub(crate) fn socket_targets(
+    host: Option<&HostInterfaces>,
+    ports: &[ScannedPort],
+) -> Option<BTreeSet<Target>> {
+    host.filter(|host| !host.addresses.is_empty())
+        .map(|host| targets(ports, host))
+}
+
+pub(crate) fn replay(
+    rules: Result<&Ruleset, &str>,
+    targets: Result<Option<BTreeSet<Target>>, String>,
+) -> NftablesReport {
+    let chains = rules.map(InputChains::new);
+    NftablesReport::check_targets(chains.as_ref().map_err(|&reason| reason), || targets)
 }
 
 /// The result of inspecting the nftables input hook for host socket ports.
@@ -99,10 +122,9 @@ pub(crate) enum InputVerdict {
 }
 
 impl NftablesReport {
-    fn check(
+    fn check_targets(
         chains: Result<&InputChains<'_>, &str>,
-        host: Option<&HostInterfaces>,
-        ports: &[ScannedPort],
+        targets: impl FnOnce() -> Result<Option<BTreeSet<Target>>, String>,
     ) -> Self {
         let chains = match chains {
             Ok(chains) => chains,
@@ -112,18 +134,21 @@ impl NftablesReport {
                 };
             }
         };
-        let Some(host) = host.filter(|host| !host.addresses.is_empty()) else {
-            return Self::Unknown {
-                reason: NO_INTERFACES.to_string(),
-            };
+        let targets = match targets() {
+            Ok(Some(targets)) => targets,
+            Ok(None) => {
+                return Self::Unknown {
+                    reason: NO_INTERFACES.to_string(),
+                };
+            }
+            Err(reason) => return Self::Unknown { reason },
         };
-
         if chains.ipv4.is_none() && chains.ipv6.is_none() {
             return Self::Unknown {
                 reason: NO_INPUT_CHAINS.to_string(),
             };
         }
-        let ports = targets(ports, host)
+        let ports = targets
             .into_iter()
             .map(|target| {
                 let chain = match target.family {
@@ -158,7 +183,7 @@ impl NftablesReport {
 
 /// Why the ruleset could not be read. A failed `nft` run most often means the
 /// scan lacks the privilege, so the reason says what to try.
-fn collect_reason(error: &CollectError) -> String {
+pub(crate) fn collect_reason(error: &CollectError) -> String {
     match error {
         CollectError::Run { source, .. } if source.kind() == ErrorKind::NotFound => {
             "nft is missing from the standard system paths".to_string()

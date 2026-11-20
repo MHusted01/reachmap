@@ -203,6 +203,57 @@ widest case, as the rest of the scan does. With no host socket ports, the output
 says so. If `nft` fails to run, the reason says reading the ruleset usually
 needs root or `CAP_NET_ADMIN`.
 
+## Host-input evidence snapshots
+
+Capture the inputs to the Linux [nftables input check](#nftables-input) and
+replay the verdicts and reasons later. The shell creates the file. Use a
+private directory and restrict permissions because the snapshot contains
+details about the host's network and firewall.
+
+```sh
+(umask 077; sudo reachmap scan --snapshot --host-ref example-host > host-input.json)
+reachmap replay host-input.json
+reachmap replay host-input.json --json
+```
+
+`--host-ref` is a label you choose to recognise the capture. Its accuracy
+depends on the person taking the snapshot. The timestamp records when the scan
+started, in Unix seconds. Collectors run in sequence, so interfaces, sockets
+and rules can change while a capture is in progress.
+
+Version 1 records the scope `linux_host_input` for the native TCP and UDP socket
+input check in the scan's network namespace. It records the bind addresses,
+ports, protocols, packet IP families and interface names the evaluator uses,
+plus the JSON returned by `nft -j list ruleset` when available. Docker inventory
+status is included because the scan uses it to exclude Docker publishes from
+the native socket check. The separate IPv6 Docker publish findings, forwarding,
+routing and other hooks are outside the replay scope.
+
+The snapshot records which collectors succeeded, failed or were unavailable.
+An empty ruleset indicates a successful read with no rules. A socket options
+collector that failed after reporting some options is marked `partial`.
+When the ruleset is available, a failed interface read gives an unknown
+finding with the collector's diagnostic. Replay uses the socket targets
+selected during capture, including the live scan's fallback when socket
+options are missing. JSON replay emits the same finding shape as the
+`nftables` object in a scan report.
+
+Treat snapshots as sensitive. The full ruleset may reveal internal addresses,
+networks, comments and firewall configuration outside the input check. The
+scope and host label are supplied as part of the file. A file can be edited,
+and a replay describes the evidence in that file. Share the smallest output
+that serves your purpose, such as the replay findings when the ruleset itself
+is unnecessary.
+
+Replay works offline on Linux and macOS. It accepts regular JSON files up to
+64 MiB and reports invalid data or an unsupported version with exit status 1.
+Successful capture or replay exits with 0, including when optional evidence is
+missing and the input verdict is `unknown`.
+
+Keep using `reachmap scan --json` for `probe --scan` and `diff`. The scan report
+has its own `schema_version`. Evidence snapshots use `snapshot_version` and
+are read by `reachmap replay`.
+
 ## Reading the service
 
 The name is the short program name the kernel keeps for each process (at most

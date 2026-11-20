@@ -14,6 +14,7 @@ use reachmap::diff::report::{Report as DiffTable, render_json as render_diff_jso
 use reachmap::diff::{Diff, DiffError, IgnoreFilter, compare};
 use reachmap::egress::{self, ContainerRef, ObserverName};
 use reachmap::errors::render_chain;
+use reachmap::host_input_snapshot::{self, HostRef};
 use reachmap::network::Network;
 use reachmap::parse::probe_args::{PortList, parse_timeout};
 use reachmap::probe::report::{Report as ProbeTable, render_json};
@@ -43,6 +44,20 @@ enum Command {
     /// List the TCP listeners and bound UDP sockets on this Linux or macOS host
     Scan {
         /// Print the findings as JSON instead of a table
+        #[arg(long)]
+        json: bool,
+        /// On Linux, print a host-input evidence snapshot as JSON
+        #[arg(long, requires = "host_ref", conflicts_with = "json")]
+        snapshot: bool,
+        /// A label you choose for the host in the snapshot
+        #[arg(long, value_name = "LABEL", requires = "snapshot")]
+        host_ref: Option<HostRef>,
+    },
+    /// Reevaluate a saved Linux host-input snapshot without querying the host
+    Replay {
+        /// The evidence file from `reachmap scan --snapshot`
+        snapshot: PathBuf,
+        /// Print the input findings in JSON
         #[arg(long)]
         json: bool,
     },
@@ -106,7 +121,12 @@ struct ProbeTarget {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Scan { json } => run_scan(json),
+        Command::Scan {
+            host_ref: Some(host_ref),
+            ..
+        } => run_snapshot(host_ref),
+        Command::Scan { json, .. } => run_scan(json),
+        Command::Replay { snapshot, json } => run_replay(&snapshot, json),
         Command::Probe {
             host,
             target,
@@ -263,6 +283,41 @@ fn run_scan(json: bool) -> ExitCode {
         Err(error) => {
             eprintln!("error: {}", render_chain(&error));
             print_hint(error.hint());
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_snapshot(host_ref: HostRef) -> ExitCode {
+    match host_input_snapshot::capture(host_ref).and_then(|snapshot| snapshot.render()) {
+        Ok(text) => write_stdout(&text, ExitCode::SUCCESS),
+        Err(error) => {
+            eprintln!("error: {}", render_chain(&error));
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_replay(path: &Path, json: bool) -> ExitCode {
+    let report = match host_input_snapshot::replay(path) {
+        Ok(report) => report,
+        Err(error) => {
+            let message = format!(
+                "could not replay {}: {}",
+                path.display(),
+                render_chain(&error)
+            );
+            eprintln!("error: {}", reachmap::sanitize::sanitize(&message));
+            return ExitCode::FAILURE;
+        }
+    };
+    if !json {
+        return write_stdout(&report, ExitCode::SUCCESS);
+    }
+    match serde_json::to_string_pretty(&report) {
+        Ok(text) => write_stdout(&format_args!("{text}\n"), ExitCode::SUCCESS),
+        Err(error) => {
+            eprintln!("error: could not format the replay as JSON: {error}");
             ExitCode::FAILURE
         }
     }

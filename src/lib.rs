@@ -14,6 +14,7 @@
 
 #![warn(missing_docs)]
 
+mod artifact;
 pub mod baseline;
 pub mod collect;
 pub mod diff;
@@ -21,6 +22,7 @@ pub mod docker;
 pub mod egress;
 pub mod errors;
 pub mod firewall;
+pub mod host_input_snapshot;
 pub mod json;
 pub mod network;
 pub mod nftables;
