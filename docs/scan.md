@@ -251,7 +251,8 @@ and `::` even when the main table has one row for the socket.
 - **IPv4 only** means the nftables ruleset has an active IPv4 input filter
   chain that reachmap can evaluate for this binding's protocol, port and
   interfaces, and no active `ip6` or `inet` input chain. The scan emits a
-  warning naming the affected IPv6 bindings and exits with status 1.
+  warning for affected bindings outside loopback and exits with status 1.
+  Loopback bindings show the same evidence as an informational finding.
 - **IPv6 evidence** means an applicable `ip6` or `inet` input filter chain
   can be evaluated for the binding's protocol, port and interfaces. Either
   an accept or a drop decision counts as evidence.

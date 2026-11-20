@@ -71,11 +71,8 @@ expect_published_rows() {
 }
 
 expect_ipv6_publish() {
-  local output status=0
-  output=$(sudo "$binary" scan) || status=$?
-  if [[ $status != 0 && ( $status != 1 || "$output" != *'warning: nftables has IPv4-only host input coverage'* ) ]]; then
-    fail "IPv6 publish: unexpected exit status $status" "$output"
-  fi
+  local output
+  output=$(sudo "$binary" scan) || fail 'IPv6 loopback publish: the scan returned a nonzero status' "$output"
   expect_in_row "$output" "$ipv6_port" ::1 'container reachmap-test-ipv6' 'IPv6 publish'
   grep -Fq "  $ipv6_port/tcp ::1 (container reachmap-test-ipv6) | nftables host input: " \
     <<<"$output" || fail 'IPv6 publish: binding or host input evidence missing' "$output"

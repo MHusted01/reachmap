@@ -10,7 +10,8 @@ All notable changes to reachmap are listed here. The format follows
 
 - `reachmap scan` lists Docker's published addresses and protocols separately
   from the socket table. For IPv6 publishes it reports the available nftables
-  host input evidence and warns with exit status 1 when coverage is IPv4-only.
+  host input evidence and warns with exit status 1 when coverage is IPv4-only
+  for a binding outside loopback.
   `--json` adds `docker_publishes` and the `docker_ipv6_input_gap` warning
   ([#15](https://github.com/MHusted01/reachmap/issues/15)).
 - `reachmap scan` checks simple nftables input rules for TCP and UDP host socket

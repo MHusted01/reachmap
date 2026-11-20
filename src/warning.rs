@@ -55,7 +55,7 @@ pub enum ScanWarning {
     },
     /// A host-input filter chain covers IPv4, and none applies to IPv6.
     DockerIpv6InputGap {
-        /// Observed IPv6 Docker bindings in the scope of this finding.
+        /// Observed IPv6 Docker bindings outside loopback.
         bindings: BTreeSet<Endpoint>,
     },
     /// Tailscale Funnel shares these ports with the internet.

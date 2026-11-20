@@ -9,6 +9,13 @@ const DOCKER: &str = include_str!("../../../tests/fixtures/docker_inspect.json")
 const INPUT: &str = include_str!("../../../tests/fixtures/nftables_input.json");
 
 fn run(raw: Result<String, CollectError>) -> (ScanReport, Value) {
+    run_with_bindings(raw, |_| true)
+}
+
+fn run_with_bindings(
+    raw: Result<String, CollectError>,
+    keep: impl Fn(&PublishedPort) -> bool,
+) -> (ScanReport, Value) {
     let mut host = lan_host();
     host.addresses.push(HostAddress {
         interface: "eth0".to_string(),
@@ -30,6 +37,7 @@ fn run(raw: Result<String, CollectError>) -> (ScanReport, Value) {
             compose_service: None,
         },
     });
+    published.retain(keep);
     let mut report = join_without_ufw(
         vec![ListeningSocket {
             address: Ipv6Addr::UNSPECIFIED.into(),
@@ -80,9 +88,7 @@ fn ipv4_only_input_flags_ipv6_docker_bindings_even_when_one_socket_serves_both()
     assert_eq!(
         document["warnings"],
         json!([{"kind": "docker_ipv6_input_gap", "bindings": [
-            {"port": 8053, "protocol": "udp", "address": "::1"},
-            {"port": 8443, "protocol": "tcp", "address": "::"},
-            {"port": 9100, "protocol": "tcp", "address": "::1"}
+            {"port": 8443, "protocol": "tcp", "address": "::"}
         ]}])
     );
     let text = Report(&report).to_string();
@@ -92,6 +98,19 @@ fn ipv4_only_input_flags_ipv6_docker_bindings_even_when_one_socket_serves_both()
     for binding in ["8443/tcp 0.0.0.0", "8443/tcp ::", "8053/udp ::1"] {
         assert!(text.contains(binding), "missing {binding} in {text}");
     }
+}
+
+#[test]
+fn ipv4_only_input_on_ipv6_loopback_is_informational() {
+    let (report, document) =
+        run_with_bindings(Ok(INPUT.replace(r#""inet""#, r#""ip""#)), |binding| {
+            binding.address == IpAddr::V6(Ipv6Addr::LOCALHOST)
+        });
+    assert_eq!(
+        publish(&document, 8053, "::1")["host_input"],
+        json!({"status": "ipv4_only"})
+    );
+    assert!(report.warnings.is_empty());
 }
 
 #[test]

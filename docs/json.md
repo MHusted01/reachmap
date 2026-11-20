@@ -117,8 +117,9 @@ entry when the array is absent.
 
 For an IPv6 binding in a live scan, `host_input` is an object with a
 `status` field. Its values are `ipv4_only`, `ipv6_evidence` and `unknown`.
-`unknown` also has a string `reason`. An `ipv4_only` finding adds a
-`docker_ipv6_input_gap` summary warning and makes the scan exit with status 1.
+`unknown` also has a string `reason`. An `ipv4_only` finding on a binding
+outside loopback adds a `docker_ipv6_input_gap` summary warning and makes the
+scan exit with status 1. On loopback, the finding is informational.
 See [IPv6 Docker publishes](scan.md#ipv6-docker-publishes) for the scope and
 meaning of each status.
 

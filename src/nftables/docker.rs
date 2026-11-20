@@ -60,7 +60,7 @@ pub(super) fn check(
             .unwrap_or_else(|reason| HostInput::Unknown {
                 reason: reason.to_string(),
             });
-        if matches!(evidence, HostInput::Ipv4Only {}) {
+        if matches!(evidence, HostInput::Ipv4Only {}) && !publish.endpoint.address.is_loopback() {
             bindings.insert(publish.endpoint);
         }
         publish.host_input = Some(evidence);
