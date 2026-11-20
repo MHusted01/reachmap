@@ -31,18 +31,17 @@ struct AddrInfo {
     address: Option<IpAddr>,
     /// The length of the subnet prefix, e.g. `24`.
     prefixlen: Option<u8>,
-    /// The broadcast address of the subnet, e.g. `"192.168.1.255"`. Missing
+    /// The configured broadcast address, e.g. `"192.168.1.255"`. Missing
     /// for IPv6 and for addresses configured without one. The link has a
     /// `broadcast` key too, holding a MAC address; [`Link`] does not read it.
     broadcast: Option<Ipv4Addr>,
 }
 
 impl AddrInfo {
-    /// The broadcast address `ip` lists, or failing that, the one the kernel
-    /// adds for the subnet. With a peer, the subnet is the peer's.
+    /// The usual broadcast address the kernel adds for the subnet. With a
+    /// peer, the subnet is the peer's.
     fn subnet_broadcast(&self) -> Option<Ipv4Addr> {
-        self.broadcast
-            .or_else(|| computed_broadcast(self.address.unwrap_or(self.local), self.prefixlen?))
+        computed_broadcast(self.address.unwrap_or(self.local), self.prefixlen?)
     }
 }
 
@@ -76,7 +75,8 @@ pub fn parse_ip_addr(json: &str) -> Result<HostInterfaces, serde_json::Error> {
             addr_info.into_iter().map(move |addr| HostAddress {
                 interface: ifname.clone(),
                 ip: addr.local,
-                broadcast: addr.subnet_broadcast(),
+                broadcast: addr.broadcast,
+                subnet_broadcast: addr.subnet_broadcast(),
             })
         })
         .collect();
@@ -155,12 +155,12 @@ mod tests {
         assert!(parse_ip_addr(json).is_err());
     }
 
-    fn broadcasts(json: &str) -> Vec<Option<Ipv4Addr>> {
+    fn broadcasts(json: &str) -> Vec<(Option<Ipv4Addr>, Option<Ipv4Addr>)> {
         parse_ip_addr(json)
             .unwrap()
             .addresses
             .into_iter()
-            .map(|a| a.broadcast)
+            .map(|a| (a.broadcast, a.subnet_broadcast))
             .collect()
     }
 
@@ -174,8 +174,8 @@ mod tests {
         assert_eq!(
             broadcasts(json),
             [
-                Some(Ipv4Addr::new(192, 0, 2, 255)),
-                Some(Ipv4Addr::new(198, 51, 100, 127))
+                (Some(Ipv4Addr::new(192, 0, 2, 255)), None),
+                (Some(Ipv4Addr::new(198, 51, 100, 127)), None)
             ]
         );
     }
@@ -187,7 +187,7 @@ mod tests {
             {"family": "inet6", "local": "fe80::1", "prefixlen": 64}
         ]}]"#;
 
-        assert_eq!(broadcasts(json), [None, None]);
+        assert_eq!(broadcasts(json), [(None, None), (None, None)]);
     }
 
     #[test]
@@ -201,21 +201,27 @@ mod tests {
         assert_eq!(
             broadcasts(json),
             [
-                Some(Ipv4Addr::new(192, 0, 2, 255)),
-                Some(Ipv4Addr::new(198, 51, 100, 3)),
-                Some(Ipv4Addr::new(10, 255, 255, 255))
+                (None, Some(Ipv4Addr::new(192, 0, 2, 255))),
+                (None, Some(Ipv4Addr::new(198, 51, 100, 3))),
+                (None, Some(Ipv4Addr::new(10, 255, 255, 255)))
             ]
         );
     }
 
     #[test]
-    fn a_listed_broadcast_address_wins_over_the_computed_one() {
+    fn a_listed_broadcast_address_is_kept_alongside_the_computed_one() {
         let json = r#"[{"ifindex": 2, "ifname": "eth0", "addr_info": [
             {"family": "inet", "local": "192.0.2.20", "prefixlen": 24,
              "broadcast": "192.0.2.127"}
         ]}]"#;
 
-        assert_eq!(broadcasts(json), [Some(Ipv4Addr::new(192, 0, 2, 127))]);
+        assert_eq!(
+            broadcasts(json),
+            [(
+                Some(Ipv4Addr::new(192, 0, 2, 127)),
+                Some(Ipv4Addr::new(192, 0, 2, 255))
+            )]
+        );
     }
 
     #[test]
@@ -226,7 +232,7 @@ mod tests {
                 r#"[{{"ifindex": 2, "ifname": "eth0", "addr_info":
                     [{{"family": "inet", "local": "192.0.2.20", "prefixlen": {prefix}}}]}}]"#
             );
-            assert_eq!(broadcasts(&json), [None], "/{prefix}");
+            assert_eq!(broadcasts(&json), [(None, None)], "/{prefix}");
         }
     }
 
@@ -238,7 +244,10 @@ mod tests {
             {"family": "inet", "local": "10.9.0.1", "address": "10.9.1.2", "prefixlen": 24}
         ]}]"#;
 
-        assert_eq!(broadcasts(json), [Some(Ipv4Addr::new(10, 9, 1, 255))]);
+        assert_eq!(
+            broadcasts(json),
+            [(None, Some(Ipv4Addr::new(10, 9, 1, 255)))]
+        );
     }
 
     #[test]
@@ -255,7 +264,7 @@ mod tests {
         let json = r#"[{"ifindex": 2, "ifname": "eth0", "broadcast": "ff:ff:ff:ff:ff:ff",
             "addr_info": [{"family": "inet", "local": "192.0.2.20"}]}]"#;
 
-        assert_eq!(broadcasts(json), [None]);
+        assert_eq!(broadcasts(json), [(None, None)]);
     }
 
     #[test]

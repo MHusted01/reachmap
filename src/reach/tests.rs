@@ -31,6 +31,7 @@ fn host(pairs: &[(&str, &str)]) -> Vec<HostAddress> {
             interface: interface.to_string(),
             ip: ip.parse().unwrap(),
             broadcast: None,
+            subnet_broadcast: None,
         })
         .collect()
 }
@@ -523,6 +524,7 @@ fn with_broadcast(interface: &str, ip: &str, broadcast: &str) -> HostAddress {
         interface: interface.to_string(),
         ip: ip.parse().unwrap(),
         broadcast: Some(broadcast.parse().unwrap()),
+        subnet_broadcast: None,
     }
 }
 
@@ -591,6 +593,7 @@ fn an_address_of_this_host_is_not_treated_as_a_broadcast_address() {
             interface: "eth1".to_string(),
             ip: "192.168.1.255".parse().unwrap(),
             broadcast: None,
+            subnet_broadcast: None,
         },
     ];
 

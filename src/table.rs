@@ -180,6 +180,7 @@ mod tests {
             interface: interface.to_string(),
             ip: ip.parse().unwrap(),
             broadcast: None,
+            subnet_broadcast: None,
         })
         .to_vec()
     }

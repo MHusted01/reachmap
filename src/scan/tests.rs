@@ -45,11 +45,13 @@ fn lan_host() -> HostInterfaces {
                 interface: "lo".to_string(),
                 ip: IpAddr::V4(Ipv4Addr::LOCALHOST),
                 broadcast: None,
+                subnet_broadcast: None,
             },
             HostAddress {
                 interface: "enp1s0".to_string(),
                 ip: IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)),
                 broadcast: None,
+                subnet_broadcast: None,
             },
         ],
         names: HashMap::from([(1, "lo".to_string()), (2, "enp1s0".to_string())]),

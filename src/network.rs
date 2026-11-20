@@ -16,10 +16,11 @@ pub struct HostAddress {
     pub interface: String,
     /// The address.
     pub ip: IpAddr,
-    /// The broadcast address of its subnet: the one `ip -j addr` prints, or
-    /// failing that, the one the kernel adds for the subnet. `None` for IPv6,
-    /// which has no broadcast, and for `/31` and `/32`.
+    /// The configured broadcast address reported by `ip -j addr`, if any.
     pub broadcast: Option<Ipv4Addr>,
+    /// The usual IPv4 subnet broadcast address computed from the prefix.
+    /// Absent for IPv6 and IPv4 prefixes of `/31` or longer.
+    pub subnet_broadcast: Option<Ipv4Addr>,
 }
 
 /// What this host's interfaces look like.
@@ -128,9 +129,10 @@ impl HostAddress {
         self.network() == Network::Tailnet && !link_local
     }
 
-    /// Whether `address` is the broadcast address of this address's subnet.
+    /// Whether `address` matches the configured or usual broadcast address.
     pub fn has_broadcast(&self, address: IpAddr) -> bool {
         self.broadcast.map(IpAddr::V4) == Some(address)
+            || self.subnet_broadcast.map(IpAddr::V4) == Some(address)
     }
 }
 
@@ -214,6 +216,7 @@ mod tests {
             interface: interface.to_string(),
             ip: ip.parse().unwrap(),
             broadcast: None,
+            subnet_broadcast: None,
         }
         .network()
     }
@@ -395,6 +398,7 @@ mod tests {
             interface: interface.to_string(),
             ip: ip.parse().unwrap(),
             broadcast: None,
+            subnet_broadcast: None,
         };
         assert!(address("tailscale0", "100.64.0.1").is_tailnet_address());
         assert!(address("tailscale0", "fd7a:115c:a1e0::1").is_tailnet_address());

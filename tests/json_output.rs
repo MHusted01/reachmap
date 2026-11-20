@@ -150,6 +150,7 @@ fn a_scan_with_a_share_without_a_row_matches_the_snapshot() {
             interface: "tailscale0".to_string(),
             ip: "100.64.0.1".parse().unwrap(),
             broadcast: None,
+            subnet_broadcast: None,
         }],
         ..HostInterfaces::default()
     };

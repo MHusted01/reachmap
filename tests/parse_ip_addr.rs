@@ -60,7 +60,7 @@ fn fixture_keeps_broadcast_addresses_and_not_the_mac_of_the_link() {
         .unwrap()
         .addresses
         .into_iter()
-        .filter_map(|a| Some((a.interface, a.broadcast?)))
+        .filter_map(|a| Some((a.interface, a.broadcast.or(a.subnet_broadcast)?)))
         .collect();
 
     // `lo` lists none, so its address is computed. The /32 of tailscale0 has none.
@@ -96,4 +96,31 @@ fn a_socket_on_the_broadcast_address_of_a_subnet_without_brd_names_the_interface
             interfaces: ["enp1s0".to_string()].into()
         }
     );
+}
+
+#[test]
+fn sockets_on_the_usual_and_configured_broadcast_addresses_name_the_interface() {
+    let json = r#"[{"ifindex": 2, "ifname": "enp1s0", "addr_info": [
+        {"family": "inet", "local": "192.168.47.20", "prefixlen": 24,
+         "broadcast": "192.168.47.127"}
+    ]}]"#;
+    let host = parse_ip_addr(json).unwrap().addresses;
+
+    for address in ["192.168.47.127", "192.168.47.255"] {
+        let verdict = classify(address.parse().unwrap(), None, Some(&host));
+        assert_eq!(
+            verdict.reason,
+            Reason::Broadcast {
+                interfaces: ["enp1s0".to_string()].into()
+            },
+            "{address}"
+        );
+        assert_eq!(
+            verdict.reach,
+            Reach::From {
+                networks: [Network::Lan].into()
+            },
+            "{address}"
+        );
+    }
 }
