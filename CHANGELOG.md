@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- Add an opt-in procedure to verify Tailscale Serve and Funnel reports against
+  live HTTP observations and offline replay
+  ([#95](https://github.com/MHusted01/reachmap/issues/95)).
 - `reachmap scan --tailscale-routes --snapshot --host-ref LABEL` saves configured
   Tailscale route and listener evidence for offline replay
   ([#94](https://github.com/MHusted01/reachmap/issues/94)).
