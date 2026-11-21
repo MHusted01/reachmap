@@ -245,10 +245,12 @@ addresses, the full nftables ruleset and socket facts. Keep it private and use
 a fresh capture if the host configuration changes. Evidence is sampled over
 several queries and can change during collection.
 
-For `path predict` and `path replay`, exit status 0 means the report was
-produced. In JSON, inspect `verdict` for `listener_reachable`, `blocked`,
-`not_local`, `no_listener` or `unknown`. Collection failures that affect the
-prediction appear at the stage that needs the evidence.
+For `path predict` and `path replay`, exit status 0 means the command produced
+a report, including when the path is blocked or unknown. Exit status 1 means
+the command could not produce a report. Scripts can use `--json` and read
+`verdict` for `listener_reachable`, `blocked`, `not_local`, `no_listener` or
+`unknown`. Collection failures that affect the prediction appear at the stage
+that needs the evidence.
 
 ## Host-input evidence snapshots
 

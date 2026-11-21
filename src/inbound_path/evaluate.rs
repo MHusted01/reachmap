@@ -303,6 +303,15 @@ fn match_listeners(
             matches.push(listener);
         }
     }
+    if !matches.is_empty() {
+        let mut socket = step(
+            Stage::Socket,
+            Decision::Continue,
+            "matching TCP listener candidates",
+        );
+        socket.listeners = matches;
+        return (socket, Verdict::ListenerReachable);
+    }
     if !unchecked.is_empty() {
         let mut socket = step(
             Stage::Socket,
@@ -312,21 +321,12 @@ fn match_listeners(
         socket.listeners = unchecked;
         return (socket, Verdict::Unknown);
     }
-    if matches.is_empty() {
-        return (
-            step(
-                Stage::Socket,
-                Decision::Ends,
-                "no TCP listener matches the address, port and ingress device",
-            ),
-            Verdict::NoListener,
-        );
-    }
-    let mut socket = step(
-        Stage::Socket,
-        Decision::Continue,
-        "matching TCP listener candidates",
-    );
-    socket.listeners = matches;
-    (socket, Verdict::ListenerReachable)
+    (
+        step(
+            Stage::Socket,
+            Decision::Ends,
+            "no TCP listener matches the address, port and ingress device",
+        ),
+        Verdict::NoListener,
+    )
 }

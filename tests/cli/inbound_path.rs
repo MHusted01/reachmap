@@ -197,3 +197,18 @@ fn replay_needs_evidence_that_the_ipv6_ingress_is_enabled() {
         "IPv6 is disabled on the ingress interface"
     );
 }
+
+#[test]
+fn a_confirmed_listener_is_enough_when_another_candidates_options_are_missing() {
+    let mut value = snapshot();
+    value["evidence"]["listeners"]["data"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({
+            "address": "192.0.2.1", "inode": 43, "options": null
+        }));
+    let report = replay("inbound_path_confirmed_listener.json", &value);
+    assert_eq!(report["verdict"], "listener_reachable");
+    assert_eq!(report["steps"][3]["listeners"].as_array().unwrap().len(), 1);
+    assert_eq!(report["steps"][3]["listeners"][0]["inode"], 42);
+}
