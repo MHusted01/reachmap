@@ -125,7 +125,7 @@ impl Config {
         )
         .map_err(|error| match &error {
             CollectError::CommandFailed { status, .. } if status.code() == Some(255) => {
-                Error::Transport(error)
+                Error::Exit255(error)
             }
             CollectError::CommandFailed { .. } => Error::Collector(error),
             _ => Error::Process(error),
@@ -142,8 +142,8 @@ pub(super) enum Error {
     },
     #[error("{0} must name a regular file")]
     NotRegular(&'static str),
-    #[error("SSH transport, host verification or authentication failed")]
-    Transport(#[source] CollectError),
+    #[error("SSH or the remote collector exited with status 255")]
+    Exit255(#[source] CollectError),
     #[error("the remote collector exited unsuccessfully")]
     Collector(#[source] CollectError),
     #[error("could not capture bounded SSH output")]
@@ -203,5 +203,22 @@ fn parse_file(text: &str) -> Result<String, &'static str> {
         Err(
             "use an absolute path without control characters, quotes, backslashes, percent or dollar signs",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_file, parse_host, parse_user};
+
+    #[test]
+    fn ssh_inputs_accept_literal_hosts_and_keep_paths_with_spaces() {
+        for host in ["2001:db8::10", "192.0.2.10", "server.example."] {
+            assert_eq!(parse_host(host).as_deref(), Ok(host));
+        }
+        assert_eq!(parse_user("audit_user-1").as_deref(), Ok("audit_user-1"));
+        assert_eq!(
+            parse_file("/example/ssh/known hosts").as_deref(),
+            Ok("/example/ssh/known hosts")
+        );
     }
 }

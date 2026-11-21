@@ -228,11 +228,16 @@ fn no_probe_follows_failed_authentication_or_nonzero_collector_exit() {
     for (exit, detail) in [
         (255, "Host key verification failed."),
         (255, "ssh: Connection refused"),
+        (255, "collector: unexpected exit"),
         (1, "collector: Permission denied"),
     ] {
         let body = format!("printf '%s\\n' '{detail}' >&2; exit {exit}");
         let error = fixture.run(&body, Duration::from_secs(5)).unwrap_err();
-        assert!(render_chain(&error).contains(detail), "{error:?}");
+        let message = render_chain(&error);
+        assert!(message.contains(detail), "{message}");
+        if exit == 255 {
+            assert!(message.contains("SSH or the remote collector exited with status 255"));
+        }
         fixture.assert_did_not_probe();
     }
 }
