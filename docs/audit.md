@@ -4,6 +4,8 @@
 prediction, then makes one TCP connection attempt from the operator's Linux
 or macOS machine. It reports both results and how they compare. The prediction
 uses the same evidence and [scope as `reachmap path`](scan.md#linux-inbound-tcp-paths).
+See the [disposable verification guide](audit-verification.md) for tested cases
+and instructions for reproducing them.
 
 ```sh
 reachmap audit --ssh-host server.example --ssh-user auditor \
