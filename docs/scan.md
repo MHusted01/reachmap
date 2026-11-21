@@ -488,6 +488,9 @@ partial evidence. A partial capture still writes a replayable file. If the
 required Tailscale status fails to collect or parse, capture returns exit 1
 without a snapshot.
 
+For a live comparison with HTTP requests from inside and outside a test
+tailnet, see [Verify Serve and Funnel routes](tailscale-verification.md).
+
 ### Tailscale entries in the regular scan
 
 A row that Tailscale forwards to gains `tailnet`, and with Funnel also
