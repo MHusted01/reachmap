@@ -1,6 +1,8 @@
 use super::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::socket_options::SocketOptionsError;
+
 const CONFIG: &str = include_str!("../../../tests/fixtures/tailscale_routes.json");
 
 fn socket(address: IpAddr, port: u16, inode: u64) -> ListeningSocket {
@@ -15,9 +17,24 @@ fn socket(address: IpAddr, port: u16, inode: u64) -> ListeningSocket {
 
 fn report(config: &str, sockets: Vec<ListeningSocket>) -> RouteReport {
     collect_with(Ok(config.to_owned()), || {
+        let by_inode = sockets
+            .iter()
+            .map(|socket| {
+                (
+                    socket.inode,
+                    SocketOptions {
+                        bound_device: None,
+                        ipv6_only: false,
+                    },
+                )
+            })
+            .collect();
         Ok(Inventory {
             sockets,
-            options: OptionsByInode::new(),
+            options: OptionsReport {
+                by_inode,
+                error: None,
+            },
         })
     })
     .unwrap()
@@ -177,4 +194,47 @@ fn tcp_forwarding_and_named_services_stay_visible_outside_the_web_scope() {
     assert!(text.contains("Tailscale Services are outside the supported host-level route scope"));
     assert!(text.contains("host.example.ts.net:10000 / [Funnel]"));
     assert!(report.is_complete());
+}
+
+#[test]
+fn an_exact_match_with_missing_socket_options_is_uncertain() {
+    let listener = socket(Ipv4Addr::LOCALHOST.into(), 3000, 1);
+    let target = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 3000);
+    assert_eq!(candidate(&listener, target, None), Some(false));
+}
+
+#[test]
+fn a_socket_options_error_keeps_the_route_and_reports_partial_collection() {
+    let json = r#"{"Web":{"node.example.ts.net:443":{"Handlers":{"/":{"Proxy":"3000"}}}}}"#;
+    let report = collect_with(Ok(json.into()), || {
+        Ok(Inventory {
+            sockets: vec![socket(Ipv4Addr::LOCALHOST.into(), 3000, 1)],
+            options: OptionsReport {
+                error: Some(SocketOptionsError::Open(CollectError::UnsupportedOs {
+                    os: "test",
+                })),
+                ..OptionsReport::default()
+            },
+        })
+    })
+    .unwrap();
+    let text = report.to_string();
+    assert!(text.contains("listener's socket options leave the match uncertain"));
+    assert!(text.contains("TCP socket options incomplete"));
+    assert!(!report.is_complete());
+}
+
+#[test]
+fn a_tcp_entry_without_a_forwarding_target_is_unrecognised() {
+    let report = report(
+        r#"{"TCP":{"443":{"HTTPS":false,"TerminateTLS":"node.example.ts.net"}}}"#,
+        vec![],
+    );
+    let text = report.to_string();
+    assert!(
+        text.contains(
+            "node.example.ts.net:443 [Serve] (unsupported handler: unrecognised TCP handler)"
+        ),
+        "{text}"
+    );
 }

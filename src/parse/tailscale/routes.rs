@@ -161,7 +161,10 @@ impl ConfiguredRoutes {
                 continue;
             };
             // A TCP entry with only HTTP(S) enabled dispatches to the Web handlers.
-            let forward = handler.get("TCPForward");
+            let forward = handler
+                .get("TCPForward")
+                .and_then(Value::as_str)
+                .filter(|target| !target.is_empty());
             if forward.is_none()
                 && ["HTTP", "HTTPS"]
                     .iter()
@@ -196,10 +199,12 @@ impl ConfiguredRoutes {
                         sharing,
                     },
                     mount: None,
-                    backend: unsupported(
-                        "TCP forwarding",
-                        forward.and_then(Value::as_str).map(display_endpoint),
-                    ),
+                    backend: match forward {
+                        Some(target) => {
+                            unsupported("TCP forwarding", Some(display_endpoint(target)))
+                        }
+                        None => unsupported("unrecognised TCP handler", None),
+                    },
                 });
             }
         }

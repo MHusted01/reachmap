@@ -11,7 +11,7 @@ use crate::errors::render_chain;
 use crate::parse::tailscale::routes::{Backend, ConfiguredRoutes, Route, parse_routes};
 use crate::scan::{ScanError, parse_tables};
 use crate::socket::{ListeningSocket, Protocol, SocketOptions};
-use crate::socket_options::{OptionsByInode, read_socket_options};
+use crate::socket_options::{OptionsReport, read_socket_options};
 
 /// Why Tailscale route status was unavailable.
 #[derive(Debug, Error)]
@@ -44,7 +44,7 @@ impl RouteReport {
 #[derive(Debug)]
 struct Inventory {
     sockets: Vec<ListeningSocket>,
-    options: OptionsByInode,
+    options: OptionsReport,
 }
 
 /// Reads local Tailscale status and the Linux socket inventory. Makes no
@@ -54,7 +54,7 @@ pub fn scan() -> Result<RouteReport, RouteScanError> {
         let sockets = parse_tables(&collect::read_socket_tables()?)?;
         Ok(Inventory {
             sockets,
-            options: read_socket_options().by_inode,
+            options: read_socket_options(),
         })
     })
 }
@@ -75,7 +75,15 @@ fn collect_with(
     );
     let inventory = if needs_sockets {
         match read_inventory() {
-            Ok(inventory) => Some(inventory),
+            Ok(inventory) => {
+                if let Some(error) = &inventory.options.error {
+                    configured.notes.push(format!(
+                        "TCP socket options incomplete ({})",
+                        render_chain(error)
+                    ));
+                }
+                Some(inventory)
+            }
             Err(error) => {
                 configured.notes.push(format!(
                     "TCP socket inventory unavailable ({})",
@@ -172,7 +180,7 @@ fn correlate(backend: &Backend, inventory: Option<&Inventory>) -> Correlation {
         return Correlation::Unresolved("TCP socket inventory unavailable");
     };
     let mut candidates = inventory.sockets.iter().filter_map(|listener| {
-        let options = inventory.options.get(&listener.inode);
+        let options = inventory.options.by_inode.get(&listener.inode);
         targets
             .iter()
             .filter_map(|&target| candidate(listener, target, options))
@@ -191,8 +199,8 @@ fn correlate(backend: &Backend, inventory: Option<&Inventory>) -> Correlation {
     }
 }
 
-/// Returns whether an address match is conclusive. A device-bound socket
-/// needs interface evidence, as does an IPv6 wildcard with unknown v6-only state.
+/// Returns whether an address match is conclusive. Unknown socket options
+/// leave device binding and IPv6 wildcard behavior uncertain.
 fn candidate(
     listener: &ListeningSocket,
     target: SocketAddr,
@@ -203,15 +211,14 @@ fn candidate(
     }
     let bound = listener.address.to_canonical();
     let target = target.ip().to_canonical();
-    let bound_to_device = options.is_some_and(|options| options.bound_device.is_some());
+    let unbound = options.is_some_and(|options| options.bound_device.is_none());
     if bound == target || (bound.is_unspecified() && bound.is_ipv4() == target.is_ipv4()) {
-        return Some(!bound_to_device);
+        return Some(unbound);
     }
     if bound.is_unspecified() && bound.is_ipv6() && target.is_ipv4() {
         return match options {
             Some(options) if options.ipv6_only => None,
-            Some(_) => Some(!bound_to_device),
-            None => Some(false),
+            _ => Some(unbound),
         };
     }
     None
