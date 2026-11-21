@@ -65,6 +65,23 @@ fn scan_help_lists_the_json_flag() {
 }
 
 #[test]
+fn scan_help_lists_the_tailscale_routes_flag() {
+    let out = run(&["scan", "--help"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("--tailscale-routes"));
+}
+
+#[test]
+fn tailscale_routes_has_its_own_output_mode() {
+    for extra in [&["--json"][..], &["--snapshot", "--host-ref", "test"][..]] {
+        let args = [&["scan", "--tailscale-routes"][..], extra].concat();
+        let out = run(&args);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(stderr(&out).contains("cannot be used with"));
+    }
+}
+
+#[test]
 fn egress_requires_explicit_observers() {
     let out = run(&["egress", "app"]);
     assert_eq!(out.status.code(), Some(2));

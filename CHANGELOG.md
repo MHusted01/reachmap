@@ -6,6 +6,12 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `reachmap scan --tailscale-routes` reports configured host-level Serve and
+  Funnel routes and links supported loopback backends to local TCP listeners
+  ([#93](https://github.com/MHusted01/reachmap/issues/93)).
+
 ## [0.4.0] - 2026-11-21
 
 ### Added
