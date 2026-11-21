@@ -228,7 +228,7 @@ pub enum SnapshotError {
     #[error("could not capture Linux host-input evidence")]
     Scan(#[from] ScanError),
     /// JSON serialization failed.
-    #[error("could not serialize the host-input snapshot")]
+    #[error("could not serialize the snapshot")]
     Encode(#[source] serde_json::Error),
     /// Only regular files can hold a snapshot for replay.
     #[error("give replay a regular file containing a snapshot")]

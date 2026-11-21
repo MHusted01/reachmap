@@ -8,6 +8,7 @@ use thiserror::Error;
 
 use super::{RouteReport, RouteScanError, scan};
 use crate::host_input_snapshot::{HostRef, SnapshotError, render_document, validate_host_ref};
+use crate::sanitize::sanitize;
 
 const VERSION: u32 = 1;
 pub(crate) const SCOPE: &str = "tailscale_routes";
@@ -54,7 +55,8 @@ impl fmt::Display for Snapshot {
         writeln!(
             f,
             "Captured Tailscale route evidence for {} at Unix time {} (seconds since epoch)",
-            self.host_ref, self.captured_at_unix_seconds
+            sanitize(&self.host_ref),
+            self.captured_at_unix_seconds
         )?;
         self.evidence.fmt(f)
     }

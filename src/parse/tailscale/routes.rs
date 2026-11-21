@@ -163,7 +163,11 @@ impl ConfiguredRoutes {
                     .as_object()
                     .and_then(read_backend)
                     .unwrap_or_else(|| {
-                        self.notes.push("invalid Web handler".into());
+                        self.notes.push(format!(
+                            "invalid handler at {}:{port} {}",
+                            sanitize(host),
+                            sanitize(mount)
+                        ));
                         unsupported(UnsupportedHandler::InvalidConfiguration, None)
                     });
                 self.routes.push(Route {
@@ -184,8 +188,13 @@ impl ConfiguredRoutes {
             return;
         };
         for (port, handler) in tcp {
-            let (Some(port), Some(handler)) = (parse_port(port), handler.as_object()) else {
-                self.notes.push("invalid TCP entry".into());
+            let Some(port) = parse_port(port) else {
+                self.notes
+                    .push("invalid TCP entry (expected a numeric port from 1 to 65535)".into());
+                continue;
+            };
+            let Some(handler) = handler.as_object() else {
+                self.notes.push(format!("invalid TCP entry on port {port}"));
                 continue;
             };
             // A TCP entry with only HTTP(S) enabled dispatches to the Web handlers.

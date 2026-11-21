@@ -84,6 +84,10 @@ fn incomplete_status_preserves_valid_routes_and_explains_unknown_scope() {
         "{text}"
     );
     assert!(text.contains("invalid Web entry point"), "{text}");
+    assert!(
+        text.contains("invalid handler at node.example.ts.net:443 /bad"),
+        "{text}"
+    );
     assert!(!report.is_complete());
 }
 
@@ -214,7 +218,7 @@ fn round_trip(report: RouteReport) -> String {
 fn capture_keeps_only_route_and_relevant_listener_evidence() {
     let mut config: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
     config["UnrelatedDaemonState"] = serde_json::json!("private key material");
-    config["TCP"] = serde_json::json!({"bad-key-secret": {}});
+    config["TCP"] = serde_json::json!({"8443": false, "bad-key-secret": {}});
     config["Web"]["other.example.ts.net:443"]["Handlers"]["/redirect"] =
         serde_json::json!({"Redirect": "//someone:password@backend.example.test/go?key=hidden"});
     let report = report(
@@ -241,6 +245,7 @@ fn capture_keeps_only_route_and_relevant_listener_evidence() {
         assert!(!json.contains(unwanted), "saved {unwanted:?} in {json}");
     }
     assert!(json.contains("//backend.example.test/go"));
+    assert!(json.contains("invalid TCP entry on port 8443"));
     let snapshot: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(snapshot["scope"], "tailscale_routes");
     assert_eq!(snapshot["captured_at_unix_seconds"], 1_700_000_000_u64);
@@ -263,14 +268,18 @@ fn capture_distinguishes_empty_configuration_and_an_unavailable_inventory() {
     assert!(json.contains(r#""status": "not_needed""#));
 
     let partial = collect_with(Ok(CONFIG.into()), || {
-        Err(ScanError::Collect(CollectError::UnsupportedOs {
-            os: "test",
-        }))
+        Err(CollectError::Read {
+            path: "/proc/net/tcp".into(),
+            source: std::io::Error::new(ErrorKind::PermissionDenied, "private diagnostic"),
+        }
+        .into())
     })
     .unwrap();
+    assert!(partial.to_string().contains("permission denied"));
     let json = round_trip(partial);
     assert!(json.contains(r#""status": "partial""#));
     assert!(json.contains(r#""status": "unavailable""#));
+    assert!(!json.contains("private diagnostic") && !json.contains("/proc/net/tcp"));
 }
 
 #[test]
@@ -290,7 +299,11 @@ fn a_socket_options_error_keeps_the_route_and_reports_partial_collection() {
     .unwrap();
     let text = report.to_string();
     assert!(text.contains("listener's socket options leave the match uncertain"));
-    assert!(text.contains("TCP socket options incomplete"));
+    assert!(
+        text.contains(
+            "TCP socket options incomplete (the required Linux collector is unavailable)"
+        )
+    );
     assert!(!report.is_complete());
 }
 

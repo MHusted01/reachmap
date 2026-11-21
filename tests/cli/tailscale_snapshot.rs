@@ -50,8 +50,10 @@ fn replays_captured_routes_and_identifies_the_capture() {
 fn replay_preserves_missing_inventory_as_partial() {
     let mut snapshot = snapshot();
     snapshot["evidence"]["inventory"] = json!({"status": "unavailable"});
-    snapshot["evidence"]["collection"] =
-        json!({"status": "partial", "notes": ["TCP socket inventory unavailable"]});
+    snapshot["evidence"]["collection"] = json!({
+        "status": "partial",
+        "notes": [{"kind": "socket_inventory_unavailable", "reason": "permission_denied"}]
+    });
     let out = replay("tailscale_partial.json", &snapshot, &[]);
     assert_eq!(out.status.code(), Some(1));
     let text = stdout(&out);
@@ -63,6 +65,7 @@ fn replay_preserves_missing_inventory_as_partial() {
         text.contains("Partial Tailscale route collection"),
         "{text}"
     );
+    assert!(text.contains("permission denied"), "{text}");
 }
 
 #[test]
@@ -72,12 +75,61 @@ fn replay_rejects_a_future_version_and_invalid_evidence() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stderr(&out).contains("Tailscale route snapshot version 2"));
 
-    let mut invalid = snapshot();
-    invalid["evidence"]["routes"][0]["backend"]["targets"] = json!(["192.0.2.1:3000"]);
-    let out = replay("tailscale_invalid.json", &invalid, &[]);
-    assert_eq!(out.status.code(), Some(1));
-    assert!(stderr(&out).contains("invalid Tailscale route snapshot"));
-    assert!(stdout(&out).is_empty());
+    for (field, value, reason) in [
+        (
+            "/routes/0/backend/targets",
+            json!(["192.0.2.1:3000"]),
+            "expected a loopback TCP target",
+        ),
+        (
+            "/routes/0/backend/targets",
+            json!(["127.0.0.1:0"]),
+            "expected a loopback TCP target",
+        ),
+        (
+            "/routes/0/entry/port",
+            json!(0),
+            "expected a nonzero route port",
+        ),
+        (
+            "/inventory",
+            json!({"status": "not_needed"}),
+            "inconsistent route collection status",
+        ),
+        (
+            "/inventory",
+            json!({"status": "unavailable"}),
+            "inconsistent route collection status",
+        ),
+        ("/routes", json!([]), "inconsistent route collection status"),
+        (
+            "/collection",
+            json!({"status": "partial", "notes": []}),
+            "inconsistent route collection status",
+        ),
+        (
+            "/inventory/listeners/0/address",
+            json!("127.0.0.1:0"),
+            "unexpected TCP listener",
+        ),
+        (
+            "/inventory/listeners/0/address",
+            json!("192.0.2.1:3000"),
+            "unexpected TCP listener",
+        ),
+        (
+            "/inventory/listeners/0/address",
+            json!("not an address"),
+            "expected capture metadata and route evidence",
+        ),
+    ] {
+        let mut invalid = snapshot();
+        *invalid["evidence"].pointer_mut(field).unwrap() = value;
+        let out = replay("tailscale_invalid.json", &invalid, &[]);
+        assert_eq!(out.status.code(), Some(1), "{field}");
+        assert!(stderr(&out).contains(reason), "{field}: {}", stderr(&out));
+        assert!(stdout(&out).is_empty(), "{field}");
+    }
 }
 
 #[test]

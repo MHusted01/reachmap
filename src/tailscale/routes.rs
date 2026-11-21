@@ -15,6 +15,9 @@ use crate::scan::{ScanError, parse_tables};
 use crate::socket::{ListeningSocket, Protocol};
 use crate::socket_options::{OptionsReport, read_socket_options};
 
+use self::diagnostic::Note;
+
+mod diagnostic;
 pub mod snapshot;
 
 /// Why Tailscale route status was unavailable.
@@ -47,9 +50,14 @@ impl RouteReport {
     }
 
     fn validate(&self) -> Result<(), &'static str> {
-        let mut targets = targets(&self.routes).peekable();
-        let needs_inventory = targets.peek().is_some();
-        if targets.any(|target| target.port() == 0 || !target.ip().to_canonical().is_loopback()) {
+        if self.routes.iter().any(|route| route.entry.port == 0) {
+            return Err("expected a nonzero route port");
+        }
+        let mut backend_targets = targets(&self.routes).peekable();
+        let needs_inventory = backend_targets.peek().is_some();
+        if backend_targets
+            .any(|target| target.port() == 0 || !target.ip().to_canonical().is_loopback())
+        {
             return Err("expected a loopback TCP target with a nonzero port");
         }
         if needs_inventory == matches!(self.inventory, TcpEvidence::NotNeeded)
@@ -57,6 +65,15 @@ impl RouteReport {
             || matches!(&self.collection, Collection::Partial { notes } if notes.is_empty())
         {
             return Err("inconsistent route collection status");
+        }
+        if let TcpEvidence::Collected { listeners } = &self.inventory {
+            let by_port = index_targets(targets(&self.routes));
+            if listeners
+                .iter()
+                .any(|listener| !listener.could_match(&by_port))
+            {
+                return Err("unexpected TCP listener outside the captured route targets");
+            }
         }
         Ok(())
     }
@@ -66,7 +83,7 @@ impl RouteReport {
 #[serde(tag = "status", rename_all = "snake_case")]
 enum Collection {
     Complete,
-    Partial { notes: Vec<String> },
+    Partial { notes: Vec<Note> },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -83,6 +100,18 @@ struct Listener {
     options: Option<ListenerOptions>,
 }
 
+type TargetsByPort = BTreeMap<u16, BTreeSet<SocketAddr>>;
+
+impl Listener {
+    fn could_match(&self, by_port: &TargetsByPort) -> bool {
+        by_port.get(&self.address.port()).is_some_and(|targets| {
+            targets
+                .iter()
+                .any(|&target| candidate(self, target).is_some())
+        })
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct ListenerOptions {
     bound_to_device: bool,
@@ -97,15 +126,11 @@ struct Inventory {
 
 impl Inventory {
     fn relevant_listeners(self, targets: impl Iterator<Item = SocketAddr>) -> Vec<Listener> {
-        let mut by_port = BTreeMap::<_, BTreeSet<_>>::new();
-        for target in targets {
-            by_port.entry(target.port()).or_default().insert(target);
-        }
+        let by_port = index_targets(targets);
         self.sockets
             .into_iter()
             .filter(|socket| socket.protocol == Protocol::Tcp)
             .filter_map(|socket| {
-                let targets = by_port.get(&socket.port)?;
                 let listener = Listener {
                     address: SocketAddr::new(socket.address, socket.port),
                     options: self.options.by_inode.get(&socket.inode).map(|options| {
@@ -115,13 +140,18 @@ impl Inventory {
                         }
                     }),
                 };
-                targets
-                    .iter()
-                    .any(|&target| candidate(&listener, target).is_some())
-                    .then_some(listener)
+                listener.could_match(&by_port).then_some(listener)
             })
             .collect()
     }
+}
+
+fn index_targets(targets: impl Iterator<Item = SocketAddr>) -> TargetsByPort {
+    let mut by_port = TargetsByPort::new();
+    for target in targets {
+        by_port.entry(target.port()).or_default().insert(target);
+    }
+    by_port
 }
 
 fn targets(routes: &[Route]) -> impl Iterator<Item = SocketAddr> + '_ {
@@ -156,35 +186,38 @@ fn collect_with(
         }
         _ => RouteScanError::Collect(error),
     })?;
-    let mut configured = parse_routes(&json)?;
+    let configured = parse_routes(&json)?;
+    let mut notes: Vec<_> = configured
+        .notes
+        .into_iter()
+        .map(|detail| Note::RouteStatus { detail })
+        .collect();
     let inventory = if targets(&configured.routes).next().is_some() {
         match read_inventory() {
             Ok(inventory) => {
-                if inventory.options.error.is_some() {
-                    configured
-                        .notes
-                        .push("TCP socket options incomplete".into());
+                if let Some(error) = &inventory.options.error {
+                    notes.push(Note::SocketOptionsIncomplete {
+                        reason: error.into(),
+                    });
                 }
                 TcpEvidence::Collected {
                     listeners: inventory.relevant_listeners(targets(&configured.routes)),
                 }
             }
-            Err(_) => {
-                configured
-                    .notes
-                    .push("TCP socket inventory unavailable".into());
+            Err(error) => {
+                notes.push(Note::SocketInventoryUnavailable {
+                    reason: (&error).into(),
+                });
                 TcpEvidence::Unavailable
             }
         }
     } else {
         TcpEvidence::NotNeeded
     };
-    let collection = if configured.notes.is_empty() {
+    let collection = if notes.is_empty() {
         Collection::Complete
     } else {
-        Collection::Partial {
-            notes: configured.notes,
-        }
+        Collection::Partial { notes }
     };
     Ok(RouteReport {
         routes: configured.routes,
@@ -215,7 +248,7 @@ impl fmt::Display for RouteReport {
         if let Collection::Partial { notes } = &self.collection {
             writeln!(f, "Partial Tailscale route collection:")?;
             for note in notes {
-                writeln!(f, "  {}", sanitize(note))?;
+                writeln!(f, "  {note}")?;
             }
         }
         Ok(())
