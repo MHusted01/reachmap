@@ -41,6 +41,13 @@ jobs:
           tool: cargo-llvm-cov
       - run: make test
       - run: make test-docker
+      - name: Test Linux inbound TCP predictions
+        run: |
+          if ! command -v nft >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y nftables
+          fi
+          sudo scripts/test-inbound-path.sh target/debug/reachmap
       - run: make msrv
 
   build:

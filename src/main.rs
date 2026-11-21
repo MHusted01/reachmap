@@ -24,6 +24,8 @@ use reachmap::probe::{
 use reachmap::scan::ScanReport;
 use reachmap::table::Report;
 
+mod path_cli;
+
 /// `reachmap diff`'s status when nothing could be compared, as for `diff(1)`.
 /// Status 1 means differences, so a failure must not look like one.
 const COULD_NOT_COMPARE: u8 = 2;
@@ -41,6 +43,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Predict or replay a Linux inbound TCP path to a local socket
+    #[command(subcommand)]
+    Path(path_cli::Command),
     /// List the TCP listeners and bound UDP sockets on this Linux or macOS host
     Scan {
         /// Print the findings as JSON instead of a table
@@ -121,6 +126,7 @@ struct ProbeTarget {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        Command::Path(command) => command.run(),
         Command::Scan {
             host_ref: Some(host_ref),
             ..

@@ -203,6 +203,56 @@ widest case, as the rest of the scan does. With no host socket ports, the output
 says so. If `nft` fails to run, the reason says reading the ruleset usually
 needs root or `CAP_NET_ADMIN`.
 
+## Linux inbound TCP paths
+
+`reachmap path predict` explains whether a new inbound TCP SYN from a given
+source can reach a local Linux listener. The report follows the stated ingress
+interface through routing, nftables input and listener matching. The command
+queries the local host and sends no packets. Live collection normally needs
+root privileges for the firewall and policy evidence.
+
+```sh
+sudo reachmap path predict --host-ref example-host --source 192.0.2.2 \
+  --ingress eth0 --destination 192.0.2.1 --port 8443
+
+(umask 077; sudo reachmap path capture --host-ref example-host --source 192.0.2.2 \
+  --ingress eth0 --destination 192.0.2.1 --port 8443 > inbound.json)
+reachmap path replay inbound.json --json
+```
+
+Both IP addresses must be unicast and from the same family. The prediction
+starts after link-layer processing, XDP and traffic control, before Netfilter
+ingress. It assumes an ordinary unmarked SYN with default traffic class, no IP
+options or IPv6 extension headers, and no existing connection that owns the
+flow. It covers ordinary Ethernet, veth and loopback ingress without a bridge
+or other master. The local route comes from the kernel's inbound lookup using
+the stated source and interface with the default routing policy rules.
+
+An applicable nftables ingress or prerouting hook, legacy firewall tables,
+XFRM policies or a non-accepting XFRM default, a nonstandard routing policy, or
+an unsupported input rule can make the result `unknown`. The report names the
+first unresolved stage. The socket stage checks exact and wildcard bindings,
+device binding and IPv4 delivery to dual-stack IPv6 listeners. In JSON,
+`listeners` lists confirmed candidates and `unchecked_listeners` lists candidates
+with missing options. One confirmed candidate is enough for a reachable verdict.
+The scope ends at listener lookup and assumes normal TCP demultiplexing without
+custom BPF socket selection. Return routing, handshake completion, socket
+filters and application behavior are outside this prediction.
+
+`path capture` saves one flow with a host label, capture time and evidence for
+each stage. `path replay` reads that file on Linux or macOS and queries no live
+host state. The versioned file has scope `linux_inbound_tcp` and contains
+addresses, the full nftables ruleset and socket facts. Keep it private and use
+a fresh capture if the host configuration changes. Evidence is sampled over
+several queries and can change during collection.
+
+For `path predict` and `path replay`, exit status 0 means the command produced
+a report, including when the path is blocked or unknown. Exit status 1 means
+the command could not produce a report. Scripts can use `--json` and read
+`verdict` for `listener_reachable`, `blocked`, `not_local`, `no_listener` or
+`unknown`. Collection failures that affect the prediction appear at the stage
+that needs the evidence.
+
 ## Host-input evidence snapshots
 
 Capture the inputs to the Linux [nftables input check](#nftables-input) and

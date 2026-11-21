@@ -17,6 +17,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// How many arguments error messages show.
 const MAX_SHOWN_ARGS: usize = 4;
+#[cfg(any(target_os = "linux", test))]
 const MAX_PROBE_OUTPUT: u64 = 64 * 1024;
 
 /// The first of `candidates` that is an existing file, or `fallback` when none
@@ -42,7 +43,7 @@ pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
 /// left behind with the pipe open, could block those waits forever. Both end
 /// with reachmap at the latest.
 pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, CollectError> {
-    checked_output(program, args, capture(program, args, timeout, false)?)
+    checked_output(program, args, capture(program, args, timeout, None)?)
 }
 
 /// Run a fixed-path probe without environment variables or shell configuration.
@@ -52,7 +53,17 @@ pub(crate) fn run_isolated(
     args: &[&str],
     timeout: Duration,
 ) -> Result<String, CollectError> {
-    checked_output(program, args, capture(program, args, timeout, true)?)
+    run_isolated_with_limit(program, args, timeout, MAX_PROBE_OUTPUT)
+}
+
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn run_isolated_with_limit(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    limit: u64,
+) -> Result<String, CollectError> {
+    checked_output(program, args, capture(program, args, timeout, Some(limit))?)
 }
 
 fn checked_output(program: &str, args: &[&str], output: Output) -> Result<String, CollectError> {
@@ -73,7 +84,7 @@ pub(super) fn run_inventory(
 ) -> Result<(String, Option<String>), CollectError> {
     const MAX_DIAGNOSTIC_CHARS: usize = 200;
 
-    let output = capture(program, args, timeout, false)?;
+    let output = capture(program, args, timeout, None)?;
     if !output.status.success()
         && (output.status.code() != Some(partial_status)
             || (output.stdout.is_empty() && !output.stderr.is_empty()))
@@ -101,7 +112,7 @@ fn capture(
     program: &str,
     args: &[&str],
     timeout: Duration,
-    isolated: bool,
+    limit: Option<u64>,
 ) -> Result<Output, CollectError> {
     let deadline = Instant::now() + timeout;
     let command = || describe(program, args);
@@ -115,7 +126,7 @@ fn capture(
     };
 
     let mut process = Command::new(program);
-    if isolated {
+    if limit.is_some() {
         process.env_clear().env("LC_ALL", "C");
     }
     let mut child = process
@@ -125,7 +136,6 @@ fn capture(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(failed_to_run)?;
-    let limit = isolated.then_some(MAX_PROBE_OUTPUT);
     let stdout = read_in_background(child.stdout.take(), limit);
     let stderr = read_in_background(child.stderr.take(), limit);
 
