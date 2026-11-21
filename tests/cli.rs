@@ -73,12 +73,24 @@ fn scan_help_lists_the_tailscale_routes_flag() {
 
 #[test]
 fn tailscale_routes_has_its_own_output_mode() {
-    for extra in [&["--json"][..], &["--snapshot", "--host-ref", "test"][..]] {
-        let args = [&["scan", "--tailscale-routes"][..], extra].concat();
-        let out = run(&args);
-        assert_eq!(out.status.code(), Some(2));
-        assert!(stderr(&out).contains("cannot be used with"));
-    }
+    let out = run(&["scan", "--tailscale-routes", "--json"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("cannot be used with"));
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn tailscale_capture_accepts_snapshot_flags_but_needs_linux() {
+    let out = run(&[
+        "scan",
+        "--tailscale-routes",
+        "--snapshot",
+        "--host-ref",
+        "test",
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Linux"));
+    assert!(stdout(&out).is_empty());
 }
 
 #[test]
@@ -377,6 +389,8 @@ fn scan_of(rows: &[String]) -> String {
 mod host_input_snapshot;
 #[path = "cli/inbound_path.rs"]
 mod inbound_path;
+#[path = "cli/tailscale_snapshot.rs"]
+mod tailscale_snapshot;
 
 // All test listeners take this lock when binding. A closed-port test keeps it
 // through the probe because macOS allows a listener to bind a connected port.

@@ -30,6 +30,12 @@ const MAX_BYTES: u64 = MAX_MIB * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub struct HostRef(String);
 
+impl HostRef {
+    pub(crate) fn into_string(self) -> String {
+        self.0
+    }
+}
+
 impl FromStr for HostRef {
     type Err = SnapshotError;
 
@@ -222,16 +228,16 @@ pub enum SnapshotError {
     #[error("could not capture Linux host-input evidence")]
     Scan(#[from] ScanError),
     /// JSON serialization failed.
-    #[error("could not serialize the host-input snapshot")]
+    #[error("could not serialize the snapshot")]
     Encode(#[source] serde_json::Error),
     /// Only regular files can hold a snapshot for replay.
-    #[error("give replay a regular file containing a host-input snapshot")]
+    #[error("give replay a regular file containing a snapshot")]
     NotRegular,
     /// The snapshot is larger than the supported read limit.
-    #[error("host-input snapshots are limited to {MAX_MIB} MiB")]
+    #[error("snapshots are limited to {MAX_MIB} MiB")]
     TooLarge,
     /// A snapshot file could not be read.
-    #[error("could not read the host-input snapshot")]
+    #[error("could not read the snapshot")]
     Read(#[from] io::Error),
     /// The format version requires a different reader.
     #[error("unsupported host-input snapshot version {0}; this build reads version {VERSION}")]

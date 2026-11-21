@@ -1,6 +1,8 @@
 use super::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
+use crate::host_input_snapshot::render_document;
+use crate::socket::SocketOptions;
 use crate::socket_options::SocketOptionsError;
 
 const CONFIG: &str = include_str!("../../../tests/fixtures/tailscale_routes.json");
@@ -82,6 +84,10 @@ fn incomplete_status_preserves_valid_routes_and_explains_unknown_scope() {
         "{text}"
     );
     assert!(text.contains("invalid Web entry point"), "{text}");
+    assert!(
+        text.contains("invalid handler at node.example.ts.net:443 /bad"),
+        "{text}"
+    );
     assert!(!report.is_complete());
 }
 
@@ -149,36 +155,27 @@ fn inventory_failure_keeps_routes_and_a_udp_socket_cannot_match() {
 
 #[test]
 fn a_wildcard_listener_needs_known_dual_stack_to_match_an_ipv4_target() {
-    let listener = socket(Ipv6Addr::UNSPECIFIED.into(), 3000, 1);
-    let target = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 3000);
-    let options = SocketOptions {
-        ipv6_only: false,
-        bound_device: None,
+    let mut listener = Listener {
+        address: SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 3000),
+        options: None,
     };
-    assert_eq!(candidate(&listener, target, None), Some(false));
-    assert_eq!(candidate(&listener, target, Some(&options)), Some(true));
-    assert_eq!(
-        candidate(
-            &listener,
-            target,
-            Some(&SocketOptions {
-                ipv6_only: true,
-                ..options
-            })
-        ),
-        None
-    );
-    assert_eq!(
-        candidate(
-            &listener,
-            target,
-            Some(&SocketOptions {
-                bound_device: Some(2),
-                ..options
-            })
-        ),
-        Some(false)
-    );
+    let target = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 3000);
+    assert_eq!(candidate(&listener, target), Some(false));
+    listener.options = Some(ListenerOptions {
+        bound_to_device: false,
+        ipv6_only: false,
+    });
+    assert_eq!(candidate(&listener, target), Some(true));
+    listener.options = Some(ListenerOptions {
+        bound_to_device: false,
+        ipv6_only: true,
+    });
+    assert_eq!(candidate(&listener, target), None);
+    listener.options = Some(ListenerOptions {
+        bound_to_device: true,
+        ipv6_only: false,
+    });
+    assert_eq!(candidate(&listener, target), Some(false));
 }
 
 #[test]
@@ -198,9 +195,91 @@ fn tcp_forwarding_and_named_services_stay_visible_outside_the_web_scope() {
 
 #[test]
 fn an_exact_match_with_missing_socket_options_is_uncertain() {
-    let listener = socket(Ipv4Addr::LOCALHOST.into(), 3000, 1);
     let target = SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 3000);
-    assert_eq!(candidate(&listener, target, None), Some(false));
+    let listener = Listener {
+        address: target,
+        options: None,
+    };
+    assert_eq!(candidate(&listener, target), Some(false));
+}
+
+fn round_trip(report: RouteReport) -> String {
+    let expected = report.to_string();
+    let complete = report.is_complete();
+    let snapshot = snapshot::Snapshot::new("example-host".parse().unwrap(), 1_700_000_000, report);
+    let json = render_document(&snapshot).unwrap();
+    let replay = snapshot::decode(&json).unwrap();
+    assert_eq!(replay.is_complete(), complete);
+    assert_eq!(replay.to_string().split_once('\n').unwrap().1, expected);
+    json
+}
+
+#[test]
+fn capture_keeps_only_route_and_relevant_listener_evidence() {
+    let mut config: serde_json::Value = serde_json::from_str(CONFIG).unwrap();
+    config["UnrelatedDaemonState"] = serde_json::json!("private key material");
+    config["TCP"] = serde_json::json!({"8443": false, "bad-key-secret": {}});
+    config["Web"]["other.example.ts.net:443"]["Handlers"]["/redirect"] =
+        serde_json::json!({"Redirect": "//someone:password@backend.example.test/go?key=hidden"});
+    let report = report(
+        &config.to_string(),
+        vec![
+            socket(Ipv4Addr::LOCALHOST.into(), 3000, 1),
+            socket(Ipv6Addr::LOCALHOST.into(), 9443, 2),
+            socket("192.0.2.77".parse().unwrap(), 3000, 3),
+            socket(Ipv4Addr::LOCALHOST.into(), 55555, 4),
+        ],
+    );
+    let json = round_trip(report);
+    for unwanted in [
+        "secret",
+        "private contents",
+        "private key material",
+        "password",
+        "key=hidden",
+        "example-session",
+        "192.0.2.77",
+        "55555",
+        "inode",
+    ] {
+        assert!(!json.contains(unwanted), "saved {unwanted:?} in {json}");
+    }
+    assert!(json.contains("//backend.example.test/go"));
+    assert!(json.contains("invalid TCP entry on port 8443"));
+    let snapshot: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(snapshot["scope"], "tailscale_routes");
+    assert_eq!(snapshot["captured_at_unix_seconds"], 1_700_000_000_u64);
+    assert_eq!(snapshot["snapshot_version"], 1);
+    assert_eq!(snapshot["evidence"]["collection"]["status"], "partial");
+    assert_eq!(
+        snapshot["evidence"]["inventory"]["listeners"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn capture_distinguishes_empty_configuration_and_an_unavailable_inventory() {
+    let empty = collect_with(Ok("{}".into()), || panic!("empty status needs no sockets")).unwrap();
+    let json = round_trip(empty);
+    assert!(json.contains(r#""status": "complete""#));
+    assert!(json.contains(r#""status": "not_needed""#));
+
+    let partial = collect_with(Ok(CONFIG.into()), || {
+        Err(CollectError::Read {
+            path: "/proc/net/tcp".into(),
+            source: std::io::Error::new(ErrorKind::PermissionDenied, "private diagnostic"),
+        }
+        .into())
+    })
+    .unwrap();
+    assert!(partial.to_string().contains("permission denied"));
+    let json = round_trip(partial);
+    assert!(json.contains(r#""status": "partial""#));
+    assert!(json.contains(r#""status": "unavailable""#));
+    assert!(!json.contains("private diagnostic") && !json.contains("/proc/net/tcp"));
 }
 
 #[test]
@@ -220,7 +299,11 @@ fn a_socket_options_error_keeps_the_route_and_reports_partial_collection() {
     .unwrap();
     let text = report.to_string();
     assert!(text.contains("listener's socket options leave the match uncertain"));
-    assert!(text.contains("TCP socket options incomplete"));
+    assert!(
+        text.contains(
+            "TCP socket options incomplete (the required Linux collector is unavailable)"
+        )
+    );
     assert!(!report.is_complete());
 }
 

@@ -462,9 +462,33 @@ application authentication remain unverified.
 The report includes configured hostnames and paths. It omits URL credentials,
 queries, fragments and static response text. An empty configuration gives a
 successful empty report. Collection failure or partial data returns exit 1,
-and a partial report shows the evidence it could use. Route output is opt-in
-and text-only. `reachmap scan` and `reachmap scan --json` keep their existing
+and a partial report shows the evidence it could use. Live route output is
+opt-in and text-only. `reachmap scan` and `reachmap scan --json` keep their existing
 port-level summaries.
+
+### Capture and replay Tailscale evidence
+
+```sh
+(umask 077; reachmap scan --tailscale-routes --snapshot --host-ref example-host > tailscale.json)
+reachmap replay tailscale.json
+```
+
+The versioned JSON records the host label you choose, the collection time and
+scope, and the evidence behind the route explanations. It saves only TCP
+listeners that could match a configured loopback target, including whether
+known socket options restrict the match. It omits raw daemon output, unrelated
+listeners, socket inodes, device IDs, URL credentials, queries, fragments and
+static response text. Keep the file private if the retained hostnames, ports
+or paths are sensitive.
+
+Replay works on Linux and macOS and labels the report with the original
+capture time. It uses only the file. Tailscale route replay prints a text
+report. Capture and replay return exit 0 for a complete report and exit 1 for
+partial evidence. A partial capture still writes a replayable file. If the
+required Tailscale status fails to collect or parse, capture returns exit 1
+without a snapshot.
+
+### Tailscale entries in the regular scan
 
 A row that Tailscale forwards to gains `tailnet`, and with Funnel also
 `internet (if not filtered upstream)`. WHY keeps the socket's own reason and
