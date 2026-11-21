@@ -17,12 +17,14 @@ use crate::socket::AddressFamily;
 pub mod audit;
 pub(crate) mod docker;
 mod evaluate;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub mod remote_audit;
 
 const VERSION: u32 = 1;
 const SCOPE: &str = "linux_inbound_tcp";
 
 /// A new inbound TCP connection to analyze.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Flow {
     pub(crate) source: IpAddr,
     pub(crate) ingress: String,
@@ -227,16 +229,19 @@ fn validate_format(scope: &str, version: u32) -> Result<(), PathError> {
 
 /// Reads a saved capture for replay without querying the host.
 pub fn read(path: &Path) -> Result<Snapshot, PathError> {
+    parse(&read_document(path)?)
+}
+
+fn parse(text: &str) -> Result<Snapshot, PathError> {
     fn invalid(error: &serde_json::Error) -> PathError {
         PathError::Invalid {
             line: error.line(),
             column: error.column(),
         }
     }
-    let text = read_document(path)?;
-    let header: Header = serde_json::from_str(&text).map_err(|error| invalid(&error))?;
+    let header: Header = serde_json::from_str(text).map_err(|error| invalid(&error))?;
     validate_format(&header.scope, header.snapshot_version)?;
-    let snapshot: Snapshot = serde_json::from_str(&text).map_err(|error| invalid(&error))?;
+    let snapshot: Snapshot = serde_json::from_str(text).map_err(|error| invalid(&error))?;
     snapshot.validate_details()?;
     Ok(snapshot)
 }

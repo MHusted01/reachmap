@@ -43,6 +43,38 @@ fn help_lists_the_scan_command() {
     assert!(stdout(&out).contains("scan"), "help was: {}", stdout(&out));
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn audit_requires_confirmation_and_reports_invalid_flows_before_ssh() {
+    let mut args = vec![
+        "audit",
+        "--ssh-host",
+        "server.example",
+        "--ssh-user",
+        "auditor",
+        "--known-hosts",
+        "/example/known_hosts",
+        "--identity-file",
+        "/example/identity",
+        "--source",
+        "::1",
+        "--endpoint",
+        "127.0.0.1:8443",
+        "--ingress",
+        "eth0",
+    ];
+    let out = run(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(stderr(&out).contains("--confirm-direct-path"));
+
+    args.push("--confirm-direct-path");
+    let out = run(&args);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(out.stdout.is_empty());
+    assert!(stderr(&out).contains("use two unicast IP addresses of the same family"));
+}
+
 #[test]
 fn unknown_arguments_print_usage_and_exit_with_2() {
     let out = run(&["--nope"]);
