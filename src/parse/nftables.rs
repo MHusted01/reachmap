@@ -8,6 +8,7 @@ use crate::socket::{AddressFamily, Protocol};
 
 mod input;
 mod matches;
+mod pre_input;
 pub(crate) use input::InputHook;
 use matches::{Comparison, NamedSetEntry, SetIndex};
 
@@ -87,6 +88,8 @@ struct Chain {
     table: String,
     name: String,
     hook: Option<String>,
+    // Unrecognized forms leave ingress applicability unknown.
+    dev: Option<serde_json::Value>,
     #[serde(rename = "type")]
     kind: Option<String>,
     prio: Option<i32>,

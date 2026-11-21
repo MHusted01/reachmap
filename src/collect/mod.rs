@@ -4,6 +4,8 @@
 #[cfg(any(target_os = "linux", target_os = "macos", test))]
 pub(crate) mod command;
 #[cfg(target_os = "linux")]
+pub(crate) mod inbound_path;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;

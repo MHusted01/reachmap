@@ -358,6 +358,8 @@ fn scan_of(rows: &[String]) -> String {
 
 #[path = "cli/host_input_snapshot.rs"]
 mod host_input_snapshot;
+#[path = "cli/inbound_path.rs"]
+mod inbound_path;
 
 // All test listeners take this lock when binding. A closed-port test keeps it
 // through the probe because macOS allows a listener to bind a connected port.

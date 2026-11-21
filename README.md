@@ -21,7 +21,7 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 > awareness, TCP probes, baseline diffs, macOS socket inventory, and Linux
 > nftables input and Docker egress checks. Scan results describe potential
 > exposure based on local evidence. [Changelog](CHANGELOG.md) ·
-> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md)
+> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md) · [TCP path](docs/scan.md#linux-inbound-tcp-paths)
 
 ## Install
 

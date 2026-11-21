@@ -39,7 +39,7 @@ impl FromStr for HostRef {
     }
 }
 
-fn validate_host_ref(value: &str) -> Result<(), SnapshotError> {
+pub(crate) fn validate_host_ref(value: &str) -> Result<(), SnapshotError> {
     if value.len() > 128 || value.trim().is_empty() || sanitize(value) != value {
         return Err(SnapshotError::HostRef);
     }
@@ -109,13 +109,20 @@ impl Status {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-enum Evidence<T> {
+pub(crate) enum Evidence<T> {
     Collected { data: T },
     Failed { reason: String },
     Unavailable { reason: String },
 }
 
 impl<T> Evidence<T> {
+    pub(crate) fn as_result(&self) -> Result<&T, String> {
+        match self {
+            Self::Collected { data } => Ok(data),
+            Self::Failed { reason } | Self::Unavailable { reason } => Err(sanitize(reason)),
+        }
+    }
+
     fn result(self) -> Result<T, String> {
         match self {
             Self::Collected { data } => Ok(data),
@@ -195,12 +202,7 @@ impl HostInputSnapshot {
 
     /// Formats a snapshot as a JSON document that replay can read.
     pub fn render(&self) -> Result<String, SnapshotError> {
-        let mut text = serde_json::to_string_pretty(self).map_err(SnapshotError::Encode)?;
-        text.push('\n');
-        if text.len() as u64 > MAX_BYTES {
-            return Err(SnapshotError::TooLarge);
-        }
-        Ok(text)
+        render_document(self)
     }
 }
 
@@ -301,6 +303,19 @@ pub(crate) fn replay_document(text: &str) -> Result<NftablesReport, SnapshotErro
 
 /// Reads a bounded JSON file and reevaluates its captured evidence offline.
 pub fn replay(path: &Path) -> Result<NftablesReport, SnapshotError> {
+    replay_document(&read_document(path)?)
+}
+
+pub(crate) fn render_document(snapshot: &impl Serialize) -> Result<String, SnapshotError> {
+    let mut text = serde_json::to_string_pretty(snapshot).map_err(SnapshotError::Encode)?;
+    text.push('\n');
+    if text.len() as u64 > MAX_BYTES {
+        return Err(SnapshotError::TooLarge);
+    }
+    Ok(text)
+}
+
+pub(crate) fn read_document(path: &Path) -> Result<String, SnapshotError> {
     if !fs::metadata(path)?.is_file() {
         return Err(SnapshotError::NotRegular);
     }
@@ -312,8 +327,7 @@ pub fn replay(path: &Path) -> Result<NftablesReport, SnapshotError> {
     if metadata.len() > MAX_BYTES {
         return Err(SnapshotError::TooLarge);
     }
-    let text = read_limited(file, MAX_BYTES)?.ok_or(SnapshotError::TooLarge)?;
-    replay_document(&text)
+    read_limited(file, MAX_BYTES)?.ok_or(SnapshotError::TooLarge)
 }
 
 #[cfg(test)]

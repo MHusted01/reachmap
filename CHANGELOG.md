@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap path` predicts scoped inbound IPv4 and IPv6 TCP paths to local
+  Linux listeners and can capture and replay the evidence offline
+  ([#84](https://github.com/MHusted01/reachmap/issues/84)).
 - `reachmap scan --snapshot --host-ref LABEL` saves Linux host-input evidence,
   and `reachmap replay FILE` reevaluates it offline
   ([#83](https://github.com/MHusted01/reachmap/issues/83)).

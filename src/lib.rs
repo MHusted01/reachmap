@@ -23,6 +23,7 @@ pub mod egress;
 pub mod errors;
 pub mod firewall;
 pub mod host_input_snapshot;
+pub mod inbound_path;
 pub mod json;
 pub mod network;
 pub mod nftables;
