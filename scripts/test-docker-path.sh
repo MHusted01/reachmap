@@ -47,28 +47,30 @@ ip link set entry0 up
 ip -n reachmap-client link set lo up
 ip -n reachmap-client address add 192.0.2.2/24 dev client0
 ip -n reachmap-client link set client0 up
-docker run -d --name example-web --publish 192.0.2.1:8443:8080 \
-    busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec \
-    sh -ec 'echo reachmap-test >/tmp/index.html; exec httpd -f -p 8080 -h /tmp'
-address=$(docker inspect -f '{{(index .NetworkSettings.Networks "bridge").IPAddress}}' example-web)
+
+web_image=busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+web_command='echo reachmap-test >/tmp/index.html; exec httpd -f -p 8080 -h /tmp'
 
 connect() {
-    ip netns exec reachmap-client wget -q -O - -T 2 http://192.0.2.1:8443/
+    ip netns exec reachmap-client wget -q -O - -T 2 "http://192.0.2.1:$1/"
 }
 
 assert_path() {
-    local kind=$1
+    local kind=$1 port=$2 address=$3 bridge=$4
+    local args=(--host-ref example-host --source 192.0.2.2 --ingress entry0 --destination 192.0.2.1 --port "$port")
     /reachmap path predict "${args[@]}" --json >"/tmp/$kind-live.json"
     /reachmap path capture "${args[@]}" >"/tmp/$kind-snapshot.json"
     ip netns exec reachmap-client /reachmap path replay "/tmp/$kind-snapshot.json" --json >"/tmp/$kind-replay.json"
     for source in live replay; do
-        jq -e --arg verdict "$kind" --arg target "$address:8080" '
+        jq -e --arg verdict "$kind" --arg target "$address:8080" \
+            --arg original "192.0.2.1:$port" --arg bridge "$bridge" '
             .verdict == $verdict and
-            .steps[1].translation == {original:"192.0.2.1:8443",translated:$target} and
-            (.steps[2].reason | contains("docker0")) and
+            .steps[1].translation == {original:$original,translated:$target} and
+            .steps[2].stage == "routing" and (.steps[2].reason | endswith(" through " + $bridge)) and
             (if $verdict == "blocked" then
                 .steps[-1].stage == "forward" and (.steps[-1].reason | contains("test_policy"))
              else
+                any(.steps[]; .stage == "forward" and .decision == "continue") and
                 .steps[-1].stage == "socket" and (.steps[-1].listeners | length > 0)
              end)
         ' "/tmp/$kind-$source.json" || { cat "/tmp/$kind-$source.json" >&2; return 1; }
@@ -76,22 +78,43 @@ assert_path() {
     diff -u <(jq -S '.steps' "/tmp/$kind-live.json") <(jq -S '.steps' "/tmp/$kind-replay.json")
 }
 
-args=(--host-ref example-host --source 192.0.2.2 --ingress entry0 --destination 192.0.2.1 --port 8443)
-# Allow server startup before sampling so listeners and real connections use the same state.
-for _ in {1..10}; do
-    if connect >/dev/null; then break; fi
-    sleep 0.1
-done
-[[ $(connect) == reachmap-test ]]
-assert_path listener_reachable
+test_publish() {
+    local port=$1 address=$2 bridge=$3
+    echo "Testing published port on $bridge"
+    # Allow server startup before sampling so listeners and real connections use the same state.
+    for _ in {1..10}; do
+        if connect "$port" >/dev/null; then break; fi
+        sleep 0.1
+    done
+    [[ $(connect "$port") == reachmap-test ]]
+    assert_path listener_reachable "$port" "$address" "$bridge"
 
-nft add table inet test_policy
-nft 'add chain inet test_policy forward { type filter hook forward priority 10; policy drop; }'
-if connect; then
-    echo 'Expected the forwarding policy to block the connection.' >&2
-    exit 1
-fi
-assert_path blocked
-nft delete table inet test_policy
-[[ $(connect) == reachmap-test ]]
-echo 'Docker path predictions and replay matched both TCP connection outcomes.'
+    nft add table inet test_policy
+    nft 'add chain inet test_policy forward { type filter hook forward priority 10; policy drop; }'
+    if connect "$port"; then
+        echo 'Expected the forwarding policy to block the connection.' >&2
+        return 1
+    fi
+    assert_path blocked "$port" "$address" "$bridge"
+    nft delete table inet test_policy
+    [[ $(connect "$port") == reachmap-test ]]
+}
+
+docker run -d --name example-web --publish 192.0.2.1:8443:8080 "$web_image" sh -ec "$web_command"
+address=$(docker inspect -f '{{(index .NetworkSettings.Networks "bridge").IPAddress}}' example-web)
+test_publish 8443 "$address" docker0
+
+cat >/tmp/compose.yaml <<EOF
+services:
+  web:
+    image: $web_image
+    command: [sh, -ec, '$web_command']
+    ports: ['192.0.2.1:8444:8080']
+EOF
+compose=(docker compose --project-name example --file /tmp/compose.yaml)
+"${compose[@]}" up -d
+container=$("${compose[@]}" ps -q web)
+address=$(docker inspect -f '{{(index .NetworkSettings.Networks "example_default").IPAddress}}' "$container")
+network_id=$(docker network inspect -f '{{.Id}}' example_default)
+test_publish 8444 "$address" "br-${network_id:0:12}"
+echo 'Docker path predictions and replay matched real TCP connections on both bridges.'

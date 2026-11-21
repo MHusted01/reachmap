@@ -53,19 +53,29 @@ fn container_endpoint_requires_one_active_veth_with_the_target_address() {
 #[test]
 fn bridge_peer_must_point_to_the_container_and_be_forwarding() {
     let link: Link = serde_json::from_value(veth()).unwrap();
+    let bridge = "br-0123456789ab";
     let peer = json!({
         "ifindex":12, "ifname":"veth-test", "link_index":2, "flags":["UP","LOWER_UP"],
-        "linkinfo":{"info_kind":"veth","info_slave_data":{"state":"forwarding"}}
+        "master":bridge,
+        "linkinfo":{"info_kind":"veth","info_slave_kind":"bridge",
+                    "info_slave_data":{"state":"forwarding"}}
     });
-    assert!(check_bridge_peer(&link, &json!([peer]).to_string()).is_ok());
+    assert!(check_bridge_peer(&link, bridge, &json!([peer]).to_string()).is_ok());
+    assert!(check_bridge_peer(&link, bridge, "[]").is_err());
 
     for (key, value) in [
         ("/ifindex", json!(3)),
         ("/link_index", json!(14)),
+        ("/master", json!("docker0")),
+        ("/master", Value::Null),
+        ("/linkinfo/info_slave_kind", json!("bond")),
         ("/linkinfo/info_slave_data/state", json!("blocking")),
     ] {
         let mut invalid = peer.clone();
         *invalid.pointer_mut(key).unwrap() = value;
-        assert!(check_bridge_peer(&link, &json!([invalid]).to_string()).is_err());
+        assert!(
+            check_bridge_peer(&link, bridge, &json!([invalid]).to_string()).is_err(),
+            "{key}"
+        );
     }
 }

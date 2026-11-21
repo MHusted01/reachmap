@@ -54,15 +54,7 @@ impl Flow {
         {
             return Err(PathError::Addresses);
         }
-        if self.ingress.is_empty()
-            || self.ingress.len() > 15
-            || self.ingress.starts_with('-')
-            || matches!(self.ingress.as_str(), "." | "..")
-            || !self
-                .ingress
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
-        {
+        if !valid_interface_name(&self.ingress) {
             return Err(PathError::Ingress);
         }
         Ok(())
@@ -74,6 +66,16 @@ impl Flow {
             IpAddr::V6(_) => AddressFamily::Ipv6,
         }
     }
+}
+
+pub(crate) fn valid_interface_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 15
+        && !name.starts_with('-')
+        && !matches!(name, "." | "..")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte))
 }
 
 fn unicast(address: IpAddr) -> bool {

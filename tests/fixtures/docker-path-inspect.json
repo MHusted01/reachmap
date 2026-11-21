@@ -9,7 +9,9 @@
   "NetworkSettings": {
     "Networks": {
       "bridge": {
-        "IPAddress": "198.51.100.2"
+        "IPAddress": "198.51.100.2",
+        "NetworkID": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "EndpointID": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
       }
     },
     "Ports": {

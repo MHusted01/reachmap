@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap path` predicts, captures, and replays IPv4 TCP publishes on one
+  user-defined Docker bridge, including the default Compose network
+  ([#89](https://github.com/MHusted01/reachmap/issues/89)).
 - `reachmap path` explains a scoped Docker IPv4 TCP publish through destination
   NAT, forwarding, and the container listener, with offline replay
   ([#85](https://github.com/MHusted01/reachmap/issues/85)).

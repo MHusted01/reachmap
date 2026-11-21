@@ -241,29 +241,33 @@ filters and application behavior are outside this prediction.
 
 ### Docker bridge published ports
 
-For an external IPv4 TCP SYN to a host address on Docker's default `docker0`
-bridge, the same command can follow a kernel destination NAT rule. The verified
+For an external IPv4 TCP SYN to a Docker published port on a host address, the
+same command can follow a kernel destination NAT rule to a container attached to
+one Linux bridge. This covers Docker's default `docker0` and user-defined
+bridges, including the network Compose creates by default. The verified
 configuration uses Docker Engine 29.1.3 with the native nftables firewall
-backend, userland proxy disabled, and a container attached only to the default
-IPv4 bridge. Collection uses the local root-owned Docker socket and samples
-the container's network namespace.
+backend and userland proxy disabled. Collection uses the local root-owned
+Docker socket and samples the container's network namespace.
 
 The destination NAT stage shows the original and translated address and port.
-The routing stage identifies the direct route to the bridge, and the forwarding
-stage evaluates the applicable nftables chains in order. An accept in Docker's
-chain can still be followed by a drop in another chain. The report then checks
-postrouting and the listener in the container namespace. Missing evidence or
-unsupported rules yield `unknown` at the affected stage. Docker publication
-metadata alone cannot establish that a path reaches a listener.
+The routing stage checks that the kernel route to the translated endpoint goes
+directly through the bridge identified by the Docker network attachment. The
+forwarding stage evaluates the applicable nftables chains in order. An accept in
+Docker's chain can still be followed by a drop in another chain. The report then
+checks postrouting, the container's host-side veth peer on that bridge, and the
+listener in the container namespace. Missing or conflicting evidence and
+unsupported rules yield `unknown` at the affected stage.
 
-The Docker prediction covers kernel DNAT on this topology. Custom bridge
-topologies, userland proxies, additional source translation, and container
-firewall rules are outside the supported path. Docker's existing IPv6 and UFW
-findings remain available in `reachmap scan`.
+The Docker prediction covers kernel DNAT. IPv6 publishes, multiple network
+attachments, return paths, other firewall backends, userland proxies,
+additional source translation, and container firewall rules are outside the
+supported path. Docker's existing IPv6 and UFW findings remain available in
+`reachmap scan`.
 
 `path capture` saves one flow with a host label, capture time and evidence for
 each stage. `path replay` reads that file on Linux or macOS and queries no live
-host state. The versioned file has scope `linux_inbound_tcp` and contains
+host state. Earlier `docker0` snapshots remain readable. The versioned file has
+scope `linux_inbound_tcp` and contains
 addresses, the full nftables ruleset and socket facts. Keep it private and use
 a fresh capture if the host configuration changes. Evidence is sampled over
 several queries and can change during collection.

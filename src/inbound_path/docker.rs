@@ -5,22 +5,31 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use serde::{Deserialize, Serialize};
 
 use super::evaluate::{Decision, Route, Stage, Step, Verdict, match_listeners, route_for, step};
-use super::{Flow, Listener, PathEvidence};
+use super::{Flow, Listener, PathEvidence, valid_interface_name};
 use crate::host_input_snapshot::Evidence;
 use crate::parse::nftables::{PathHookResult, PathPacket, Ruleset};
 use crate::sanitize::sanitize;
 
-pub(crate) const BRIDGE: &str = "docker0";
+const DEFAULT_BRIDGE: &str = "docker0";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct DockerEvidence {
     pub(crate) publish: Evidence<Option<Publish>>,
+    #[serde(default = "legacy_bridge")]
+    pub(crate) bridge: Evidence<String>,
     pub(crate) route: Evidence<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) local_source: Option<Evidence<bool>>,
     #[serde(default = "missing_forwarding")]
     pub(crate) forwarding: Evidence<bool>,
     pub(crate) container: Evidence<ContainerSocketEvidence>,
+}
+
+fn legacy_bridge() -> Evidence<String> {
+    // Earlier snapshots only supported the default bridge.
+    Evidence::Collected {
+        data: DEFAULT_BRIDGE.to_owned(),
+    }
 }
 
 fn missing_forwarding() -> Evidence<bool> {
@@ -79,7 +88,7 @@ pub(super) fn walk<'a>(
             "Docker path requires an original local IPv4 route".to_owned(),
         ));
     }
-    if flow.ingress == BRIDGE
+    if flow.ingress == DEFAULT_BRIDGE
         || packet.source.is_loopback()
         || packet.destination.ip().is_loopback()
     {
@@ -135,24 +144,35 @@ pub(super) fn walk<'a>(
     });
     steps.push(nat);
 
+    let bridge = docker
+        .bridge
+        .as_result()
+        .map_err(|reason| (Stage::Routing, reason))?;
+    if !valid_interface_name(bridge) || bridge == &flow.ingress {
+        return Err((
+            Stage::Routing,
+            "Docker path requires a supported bridge distinct from the ingress interface"
+                .to_owned(),
+        ));
+    }
     let translated_route = docker
         .route
         .as_result()
         .and_then(|raw| route_for(flow, IpAddr::V4(*translated.ip()), raw))
         .map_err(|reason| (Stage::Routing, reason))?;
     if !matches!(translated_route.kind.as_deref(), None | Some("unicast"))
-        || translated_route.dev != BRIDGE
+        || translated_route.dev != *bridge
         || translated_route.gateway.is_some()
     {
         return Err((
             Stage::Routing,
-            "translated endpoint has no direct unicast route through docker0".to_owned(),
+            format!("translated endpoint has no direct unicast route through {bridge}"),
         ));
     }
     steps.push(step(
         Stage::Routing,
         Decision::Continue,
-        format!("kernel route to {translated} through {BRIDGE}"),
+        format!("kernel route to {translated} through {bridge}"),
     ));
 
     check_xfrm_forwarding(evidence)?;
@@ -169,7 +189,7 @@ pub(super) fn walk<'a>(
         return Ok(Some(Verdict::Blocked));
     }
     packet.destination = translated;
-    packet.egress = Some(BRIDGE);
+    packet.egress = Some(bridge);
     packet.local_source = docker
         .local_source
         .as_ref()
