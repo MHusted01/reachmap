@@ -20,7 +20,7 @@ warning: UFW is active, but it does not apply to these Docker ports: 8080
 > **Status.** v0.4.0 adds Linux host-input snapshots and inbound TCP path
 > prediction for local listeners and supported IPv4 Docker bridge publishes.
 > Captured evidence can be replayed offline on Linux and macOS. [Changelog](CHANGELOG.md) ·
-> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md) · [TCP path](docs/scan.md#linux-inbound-tcp-paths)
+> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md) · [TCP path](docs/scan.md#linux-inbound-tcp-paths) · [SSH audit](docs/audit.md)
 
 ## Install
 

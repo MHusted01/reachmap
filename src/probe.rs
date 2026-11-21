@@ -1,8 +1,8 @@
 //! `reachmap probe`: tries to connect to TCP ports of a host the user names,
 //! from this machine, and reports what happened to each.
 //!
-//! This is the only part of reachmap that sends traffic. A probe connects and
-//! closes straight away, without sending data. [`Outcome`], the formatting in
+//! A probe connects and closes straight away, without sending data.
+//! [`Outcome`], the formatting in
 //! [`report`] and the comparison with a saved scan in [`claims`] and [`compare`]
 //! are pure; `connect` holds the code that touches the network.
 
@@ -25,6 +25,8 @@ use tokio::runtime::Builder;
 use tokio::task::JoinError;
 
 pub use address::ProbedAddress;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use connect::attempt;
 
 use crate::baseline::LoadError;
 use crate::network::Network;

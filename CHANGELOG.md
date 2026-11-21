@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap audit` compares one Linux inbound TCP prediction collected over
+  authenticated SSH with a handshake from the operator's machine
+  ([#100](https://github.com/MHusted01/reachmap/issues/100)).
 - Add an offline core for comparing a Linux inbound TCP prediction with a
   scoped client handshake observation
   ([#99](https://github.com/MHusted01/reachmap/issues/99)).

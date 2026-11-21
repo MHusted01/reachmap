@@ -7,7 +7,7 @@
 //! decides what deserves attention, and [`table`], [`json`] and [`errors`] format
 //! results for the terminal and for scripts. [`sanitize`] cleans text from other programs before it can
 //! reach the terminal. [`baseline`] reads saved scans and [`diff`] compares them.
-//! [`probe`] and [`egress`] send traffic only to perform checks the user starts.
+//! Network checks, including SSH audits, only run when the user starts them.
 //!
 //! The library exists for reachmap's own binary and tests. It is not a
 //! stable API and may change in any release.

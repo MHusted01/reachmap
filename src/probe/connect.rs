@@ -54,7 +54,7 @@ fn with_port(mut address: SocketAddr, port: u16) -> SocketAddr {
 
 /// Waits up to `limit` for `connecting` and says how it ended. The connection,
 /// if there is one, closes when it is dropped here.
-pub(super) async fn attempt<T>(
+pub(crate) async fn attempt<T>(
     connecting: impl Future<Output = io::Result<T>>,
     limit: Duration,
 ) -> Outcome {

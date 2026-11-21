@@ -24,7 +24,7 @@ use crate::socket_options::OptionsReport;
 
 const VERSION: u32 = 1;
 const MAX_MIB: u64 = 64;
-const MAX_BYTES: u64 = MAX_MIB * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = MAX_MIB * 1024 * 1024;
 
 /// A short human-assigned label for the host that supplied the evidence.
 #[derive(Debug, Clone)]

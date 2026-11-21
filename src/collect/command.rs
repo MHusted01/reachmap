@@ -43,7 +43,8 @@ pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
 /// left behind with the pipe open, could block those waits forever. Both end
 /// with reachmap at the latest.
 pub(super) fn run(program: &str, args: &[&str], timeout: Duration) -> Result<String, CollectError> {
-    checked_output(program, args, capture(program, args, timeout, None)?)
+    let output = capture(program, args, timeout, None, |_| {})?;
+    checked_output(program, args, output)
 }
 
 /// Run a fixed-path probe without environment variables or shell configuration.
@@ -63,7 +64,19 @@ pub(super) fn run_isolated_with_limit(
     timeout: Duration,
     limit: u64,
 ) -> Result<String, CollectError> {
-    checked_output(program, args, capture(program, args, timeout, Some(limit))?)
+    run_bounded(program, args, timeout, (limit, limit), |_| {})
+}
+
+/// Run with an isolated environment and independent stdout and stderr limits.
+pub(crate) fn run_bounded(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    limits: (u64, u64),
+    configure: impl FnOnce(&mut Command),
+) -> Result<String, CollectError> {
+    let output = capture(program, args, timeout, Some(limits), configure)?;
+    checked_output(program, args, output)
 }
 
 fn checked_output(program: &str, args: &[&str], output: Output) -> Result<String, CollectError> {
@@ -84,7 +97,7 @@ pub(super) fn run_inventory(
 ) -> Result<(String, Option<String>), CollectError> {
     const MAX_DIAGNOSTIC_CHARS: usize = 200;
 
-    let output = capture(program, args, timeout, None)?;
+    let output = capture(program, args, timeout, None, |_| {})?;
     if !output.status.success()
         && (output.status.code() != Some(partial_status)
             || (output.stdout.is_empty() && !output.stderr.is_empty()))
@@ -112,7 +125,8 @@ fn capture(
     program: &str,
     args: &[&str],
     timeout: Duration,
-    limit: Option<u64>,
+    limits: Option<(u64, u64)>,
+    configure: impl FnOnce(&mut Command),
 ) -> Result<Output, CollectError> {
     let deadline = Instant::now() + timeout;
     let command = || describe(program, args);
@@ -126,9 +140,10 @@ fn capture(
     };
 
     let mut process = Command::new(program);
-    if limit.is_some() {
+    if limits.is_some() {
         process.env_clear().env("LC_ALL", "C");
     }
+    configure(&mut process);
     let mut child = process
         .args(args)
         .stdin(Stdio::null())
@@ -136,8 +151,8 @@ fn capture(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(failed_to_run)?;
-    let stdout = read_in_background(child.stdout.take(), limit);
-    let stderr = read_in_background(child.stderr.take(), limit);
+    let stdout = read_in_background(child.stdout.take(), limits.map(|(stdout, _)| stdout));
+    let stderr = read_in_background(child.stderr.take(), limits.map(|(_, stderr)| stderr));
 
     let Some(status) = wait_until(&mut child, deadline).map_err(failed_to_run)? else {
         // Failing to kill means it already exited; the timeout is still the
@@ -211,7 +226,7 @@ fn read_output(mut pipe: impl Read, limit: Option<u64>) -> io::Result<Vec<u8>> {
         // Let a finite writer finish without holding the remaining bytes or
         // hitting a broken pipe. The caller still enforces its deadline.
         io::copy(&mut pipe, &mut io::sink()).ok();
-        return Err(io::Error::other("probe output exceeded its size limit"));
+        return Err(io::Error::other("command output exceeded its size limit"));
     }
     Ok(bytes)
 }
@@ -270,7 +285,7 @@ mod tests {
         }
         let mut output = io::Cursor::new(b"12345678");
         let error = read_output(&mut output, Some(4)).unwrap_err();
-        assert_eq!(error.to_string(), "probe output exceeded its size limit");
+        assert_eq!(error.to_string(), "command output exceeded its size limit");
         assert_eq!(output.position(), 8);
     }
 
@@ -286,7 +301,7 @@ mod tests {
     fn isolated_commands_report_oversized_output() {
         let error =
             run_isolated("/usr/bin/head", &["-c", "131072", "/dev/zero"], LONG).unwrap_err();
-        assert!(render_chain(&error).contains("probe output exceeded its size limit"));
+        assert!(render_chain(&error).contains("command output exceeded its size limit"));
     }
 
     fn assert_times_out(script: &str) {

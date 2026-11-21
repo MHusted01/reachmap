@@ -45,6 +45,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Audit one TCP endpoint using an installed Linux collector over SSH
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    Audit(reachmap::inbound_path::remote_audit::Args),
     /// Predict or replay a Linux inbound TCP path to a local socket
     #[command(subcommand)]
     Path(path_cli::Command),
@@ -131,6 +134,14 @@ struct ProbeTarget {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        Command::Audit(args) => match reachmap::inbound_path::remote_audit::run(args) {
+            Ok((text, status)) => write_or(&text, status.into(), COULD_NOT_COMPARE.into()),
+            Err(error) => {
+                eprintln!("error: {}", render_chain(&error));
+                COULD_NOT_COMPARE.into()
+            }
+        },
         Command::Path(command) => command.run(),
         Command::Scan {
             tailscale_routes: true,
