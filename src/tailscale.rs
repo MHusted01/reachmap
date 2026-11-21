@@ -7,7 +7,7 @@ use std::fmt;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::collect::{self, CollectError};
@@ -53,7 +53,7 @@ impl TailscaleError {
 }
 
 /// Who Tailscale shares a port with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Sharing {
     /// Devices on the tailnet: `tailscale serve`.

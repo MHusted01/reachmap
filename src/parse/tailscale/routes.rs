@@ -1,8 +1,10 @@
 //! Keep route identity and recover individual records from partial Serve status.
 
 use std::collections::BTreeSet;
+use std::fmt;
 use std::net::SocketAddr;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::{default_port, proxy_addresses};
@@ -18,30 +20,61 @@ pub(crate) struct ConfiguredRoutes {
     pub unsupported_services: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Route {
     pub entry: EntryPoint,
     pub mount: Option<String>,
     pub backend: Backend,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct EntryPoint {
     pub host: Option<String>,
     pub port: u16,
     pub sharing: Option<Sharing>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum Backend {
     HttpProxy {
         endpoint: String,
         targets: Vec<SocketAddr>,
     },
     Unsupported {
-        handler: &'static str,
+        handler: UnsupportedHandler,
         endpoint: Option<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UnsupportedHandler {
+    InvalidConfiguration,
+    TcpForwarding,
+    UnknownTcp,
+    UnknownWeb,
+    FileOrDirectory,
+    StaticText,
+    Redirect,
+    UnixSocketProxy,
+    ProxyScheme,
+}
+
+impl fmt::Display for UnsupportedHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InvalidConfiguration => "invalid configuration",
+            Self::TcpForwarding => "TCP forwarding",
+            Self::UnknownTcp => "unrecognised TCP handler",
+            Self::UnknownWeb => "unrecognised web handler",
+            Self::FileOrDirectory => "file or directory",
+            Self::StaticText => "static text",
+            Self::Redirect => "redirect",
+            Self::UnixSocketProxy => "Unix socket proxy",
+            Self::ProxyScheme => "proxy scheme",
+        })
+    }
 }
 
 pub(crate) fn parse_routes(json: &str) -> Result<ConfiguredRoutes, serde_json::Error> {
@@ -130,12 +163,8 @@ impl ConfiguredRoutes {
                     .as_object()
                     .and_then(read_backend)
                     .unwrap_or_else(|| {
-                        self.notes.push(format!(
-                            "invalid handler at {} {}",
-                            sanitize(key),
-                            sanitize(mount)
-                        ));
-                        unsupported("invalid configuration", None)
+                        self.notes.push("invalid Web handler".into());
+                        unsupported(UnsupportedHandler::InvalidConfiguration, None)
                     });
                 self.routes.push(Route {
                     entry: EntryPoint {
@@ -156,8 +185,7 @@ impl ConfiguredRoutes {
         };
         for (port, handler) in tcp {
             let (Some(port), Some(handler)) = (parse_port(port), handler.as_object()) else {
-                self.notes
-                    .push(format!("invalid TCP entry on port {}", sanitize(port)));
+                self.notes.push("invalid TCP entry".into());
                 continue;
             };
             // A TCP entry with only HTTP(S) enabled dispatches to the Web handlers.
@@ -200,10 +228,11 @@ impl ConfiguredRoutes {
                     },
                     mount: None,
                     backend: match forward {
-                        Some(target) => {
-                            unsupported("TCP forwarding", Some(display_endpoint(target)))
-                        }
-                        None => unsupported("unrecognised TCP handler", None),
+                        Some(target) => unsupported(
+                            UnsupportedHandler::TcpForwarding,
+                            Some(display_endpoint(target)),
+                        ),
+                        None => unsupported(UnsupportedHandler::UnknownTcp, None),
                     },
                 });
             }
@@ -237,7 +266,7 @@ fn read_backend(handler: &Object) -> Option<Backend> {
         .filter_map(|kind| handler.get(kind).map(|value| (kind, value)))
         .filter(|(_, value)| !value.is_null() && value.as_str() != Some(""));
     let Some((kind, value)) = kinds.next() else {
-        return Some(unsupported("unrecognised web handler", None));
+        return Some(unsupported(UnsupportedHandler::UnknownWeb, None));
     };
     if kinds.next().is_some() {
         return None;
@@ -245,24 +274,24 @@ fn read_backend(handler: &Object) -> Option<Backend> {
     let value = value.as_str()?;
     Some(match kind {
         "Proxy" => proxy_backend(value),
-        "Path" => unsupported("file or directory", Some(sanitize(value))),
-        "Text" => unsupported("static text", None),
-        _ => unsupported("redirect", Some(display_endpoint(value))),
+        "Path" => unsupported(UnsupportedHandler::FileOrDirectory, Some(sanitize(value))),
+        "Text" => unsupported(UnsupportedHandler::StaticText, None),
+        _ => unsupported(UnsupportedHandler::Redirect, Some(display_endpoint(value))),
     })
 }
 
-fn unsupported(handler: &'static str, endpoint: Option<String>) -> Backend {
+fn unsupported(handler: UnsupportedHandler, endpoint: Option<String>) -> Backend {
     Backend::Unsupported { handler, endpoint }
 }
 
 fn proxy_backend(value: &str) -> Backend {
     let endpoint = display_endpoint(value);
     if value.starts_with("unix:") {
-        return unsupported("Unix socket proxy", Some(endpoint));
+        return unsupported(UnsupportedHandler::UnixSocketProxy, Some(endpoint));
     }
     let targets = match value.split_once("://") {
         Some((scheme, _)) if default_port(scheme).is_none() => {
-            return unsupported("proxy scheme", Some(endpoint));
+            return unsupported(UnsupportedHandler::ProxyScheme, Some(endpoint));
         }
         Some(_) => proxy_addresses(value),
         None if parse_port(value).is_some() => {
@@ -281,9 +310,13 @@ fn proxy_backend(value: &str) -> Backend {
 /// path still identify the backend in this opt-in report.
 fn display_endpoint(value: &str) -> String {
     let value = value.split(['?', '#']).next().unwrap_or_default();
-    let (prefix, rest) = value
-        .find("://")
-        .map_or(("", value), |index| value.split_at(index + 3));
+    let (prefix, rest) = if value.starts_with("//") {
+        value.split_at(2)
+    } else {
+        value
+            .find("://")
+            .map_or(("", value), |index| value.split_at(index + 3))
+    };
     let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
     let authority = authority.rsplit('@').next().unwrap_or_default();
     sanitize(&format!("{prefix}{authority}{path}"))

@@ -33,6 +33,7 @@ pub mod reach;
 pub mod sanitize;
 pub mod scan;
 pub mod service;
+pub mod snapshot_replay;
 pub mod socket;
 pub mod socket_options;
 pub mod table;

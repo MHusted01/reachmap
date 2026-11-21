@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan --tailscale-routes --snapshot --host-ref LABEL` saves configured
+  Tailscale route and listener evidence for offline replay
+  ([#94](https://github.com/MHusted01/reachmap/issues/94)).
 - `reachmap scan --tailscale-routes` reports configured host-level Serve and
   Funnel routes and links supported loopback backends to local TCP listeners
   ([#93](https://github.com/MHusted01/reachmap/issues/93)).

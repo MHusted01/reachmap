@@ -22,6 +22,7 @@ use reachmap::probe::{
     DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT, ProbeError, ProbeOptions, ProbeReport,
 };
 use reachmap::scan::ScanReport;
+use reachmap::snapshot_replay;
 use reachmap::table::Report;
 
 mod path_cli;
@@ -53,20 +54,20 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Explain configured Tailscale Serve and Funnel routes on Linux
-        #[arg(long, conflicts_with_all = ["json", "snapshot"])]
+        #[arg(long, conflicts_with = "json")]
         tailscale_routes: bool,
-        /// On Linux, print a host-input evidence snapshot as JSON
+        /// On Linux, print host-input or Tailscale route evidence as JSON
         #[arg(long, requires = "host_ref", conflicts_with = "json")]
         snapshot: bool,
         /// A label you choose for the host in the snapshot
         #[arg(long, value_name = "LABEL", requires = "snapshot")]
         host_ref: Option<HostRef>,
     },
-    /// Reevaluate a saved Linux host-input snapshot without querying the host
+    /// Reevaluate saved scan evidence without querying the host
     Replay {
         /// The evidence file from `reachmap scan --snapshot`
         snapshot: PathBuf,
-        /// Print the input findings in JSON
+        /// Print host-input findings in JSON
         #[arg(long)]
         json: bool,
     },
@@ -133,8 +134,9 @@ fn main() -> ExitCode {
         Command::Path(command) => command.run(),
         Command::Scan {
             tailscale_routes: true,
+            host_ref,
             ..
-        } => tailscale_cli::run(),
+        } => tailscale_cli::run(host_ref),
         Command::Scan {
             host_ref: Some(host_ref),
             ..
@@ -313,8 +315,15 @@ fn run_snapshot(host_ref: HostRef) -> ExitCode {
 }
 
 fn run_replay(path: &Path, json: bool) -> ExitCode {
-    let report = match host_input_snapshot::replay(path) {
-        Ok(report) => report,
+    let report = match snapshot_replay::replay(path) {
+        Ok(snapshot_replay::Report::HostInput(report)) => report,
+        Ok(snapshot_replay::Report::TailscaleRoutes(snapshot)) => {
+            if json {
+                eprintln!("error: --json is only supported for replaying host-input snapshots");
+                return ExitCode::from(BAD_ARGUMENTS);
+            }
+            return tailscale_cli::write_report(&snapshot, snapshot.is_complete());
+        }
         Err(error) => {
             let message = format!(
                 "could not replay {}: {}",
