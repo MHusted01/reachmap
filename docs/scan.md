@@ -305,13 +305,16 @@ IPv4 Docker bridge publishes.
   is stale or you know the configuration changed in between.
 
 The report retains both results independently. A completed handshake verifies
-reachability from that client to that endpoint at the observed time. A refused,
-unanswered or unreachable attempt may differ from a prediction that the SYN can
-reach a listener. It leaves the firewall verdict unresolved. A successful
-handshake can also disagree with a prediction of a blocked path or no listener.
-Agreement means the results are consistent within their scope. If evidence is
-missing, mismatched or stale, or a path stage is unsupported, the report gives
-the reason the comparison is unavailable.
+reachability from that client to that endpoint at the observed time. It is
+consistent with a reachable listener and disagrees with a prediction of a
+blocked path or no listener.
+
+A refusal is consistent with a prediction of no listener. An unanswered or
+unreachable attempt is consistent with a blocked path. These observations
+leave the cause and firewall verdict unresolved. Other negative outcomes
+leave the comparison inconclusive. If evidence is missing, mismatched or
+stale, or a path stage is unsupported, the report gives the reason the
+comparison is unavailable.
 
 ## Host-input evidence snapshots
 

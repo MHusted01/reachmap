@@ -145,6 +145,9 @@ pub enum Gap {
     /// The probe failed without observing the result of a handshake attempt.
     #[error("resolve the reported probe error and retry the attempt")]
     ProbeFailed,
+    /// The probe did not establish whether the SYN behaved as predicted.
+    #[error("check endpoint availability and the return path separately from the SYN prediction")]
+    NegativeOutcomeInconclusive,
 }
 
 /// The original results, with the scope and outcome of their comparison.
@@ -210,21 +213,17 @@ fn compare(
     match_flow(prediction, &observation)?;
     check_age(prediction.captured_at_unix_seconds, &observation, max_age)?;
 
-    let listener_reachable = match prediction.verdict {
-        Verdict::ListenerReachable => true,
-        Verdict::Blocked | Verdict::NoListener => false,
-        Verdict::NotLocal | Verdict::Unknown => return Err(Gap::PredictionInconclusive),
-    };
-    let handshake_succeeded = match observation.outcome {
-        Outcome::Open => true,
-        Outcome::Closed | Outcome::NoAnswer | Outcome::Unreachable => false,
-        Outcome::Failed { .. } => return Err(Gap::ProbeFailed),
-    };
-    Ok(if listener_reachable == handshake_succeeded {
-        Comparison::Consistent
-    } else {
-        Comparison::Disagrees
-    })
+    match (&prediction.verdict, observation.outcome) {
+        (Verdict::NotLocal | Verdict::Unknown, _) => Err(Gap::PredictionInconclusive),
+        (_, Outcome::Failed { .. }) => Err(Gap::ProbeFailed),
+        (Verdict::ListenerReachable, Outcome::Open)
+        | (Verdict::Blocked, Outcome::NoAnswer | Outcome::Unreachable)
+        | (Verdict::NoListener, Outcome::Closed) => Ok(Comparison::Consistent),
+        (Verdict::Blocked | Verdict::NoListener, Outcome::Open) => Ok(Comparison::Disagrees),
+        (_, Outcome::Closed | Outcome::NoAnswer | Outcome::Unreachable) => {
+            Err(Gap::NegativeOutcomeInconclusive)
+        }
+    }
 }
 
 fn match_scope(capture: Option<Scope<'_>>, observation: Option<Scope<'_>>) -> Result<(), Gap> {

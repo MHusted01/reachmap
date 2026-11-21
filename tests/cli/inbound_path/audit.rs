@@ -1,3 +1,5 @@
+use std::num::NonZeroU64;
+
 use reachmap::inbound_path::audit::{
     Capture, Comparison, Gap, Ingress, Observation, Scope, correlate,
 };
@@ -75,7 +77,7 @@ fn successful_handshakes_match_supported_predictions_for_both_ip_families() {
 }
 
 #[test]
-fn divergence_keeps_the_prediction_and_handshake_outcome_visible() {
+fn a_handshake_can_disagree_with_a_blocked_prediction_but_a_refusal_is_inconclusive() {
     let mut fixture = snapshot();
     fixture["evidence"]["nftables"] = collected(
         r#"{"nftables":[{"table":{"family":"inet","name":"site"}},
@@ -93,16 +95,56 @@ fn divergence_keeps_the_prediction_and_handshake_outcome_visible() {
     let report = correlate(blocked, Some(observed(&Outcome::NoAnswer)), MAX_AGE);
     assert_eq!(report.comparison, Comparison::Consistent);
 
+    let report = correlate(blocked, Some(observed(&Outcome::Closed)), MAX_AGE);
+    assert_eq!(
+        report.comparison,
+        Comparison::Unavailable(Gap::NegativeOutcomeInconclusive)
+    );
+}
+
+#[test]
+fn a_refusal_does_not_show_whether_the_syn_reached_the_predicted_listener() {
     let reachable = load("audit_refused.json", &snapshot());
     let report = correlate(
         Some(capture(&reachable)),
         Some(observed(&Outcome::Closed)),
         MAX_AGE,
     );
-    assert_eq!(report.comparison, Comparison::Disagrees);
+    assert_eq!(
+        report.comparison,
+        Comparison::Unavailable(Gap::NegativeOutcomeInconclusive)
+    );
     let json = to_value(report).unwrap();
     assert_eq!(json["prediction"]["verdict"], "listener_reachable");
     assert_eq!(json["observation"]["outcome"]["kind"], "closed");
+}
+
+#[test]
+fn refusal_is_consistent_with_no_listener_but_silence_is_inconclusive() {
+    let mut fixture = snapshot();
+    fixture["evidence"]["listeners"] = collected(json!([]));
+    let fixture = load("audit_no_listener.json", &fixture);
+    let capture = Some(capture(&fixture));
+
+    for (outcome, comparison) in [
+        (Outcome::Open, Comparison::Disagrees),
+        (Outcome::Closed, Comparison::Consistent),
+        (
+            Outcome::NoAnswer,
+            Comparison::Unavailable(Gap::NegativeOutcomeInconclusive),
+        ),
+        (
+            Outcome::Unreachable,
+            Comparison::Unavailable(Gap::NegativeOutcomeInconclusive),
+        ),
+    ] {
+        let report = correlate(capture, Some(observed(&outcome)), MAX_AGE);
+        assert_eq!(report.comparison, comparison, "{outcome:?}");
+        assert_eq!(
+            to_value(report).unwrap()["prediction"]["verdict"],
+            "no_listener"
+        );
+    }
 }
 
 #[test]
@@ -214,15 +256,24 @@ fn comparison_requires_the_same_host_network_addresses_source_and_ingress() {
         assert!(report.observation.is_some());
     }
 
-    let untrusted = Capture {
-        scope: None,
-        ..capture
-    };
-    let report = correlate(Some(untrusted), Some(observation), MAX_AGE);
-    assert_eq!(
-        report.comparison,
-        Comparison::Unavailable(Gap::CaptureScopeMissing)
-    );
+    for scope in [
+        None,
+        Some(Scope {
+            collector_identity: " ",
+            ..SCOPE
+        }),
+        Some(Scope {
+            network_context: "",
+            ..SCOPE
+        }),
+    ] {
+        let untrusted = Capture { scope, ..capture };
+        let report = correlate(Some(untrusted), Some(observation), MAX_AGE);
+        assert_eq!(
+            report.comparison,
+            Comparison::Unavailable(Gap::CaptureScopeMissing)
+        );
+    }
 }
 
 #[test]
@@ -324,37 +375,49 @@ fn probe_execution_errors_leave_no_handshake_evidence_to_compare() {
 
 #[test]
 fn comparison_declines_an_ipv6_flow_that_requires_a_zone() {
-    let mut fixture = snapshot();
-    fixture["flow"]["source"] = json!("fe80::2");
-    fixture["flow"]["destination"] = json!("fe80::1");
-    let fixture = load("audit_zoned_ipv6.json", &fixture);
-    let observation = Observation {
-        source: Some("fe80::2".parse().unwrap()),
-        destination: "[fe80::1%2]:8443".parse().unwrap(),
-        ..observed(&Outcome::Open)
-    };
-    let report = correlate(Some(capture(&fixture)), Some(observation), MAX_AGE);
-    assert_eq!(
-        report.comparison,
-        Comparison::Unavailable(Gap::Ipv6ZoneUnsupported)
-    );
+    for (file, destination, endpoint) in [
+        ("audit_zoned_ipv6.json", "fe80::1", "[fe80::1%2]:8443"),
+        (
+            "audit_zoned_source.json",
+            "2001:db8::1",
+            "[2001:db8::1]:8443",
+        ),
+    ] {
+        let mut fixture = snapshot();
+        fixture["flow"]["source"] = json!("fe80::2");
+        fixture["flow"]["destination"] = json!(destination);
+        let fixture = load(file, &fixture);
+        let observation = Observation {
+            source: Some("fe80::2".parse().unwrap()),
+            destination: endpoint.parse().unwrap(),
+            ..observed(&Outcome::Open)
+        };
+        let report = correlate(Some(capture(&fixture)), Some(observation), MAX_AGE);
+        assert_eq!(
+            report.comparison,
+            Comparison::Unavailable(Gap::Ipv6ZoneUnsupported)
+        );
+    }
 }
 
 #[test]
-fn a_directly_decoded_snapshot_still_requires_a_supported_format() {
-    let mut fixture = snapshot();
-    fixture["snapshot_version"] = json!(2);
-    let fixture = serde_json::from_value(fixture).unwrap();
-    let report = correlate(
-        Some(capture(&fixture)),
-        Some(observed(&Outcome::Open)),
-        MAX_AGE,
-    );
-    assert_eq!(
-        report.comparison,
-        Comparison::Unavailable(Gap::InvalidCapture)
-    );
-    assert!(report.prediction.is_none());
-    assert!(report.observation.is_some());
+fn directly_decoded_snapshots_still_require_supported_formats_and_valid_flows() {
+    let mut invalid_version = snapshot();
+    invalid_version["snapshot_version"] = json!(2);
+    let mut invalid_flow = snapshot();
+    invalid_flow["flow"]["source"] = json!("0.0.0.0");
+    for raw in [invalid_version, invalid_flow] {
+        let fixture = serde_json::from_value(raw).unwrap();
+        let report = correlate(
+            Some(capture(&fixture)),
+            Some(observed(&Outcome::Open)),
+            MAX_AGE,
+        );
+        assert_eq!(
+            report.comparison,
+            Comparison::Unavailable(Gap::InvalidCapture)
+        );
+        assert!(report.prediction.is_none());
+        assert!(report.observation.is_some());
+    }
 }
-use std::num::NonZeroU64;
