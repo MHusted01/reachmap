@@ -442,6 +442,30 @@ forwards them, usually to a program on loopback, so the program's socket says
 nothing about them. reachmap therefore asks `tailscale serve status --json`,
 which only reads and needs no root.
 
+Run `reachmap scan --tailscale-routes` on Linux to inspect configured host-level
+routes. It prints each hostname, port and mount path separately, even when
+several share the same port. Funnel is identified by the exact hostname and
+port in Serve status. For example:
+
+```text
+node.example.ts.net:443 / [Funnel] -> http://127.0.0.1:3000 (TCP listener 127.0.0.1:3000)
+node.example.ts.net:443 /docs [Funnel] -> /srv/example (unsupported handler: file or directory)
+```
+
+The report links supported HTTP reverse proxies to local TCP listeners when
+there is a unique match. Missing or ambiguous listeners, unresolved targets
+and unsupported handlers include a reason. The command reads local status
+and socket inventory without resolving DNS names or connecting to backends.
+It describes configuration and local socket evidence. Reachability and
+application authentication remain unverified.
+
+The report includes configured hostnames and paths. It omits URL credentials,
+queries, fragments and static response text. An empty configuration gives a
+successful empty report. Collection failure or partial data returns exit 1,
+and a partial report shows the evidence it could use. Route output is opt-in
+and text-only. `reachmap scan` and `reachmap scan --json` keep their existing
+port-level summaries.
+
 A row that Tailscale forwards to gains `tailnet`, and with Funnel also
 `internet (if not filtered upstream)`. WHY keeps the socket's own reason and
 adds the ports clients connect to:

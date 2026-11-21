@@ -17,6 +17,8 @@ use crate::reach::{Reach, Reason, Verdict};
 use crate::scan::ISSUES_URL;
 use crate::socket::{Endpoint, Protocol};
 
+pub mod routes;
+
 /// What `tailscale` prints when it cannot reach its daemon, in lower case.
 const DAEMON_DOWN: &str = "failed to connect to local tailscale daemon";
 

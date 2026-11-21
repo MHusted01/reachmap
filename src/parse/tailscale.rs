@@ -12,6 +12,8 @@ use thiserror::Error;
 use crate::sanitize::sanitize;
 use crate::tailscale::{SharedPort, Sharing};
 
+pub(crate) mod routes;
+
 /// The host name Tailscale accepts as a target without a scheme. It can mean
 /// either loopback address, so a target with this name counts as both.
 const LOCALHOST: &str = "localhost";

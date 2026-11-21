@@ -1,0 +1,29 @@
+{
+  "Web": {
+    "node.example.ts.net:443": {
+      "Handlers": {
+        "/": { "Proxy": "http://127.0.0.1:3000" },
+        "/api": { "Proxy": "https+insecure://[::1]:9443/internal" },
+        "/docs": { "Path": "/srv/example" },
+        "/missing": { "Proxy": "localhost:4000" },
+        "/remote": { "Proxy": "https://user:secret@backend.example.test/api?token=secret#secret" }
+      }
+    },
+    "other.example.ts.net:443": {
+      "Handlers": {
+        "/": { "Proxy": "3000" },
+        "/status": { "Text": "private contents" }
+      }
+    }
+  },
+  "AllowFunnel": { "node.example.ts.net:443": true },
+  "Foreground": {
+    "example-session": {
+      "Web": {
+        "node.example.ts.net:8443": {
+          "Handlers": { "/": { "Proxy": "unix:/run/example.sock" } }
+        }
+      }
+    }
+  }
+}

@@ -25,6 +25,7 @@ use reachmap::scan::ScanReport;
 use reachmap::table::Report;
 
 mod path_cli;
+mod tailscale_cli;
 
 /// `reachmap diff`'s status when nothing could be compared, as for `diff(1)`.
 /// Status 1 means differences, so a failure must not look like one.
@@ -51,6 +52,9 @@ enum Command {
         /// Print the findings as JSON instead of a table
         #[arg(long)]
         json: bool,
+        /// Explain configured Tailscale Serve and Funnel routes on Linux
+        #[arg(long, conflicts_with_all = ["json", "snapshot"])]
+        tailscale_routes: bool,
         /// On Linux, print a host-input evidence snapshot as JSON
         #[arg(long, requires = "host_ref", conflicts_with = "json")]
         snapshot: bool,
@@ -127,6 +131,10 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Path(command) => command.run(),
+        Command::Scan {
+            tailscale_routes: true,
+            ..
+        } => tailscale_cli::run(),
         Command::Scan {
             host_ref: Some(host_ref),
             ..
