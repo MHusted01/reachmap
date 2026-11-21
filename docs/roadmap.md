@@ -20,6 +20,13 @@ v0.4.0 includes the [Linux packet paths](https://github.com/MHusted01/reachmap/m
 and [Docker bridge coverage](https://github.com/MHusted01/reachmap/milestone/5) work.
 The [changelog](../CHANGELOG.md) lists the changes by release.
 
+Since v0.4.0, the [Tailscale milestone](https://github.com/MHusted01/reachmap/milestone/6)
+added configured Serve and Funnel route explanations and offline replay.
+Disposable deployments corroborated selected HTTP routes. A route report
+describes configuration and local backend evidence. Client access still
+requires a separate observation from the relevant vantage point. See the
+[verification guide](tailscale-verification.md).
+
 | Release | Capabilities | Evidence limits |
 | --- | --- | --- |
 | [v0.1.0](https://github.com/MHusted01/reachmap/releases/tag/v0.1.0) | Linux TCP socket and process inventory, address coverage, Docker published ports, UFW warnings and JSON output. Linux and macOS binaries are available. | Bind scope and warning signals describe potential exposure. Local scanning requires Linux. |
@@ -159,6 +166,14 @@ or identity policies a local collector can see. Avoid collecting secrets by
 default. Test each adapter before claiming support for its path.
 
 ### Integrated remote auditing
+
+**Active milestone.** [Verified Linux TCP audits](https://github.com/MHusted01/reachmap/milestone/7)
+starts with one explicit TCP endpoint and an installed Linux collector over
+authenticated SSH. It pairs an inbound SYN prediction with a TCP handshake
+observation from the operator's machine. The first scope is direct IPv4 and
+IPv6 listeners and supported IPv4 Docker bridge publishes. Disagreements and
+evidence gaps stay visible. Establish this workflow before adding more proxy
+or tunnel adapters so later integrations can use the same evidence model.
 
 **Outcome.** Bring remote collection, local probes and correlation into one
 explicit audit, such as `reachmap audit ssh://user@host`. Start with Linux
