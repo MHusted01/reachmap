@@ -206,8 +206,8 @@ needs root or `CAP_NET_ADMIN`.
 ## Linux inbound TCP paths
 
 `reachmap path predict` explains whether a new inbound TCP SYN from a given
-source can reach a local Linux listener. The report follows the stated ingress
-interface through routing, nftables input and listener matching. The command
+source can reach a local Linux listener or a supported Docker bridge publish. The report follows the stated ingress
+interface through the relevant routing and firewall stages to listener matching. The command
 queries the local host and sends no packets. Live collection normally needs
 root privileges for the firewall and policy evidence.
 
@@ -228,7 +228,7 @@ flow. It covers ordinary Ethernet, veth and loopback ingress without a bridge
 or other master. The local route comes from the kernel's inbound lookup using
 the stated source and interface with the default routing policy rules.
 
-An applicable nftables ingress or prerouting hook, legacy firewall tables,
+An unsupported nftables ingress or prerouting hook, legacy firewall tables,
 XFRM policies or a non-accepting XFRM default, a nonstandard routing policy, or
 an unsupported input rule can make the result `unknown`. The report names the
 first unresolved stage. The socket stage checks exact and wildcard bindings,
@@ -238,6 +238,28 @@ with missing options. One confirmed candidate is enough for a reachable verdict.
 The scope ends at listener lookup and assumes normal TCP demultiplexing without
 custom BPF socket selection. Return routing, handshake completion, socket
 filters and application behavior are outside this prediction.
+
+### Docker bridge published ports
+
+For an external IPv4 TCP SYN to a host address on Docker's default `docker0`
+bridge, the same command can follow a kernel destination NAT rule. The verified
+configuration uses Docker Engine 29.1.3 with the native nftables firewall
+backend, userland proxy disabled, and a container attached only to the default
+IPv4 bridge. Collection uses the local root-owned Docker socket and samples
+the container's network namespace.
+
+The destination NAT stage shows the original and translated address and port.
+The routing stage identifies the direct route to the bridge, and the forwarding
+stage evaluates the applicable nftables chains in order. An accept in Docker's
+chain can still be followed by a drop in another chain. The report then checks
+postrouting and the listener in the container namespace. Missing evidence or
+unsupported rules yield `unknown` at the affected stage. Docker publication
+metadata alone cannot establish that a path reaches a listener.
+
+The Docker prediction covers kernel DNAT on this topology. Custom bridge
+topologies, userland proxies, additional source translation, and container
+firewall rules are outside the supported path. Docker's existing IPv6 and UFW
+findings remain available in `reachmap scan`.
 
 `path capture` saves one flow with a host label, capture time and evidence for
 each stage. `path replay` reads that file on Linux or macOS and queries no live

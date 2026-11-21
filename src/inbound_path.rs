@@ -14,6 +14,7 @@ use crate::host_input_snapshot::{
 };
 use crate::socket::AddressFamily;
 
+pub(crate) mod docker;
 mod evaluate;
 
 const VERSION: u32 = 1;
@@ -107,6 +108,8 @@ pub(crate) struct PathEvidence {
     pub(crate) routing_rules: Evidence<String>,
     pub(crate) route: Evidence<String>,
     pub(crate) listeners: Evidence<Vec<Listener>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) docker: Option<docker::DockerEvidence>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

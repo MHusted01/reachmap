@@ -7,7 +7,8 @@ use crate::nftables::InputVerdict;
 use crate::sanitize::sanitize;
 use crate::socket::{AddressFamily, Protocol};
 
-use super::matches::{NamedSetEntry, SetIndex};
+use super::matches::{NamedSetEntry, Packet, SetIndex};
+use super::path::{PathHookResult, VerdictMapEntry};
 use super::{Action, Chain, ChainKey, Entry, Policy, Rule, RuleAction, Ruleset, TableFlags};
 
 #[cfg(test)]
@@ -21,6 +22,10 @@ type ChainDecision<'a> = Result<(Action, Reason<'a>), Reason<'a>>;
 
 impl Ruleset {
     pub(crate) fn input(&self, family: AddressFamily) -> Option<InputHook<'_>> {
+        self.hook(family, "input")
+    }
+
+    pub(super) fn hook(&self, family: AddressFamily, hook: &str) -> Option<InputHook<'_>> {
         let family_name = match family {
             AddressFamily::Ipv4 => "ip",
             AddressFamily::Ipv6 => "ip6",
@@ -28,7 +33,7 @@ impl Ruleset {
         let mut chains = Vec::new();
         for chain in self.nftables.iter().filter_map(|entry| match entry {
             Entry::Chain(chain)
-                if chain.hook.as_deref() == Some("input")
+                if chain.hook.as_deref() == Some(hook)
                     && (chain.family == family_name || chain.family == "inet") =>
             {
                 Some(chain)
@@ -51,7 +56,7 @@ impl Ruleset {
             }
             let policy = table
                 .ok_or("input chain's table is missing")
-                .and_then(|_| input_policy(chain));
+                .and_then(|_| chain_policy(chain, hook));
             chains.push(InputChain { chain, policy });
         }
         // A missing priority could precede every known priority.
@@ -60,6 +65,14 @@ impl Ruleset {
             family,
             chains,
             index: self.index_chains(),
+            maps: self
+                .nftables
+                .iter()
+                .filter_map(|entry| match entry {
+                    Entry::Map(VerdictMapEntry::Supported(map)) => Some((map.key(), map)),
+                    _ => None,
+                })
+                .collect(),
             sets: self
                 .nftables
                 .iter()
@@ -97,8 +110,9 @@ impl Ruleset {
     }
 }
 
-fn input_policy(chain: &Chain) -> Result<Action, &'static str> {
-    if chain.kind.as_deref() != Some("filter") {
+fn chain_policy(chain: &Chain, hook: &str) -> Result<Action, &'static str> {
+    let nat = matches!(hook, "prerouting" | "postrouting") && chain.kind.as_deref() == Some("nat");
+    if !nat && chain.kind.as_deref() != Some("filter") {
         return Err("unsupported input chain type");
     }
     if chain.prio.is_none() {
@@ -117,18 +131,39 @@ pub(crate) struct InputHook<'a> {
     chains: Vec<InputChain<'a>>,
     index: ChainIndex<'a>,
     sets: SetIndex<'a>,
+    maps: super::path::MapIndex<'a>,
 }
 
 impl InputHook<'_> {
     pub(crate) fn evaluate(&self, protocol: Protocol, port: u16, interface: &str) -> InputVerdict {
-        let mut accept_reason = "all applicable input chains accept";
+        let packet = Packet {
+            protocol,
+            port,
+            ingress: interface,
+            path: None,
+        };
+        match self.evaluate_packet(packet) {
+            PathHookResult::Accept { reason } => InputVerdict::Accept { reason },
+            PathHookResult::Drop { reason } => InputVerdict::Drop { reason },
+            PathHookResult::Unknown { reason } => InputVerdict::Unknown { reason },
+            PathHookResult::Dnat { .. } => InputVerdict::Unknown {
+                reason: "unexpected translation at the input hook".to_owned(),
+            },
+        }
+    }
+
+    pub(super) fn evaluate_packet(&self, packet: Packet<'_>) -> PathHookResult {
+        let mut accept_reason = if packet.path.is_some() {
+            "all applicable base chains accept".to_owned()
+        } else {
+            "all applicable input chains accept".to_owned()
+        };
         let mut walk = Walk {
             index: &self.index,
             sets: &self.sets,
+            maps: &self.maps,
             family: self.family,
-            protocol,
-            port,
-            interface,
+            packet,
             active: Vec::new(),
             remaining: MAX_RULE_VISITS,
         };
@@ -140,28 +175,39 @@ impl InputHook<'_> {
             for input in group {
                 match walk.evaluate(input) {
                     Ok((Action::Accept, reason)) if self.chains.len() == 1 => {
-                        accept_reason = reason.message;
+                        accept_reason = if packet.path.is_some() {
+                            reason.with_chain()
+                        } else {
+                            reason.message.to_owned()
+                        };
                     }
                     Ok((Action::Accept, _)) => {}
                     Ok((Action::Drop, reason)) => {
                         drop.get_or_insert(reason);
                     }
+                    Ok((Action::Dnat(endpoint), reason)) => {
+                        // Path validation admits exactly one NAT chain, last in prerouting.
+                        return PathHookResult::Dnat {
+                            endpoint,
+                            reason: reason.with_chain(),
+                        };
+                    }
                     // Netfilter does not guarantee an order within a priority.
                     Err(reason) => {
-                        return InputVerdict::Unknown {
+                        return PathHookResult::Unknown {
                             reason: reason.with_chain(),
                         };
                     }
                 }
             }
             if let Some(reason) = drop {
-                return InputVerdict::Drop {
+                return PathHookResult::Drop {
                     reason: reason.with_chain(),
                 };
             }
         }
-        InputVerdict::Accept {
-            reason: accept_reason.to_string(),
+        PathHookResult::Accept {
+            reason: accept_reason,
         }
     }
 }
@@ -196,9 +242,8 @@ struct Walk<'index, 'rules, 'packet> {
     index: &'index ChainIndex<'rules>,
     sets: &'index SetIndex<'rules>,
     family: AddressFamily,
-    protocol: Protocol,
-    port: u16,
-    interface: &'packet str,
+    maps: &'index super::path::MapIndex<'rules>,
+    packet: Packet<'packet>,
     active: Vec<&'rules str>,
     remaining: usize,
 }
@@ -235,13 +280,20 @@ impl<'index, 'rules> Walk<'index, 'rules, '_> {
                 return ControlFlow::Break(Err(reason("input rule visit limit exceeded")));
             }
             self.remaining -= 1;
-            match rule.evaluate(
-                self.sets,
-                self.family,
-                self.protocol,
-                self.port,
-                self.interface,
-            ) {
+            let mut packet = self.packet;
+            if let Some(path) = &mut packet.path {
+                path.allow_dnat &= self
+                    .active
+                    .first()
+                    .is_some_and(|&name| name == "nat-PREROUTING");
+            }
+            match rule.evaluate(self.sets, self.family, packet, |map, interface| {
+                let map = self
+                    .maps
+                    .get(&(chain.family.as_str(), chain.table.as_str(), map))
+                    .ok_or("missing or unsupported interface verdict map")?;
+                map.target(interface)
+            }) {
                 Ok(None) => {}
                 Ok(Some(RuleAction::Verdict(action, message))) => {
                     return ControlFlow::Break(Ok((action, reason(message))));

@@ -5,7 +5,7 @@ use std::net::IpAddr;
 
 use serde::{Deserialize, Serialize};
 
-use super::{Flow, Listener, PathEvidence};
+use super::{Flow, Listener, PathEvidence, docker};
 use crate::nftables::InputVerdict;
 use crate::parse::nftables::{Ruleset, parse_ruleset};
 use crate::sanitize::sanitize;
@@ -13,16 +13,20 @@ use crate::socket::{AddressFamily, Protocol};
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum Stage {
+pub(super) enum Stage {
     Ingress,
+    DestinationNat,
     Routing,
+    Forward,
+    Postrouting,
+    Container,
     Input,
     Socket,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum Decision {
+pub(super) enum Decision {
     Continue,
     Ends,
     Unknown,
@@ -32,7 +36,9 @@ enum Decision {
 pub(super) struct Step<'a> {
     stage: Stage,
     decision: Decision,
-    reason: String,
+    pub(super) reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) translation: Option<docker::Translation>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     listeners: Vec<&'a Listener>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -43,7 +49,11 @@ impl fmt::Display for Step<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let stage = match self.stage {
             Stage::Ingress => "Ingress",
+            Stage::DestinationNat => "Destination NAT",
             Stage::Routing => "Routing",
+            Stage::Forward => "Forwarding",
+            Stage::Postrouting => "Postrouting",
+            Stage::Container => "Container",
             Stage::Input => "nftables input",
             Stage::Socket => "Socket",
         };
@@ -76,7 +86,7 @@ impl fmt::Display for Verdict {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::ListenerReachable => "listener reachable within scope",
-            Self::Blocked => "blocked at nftables input",
+            Self::Blocked => "blocked within scope",
             Self::NotLocal => "route leaves the local socket path",
             Self::NoListener => "no matching TCP listener",
             Self::Unknown => "unknown",
@@ -85,7 +95,7 @@ impl fmt::Display for Verdict {
 }
 
 pub(super) fn evaluate<'a>(flow: &Flow, evidence: &'a PathEvidence) -> (Vec<Step<'a>>, Verdict) {
-    let mut steps = Vec::with_capacity(4);
+    let mut steps = Vec::new();
     let verdict = walk(flow, evidence, &mut steps).unwrap_or_else(|(stage, reason)| {
         steps.push(step(stage, Decision::Unknown, reason));
         Verdict::Unknown
@@ -93,11 +103,12 @@ pub(super) fn evaluate<'a>(flow: &Flow, evidence: &'a PathEvidence) -> (Vec<Step
     (steps, verdict)
 }
 
-fn step(stage: Stage, decision: Decision, reason: impl Into<String>) -> Step<'static> {
+pub(super) fn step(stage: Stage, decision: Decision, reason: impl Into<String>) -> Step<'static> {
     Step {
         stage,
         decision,
         reason: reason.into(),
+        translation: None,
         listeners: Vec::new(),
         unchecked_listeners: Vec::new(),
     }
@@ -109,16 +120,20 @@ fn walk<'a>(
     steps: &mut Vec<Step<'a>>,
 ) -> Result<Verdict, (Stage, String)> {
     let (link, rules) = ingress(flow, evidence).map_err(|reason| (Stage::Ingress, reason))?;
+    let docker_path = flow.family() == AddressFamily::Ipv4 && rules.docker_prerouting();
     steps.push(step(
         Stage::Ingress,
         Decision::Continue,
         format!(
-            "{} (index {}); no applicable earlier nftables hooks, legacy tables or XFRM policies",
+            "{} (index {}); no unmodelled ingress hooks, legacy tables or XFRM policies",
             flow.ingress, link.ifindex
         ),
     ));
 
     let route = route(flow, evidence).map_err(|reason| (Stage::Routing, reason))?;
+    if docker_path && let Some(verdict) = docker::walk(flow, evidence, &rules, &route, steps)? {
+        return Ok(verdict);
+    }
     if route.kind.as_deref() != Some("local") {
         steps.push(step(
             Stage::Routing,
@@ -224,7 +239,12 @@ fn ingress(flow: &Flow, evidence: &PathEvidence) -> Result<(Link, Ruleset), Stri
         return Err("could not establish an accepting inbound XFRM default".to_owned());
     }
     let rules = parse_ruleset(evidence.nftables.as_result()?).map_err(|error| error.to_string())?;
-    if let Some(reason) = rules.pre_input_gap(flow.family(), &flow.ingress) {
+    let gap = if flow.family() == AddressFamily::Ipv4 && rules.docker_prerouting() {
+        rules.docker_ingress_gap(&flow.ingress)
+    } else {
+        rules.pre_input_gap(flow.family(), &flow.ingress)
+    };
+    if let Some(reason) = gap {
         return Err(reason);
     }
     Ok((link, rules))
@@ -239,13 +259,14 @@ struct RoutingRule<'a> {
 }
 
 #[derive(Deserialize)]
-struct Route {
+pub(super) struct Route {
     #[serde(rename = "type")]
-    kind: Option<String>,
+    pub(super) kind: Option<String>,
     dst: IpAddr,
     from: Option<IpAddr>,
     iif: String,
-    dev: String,
+    pub(super) dev: String,
+    pub(super) gateway: Option<IpAddr>,
     encap: Option<serde::de::IgnoredAny>,
 }
 
@@ -265,9 +286,13 @@ fn route(flow: &Flow, evidence: &PathEvidence) -> Result<Route, String> {
         return Err("routing policy differs from the default rules".to_owned());
     }
 
-    let [route]: [Route; 1] = serde_json::from_str(evidence.route.as_result()?)
+    route_for(flow, flow.destination, evidence.route.as_result()?)
+}
+
+pub(super) fn route_for(flow: &Flow, destination: IpAddr, raw: &str) -> Result<Route, String> {
+    let [route]: [Route; 1] = serde_json::from_str(raw)
         .map_err(|_| "expected one usable kernel route for the stated flow")?;
-    if route.dst != flow.destination
+    if route.dst != destination
         || route.from.is_some_and(|from| from != flow.source)
         || route.iif != flow.ingress
     {
@@ -282,7 +307,7 @@ fn route(flow: &Flow, evidence: &PathEvidence) -> Result<Route, String> {
     Ok(route)
 }
 
-fn match_listeners(
+pub(super) fn match_listeners(
     destination: IpAddr,
     ingress: u32,
     listeners: &[Listener],

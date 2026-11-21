@@ -48,6 +48,8 @@ jobs:
             sudo apt-get install -y nftables
           fi
           sudo scripts/test-inbound-path.sh target/debug/reachmap
+      - name: Test Docker bridge published-port predictions
+        run: scripts/test-docker-path.sh target/debug/reachmap
       - run: make msrv
 
   build:
