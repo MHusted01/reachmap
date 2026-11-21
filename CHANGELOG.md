@@ -27,7 +27,7 @@ Path prediction follows a new inbound SYN to listener lookup. The Docker path
 covers IPv4 kernel DNAT on `docker0` or one user-defined bridge with the native
 nftables backend and userland proxy disabled. Missing or unsupported evidence
 can yield `unknown`, and return traffic and handshake completion are outside
-the prediction. See the [path scope and evidence limits](https://github.com/MHusted01/reachmap/blob/v0.4.0/docs/scan.md#linux-inbound-tcp-paths).
+the prediction. See the [path scope and evidence limits](https://github.com/MHusted01/reachmap/blob/7c6a96f331b77fad8b8ab319887e5c266e8473e8/docs/scan.md#linux-inbound-tcp-paths).
 
 ## [0.3.0] - 2026-11-20
 
