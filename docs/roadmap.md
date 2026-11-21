@@ -16,8 +16,8 @@ evidence behind each result and identify where the evidence runs out.
 
 ## Current capabilities
 
-v0.3.0 includes the completed [v0.2 Probe and diff](https://github.com/MHusted01/reachmap/milestone/2)
-and [v0.3 Deeper checks](https://github.com/MHusted01/reachmap/milestone/3) milestones.
+v0.4.0 includes the [Linux packet paths](https://github.com/MHusted01/reachmap/milestone/4)
+and [Docker bridge coverage](https://github.com/MHusted01/reachmap/milestone/5) work.
 The [changelog](../CHANGELOG.md) lists the changes by release.
 
 | Release | Capabilities | Evidence limits |
@@ -26,9 +26,11 @@ The [changelog](../CHANGELOG.md) lists the changes by release.
 | v0.3.0 | Linux UDP inventory, Tailscale Serve and Funnel configuration, TCP probes with saved-scan comparison, baseline diffs with protocol-specific port exclusions, and Docker Engine API collection over a local Unix socket. | Probes observe TCP from the initiating machine. The saved-scan comparison can infer a network label from the target address, and the saved scan lacks host identity. Tailscale status and Docker bindings describe configuration. |
 | v0.3.0 | Linux nftables input checks for native TCP and UDP sockets, with multiple base chains, chain transfers, and supported interface and port matches. IPv6 Docker publishes report host-input evidence. | The check assumes a packet reaches the input hook. Missing evidence and relevant unsupported rules can yield unknown. Effective Docker forwarding and upstream paths remain outside the evaluation. |
 | v0.3.0 | macOS TCP and UDP socket inventory and global application firewall state. Linux Docker egress checks compare the host and workload using named observers. | macOS reports visible process ownership and the global firewall setting. Egress observations cover the selected observers and workload network namespace. |
+| v0.4.0 | `scan --snapshot` and `replay` capture and reevaluate Linux host-input evidence. `path predict`, `path capture` and `path replay` explain IPv4 and IPv6 inbound TCP to local Linux listeners and IPv4 TCP publishes on `docker0` or one user-defined bridge. | The prediction follows a new inbound SYN through supported stages up to listener lookup. Docker requires native nftables and kernel DNAT with the userland proxy disabled. Missing or unsupported evidence can yield `unknown`. Return traffic and handshake completion are outside scope. |
 
 See the current command and output contracts in [scan](scan.md), [probe](probe.md),
-[diff](diff.md), [JSON](json.md), [egress](egress.md) and [Docker and UFW](docker-and-ufw.md).
+[diff](diff.md), [JSON](json.md), [egress](egress.md), [Docker and UFW](docker-and-ufw.md)
+and [Linux inbound TCP paths](scan.md#linux-inbound-tcp-paths).
 
 ## Platform targets
 

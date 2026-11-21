@@ -17,10 +17,9 @@ PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM              
 warning: UFW is active, but it does not apply to these Docker ports: 8080
 ```
 
-> **Status.** v0.3.0 adds Linux UDP inventory, Tailscale Serve and Funnel
-> awareness, TCP probes, baseline diffs, macOS socket inventory, and Linux
-> nftables input and Docker egress checks. Scan results describe potential
-> exposure based on local evidence. [Changelog](CHANGELOG.md) ·
+> **Status.** v0.4.0 adds Linux host-input snapshots and inbound TCP path
+> prediction for local listeners and supported IPv4 Docker bridge publishes.
+> Captured evidence can be replayed offline on Linux and macOS. [Changelog](CHANGELOG.md) ·
 > [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md) · [TCP path](docs/scan.md#linux-inbound-tcp-paths)
 
 ## Install
