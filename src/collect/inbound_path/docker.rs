@@ -13,9 +13,7 @@ use serde::Deserialize;
 use super::{ip, legacy_tables, linux, listeners, read_proc, route, run};
 use crate::docker::engine::bridge::{Attachment, LocalEngine};
 use crate::host_input_snapshot::Evidence;
-use crate::inbound_path::docker::{
-    BRIDGE, ContainerSocketEvidence, DockerEvidence, original_packet,
-};
+use crate::inbound_path::docker::{ContainerSocketEvidence, DockerEvidence, original_packet};
 use crate::inbound_path::{Flow, PathEvidence};
 use crate::parse::nftables::{PathHookResult, parse_ruleset};
 use crate::socket::AddressFamily;
@@ -31,6 +29,7 @@ pub(super) fn capture(flow: &Flow, evidence: &PathEvidence) -> Option<DockerEvid
     }
     let mut result = DockerEvidence {
         publish: Evidence::Collected { data: None },
+        bridge: unavailable(),
         route: unavailable(),
         local_source: None,
         forwarding: unavailable(),
@@ -55,7 +54,11 @@ pub(super) fn capture(flow: &Flow, evidence: &PathEvidence) -> Option<DockerEvid
         result.route = route(flow, IpAddr::V4(*translated.ip()), translated.port());
         result.local_source = Some(observe(source_is_local(packet.source)));
         result.forwarding = observe(forwarding(&flow.ingress));
-        result.container = observe(container(&engine, &attachment, packet.destination));
+        let bridge = engine.bridge(&attachment);
+        if let Ok(bridge) = &bridge {
+            result.container = observe(container(&engine, &attachment, packet.destination, bridge));
+        }
+        result.bridge = observe(bridge);
     }
     result.publish = Evidence::Collected {
         data: Some(attachment.publish),
@@ -114,6 +117,7 @@ fn container(
     engine: &LocalEngine,
     attachment: &Attachment,
     original: SocketAddrV4,
+    bridge: &str,
 ) -> Result<ContainerSocketEvidence, String> {
     let ns_path = format!("/proc/{}/ns/net", attachment.pid);
     let namespace = File::open(&ns_path)
@@ -140,7 +144,8 @@ fn container(
         .join()
         .map_err(|_| "container namespace collector stopped unexpectedly")??;
     let (link, data) = sample;
-    verify_bridge_peer(&link)?;
+    let ports = ip(&["-j", "-details", "link", "show", "master", bridge]);
+    check_bridge_peer(&link, bridge, ports.as_result()?)?;
     engine.verify(attachment, original)?;
     let current = File::open(ns_path)
         .and_then(|file| identity(&file))
@@ -156,6 +161,7 @@ struct Link {
     ifindex: u32,
     ifname: String,
     link_index: Option<u32>,
+    master: Option<String>,
     flags: Vec<String>,
     linkinfo: Option<LinkInfo>,
     #[serde(default)]
@@ -165,6 +171,7 @@ struct Link {
 #[derive(Deserialize)]
 struct LinkInfo {
     info_kind: Option<String>,
+    info_slave_kind: Option<String>,
     info_slave_data: Option<BridgePort>,
 }
 
@@ -248,25 +255,22 @@ fn container_listeners(link: &Link, port: u16) -> Result<ContainerSocketEvidence
     })
 }
 
-fn verify_bridge_peer(link: &Link) -> Result<(), String> {
-    let evidence = ip(&["-j", "-details", "link", "show", "master", BRIDGE]);
-    check_bridge_peer(link, evidence.as_result()?)
-}
-
-fn check_bridge_peer(link: &Link, raw: &str) -> Result<(), String> {
-    let ports: Vec<Link> =
-        serde_json::from_str(raw).map_err(|_| "could not parse docker0 bridge ports")?;
+fn check_bridge_peer(link: &Link, bridge: &str, raw: &str) -> Result<(), String> {
+    let ports: Vec<Link> = serde_json::from_str(raw)
+        .map_err(|_| format!("could not parse bridge ports on {bridge}"))?;
     if !ports.iter().any(|port| {
         link.link_index == Some(port.ifindex)
             && port.link_index == Some(link.ifindex)
+            && port.master.as_deref() == Some(bridge)
             && port.up_veth()
             && port
                 .linkinfo
                 .as_ref()
+                .filter(|info| info.info_slave_kind.as_deref() == Some("bridge"))
                 .and_then(|info| info.info_slave_data.as_ref())
                 .is_some_and(|data| data.state == "forwarding")
     }) {
-        return Err("container veth peer is not forwarding on docker0".to_owned());
+        return Err(format!("container veth peer is not forwarding on {bridge}"));
     }
     Ok(())
 }

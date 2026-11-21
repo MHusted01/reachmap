@@ -1,17 +1,20 @@
-//! Read the local Engine metadata that identifies one published default-bridge endpoint.
+//! Read the local Engine metadata that identifies one published bridge endpoint.
 
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 
 use bollard::Docker;
-use bollard::models::{ContainerInspectResponse, ContainerStateStatusEnum, PortSummaryTypeEnum};
+use bollard::models::{
+    ContainerInspectResponse, ContainerStateStatusEnum, NetworkInspect, PortSummaryTypeEnum,
+};
 use tokio::runtime::Runtime;
 use tokio::time;
 
 use super::{DEFAULT_SOCKET, DockerSource, TIMEOUT, connect, request_error, socket_override};
 use crate::errors::render_chain;
 use crate::inbound_path::docker::Publish;
+use crate::inbound_path::valid_interface_name;
 use crate::parse::docker::validate_container_id;
 use crate::sanitize::sanitize;
 
@@ -21,6 +24,14 @@ pub(crate) struct Attachment {
     pub(crate) pid: u32,
     id: String,
     started_at: String,
+    network: NetworkAttachment,
+}
+
+#[derive(PartialEq, Eq)]
+struct NetworkAttachment {
+    id: String,
+    name: String,
+    endpoint_id: String,
 }
 
 pub(crate) struct LocalEngine {
@@ -93,6 +104,17 @@ impl LocalEngine {
         Ok(())
     }
 
+    pub(crate) fn bridge(&self, attachment: &Attachment) -> Result<String, String> {
+        self.with_deadline(async {
+            let network = self
+                .docker
+                .inspect_network(&attachment.network.id, None)
+                .await
+                .map_err(|error| render_chain(&request_error(error, TIMEOUT)))?;
+            bridge_name(network, &attachment.network)
+        })
+    }
+
     async fn inspect(&self, id: &str, original: SocketAddrV4) -> Result<Attachment, String> {
         let id = validate_container_id(id).map_err(|error| render_chain(&error))?;
         let response = self
@@ -110,6 +132,37 @@ impl LocalEngine {
                 .map_err(|_| "Docker Engine request timed out".to_owned())?
         })
     }
+}
+
+fn bridge_name(network: NetworkInspect, attachment: &NetworkAttachment) -> Result<String, String> {
+    if network.id.as_deref() != Some(attachment.id.as_str())
+        || network.name.as_deref() != Some(attachment.name.as_str())
+    {
+        return Err("Docker network inspect did not match the container attachment".to_owned());
+    }
+    if network.driver.as_deref() != Some("bridge") || network.scope.as_deref() != Some("local") {
+        return Err("Docker path capture requires a local bridge network".to_owned());
+    }
+    let option = network
+        .options
+        .as_ref()
+        .and_then(|options| options.get("com.docker.network.bridge.name"))
+        .filter(|name| !name.is_empty());
+    let bridge = match option {
+        Some(name) => name.clone(),
+        None if attachment.name == "bridge" => {
+            return Err("Docker did not report the default bridge interface name".to_owned());
+        }
+        None => format!("br-{}", &attachment.id[..12]),
+    };
+    if !valid_interface_name(&bridge) {
+        return Err("Docker reported an unsupported bridge interface name".to_owned());
+    }
+    Ok(bridge)
+}
+
+fn network_id(id: Option<String>) -> Option<String> {
+    id.filter(|id| id.len() == 64 && id.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
 }
 
 fn attachment(
@@ -139,20 +192,33 @@ fn attachment(
         .map(|name| sanitize(name.trim_start_matches('/')))
         .filter(|name| !name.is_empty())
         .ok_or("Docker container name is missing")?;
-    let network = response
+    let settings = response
         .network_settings
         .ok_or("Docker network settings are missing")?;
-    let networks = network
+    let networks = settings
         .networks
         .ok_or("Docker network attachments are missing")?;
-    let address = networks
-        .get("bridge")
-        .filter(|_| networks.len() == 1)
-        .and_then(|bridge| bridge.ip_address.as_deref())
+    if networks.len() != 1 {
+        return Err("Docker path capture requires one attachment to an IPv4 bridge".to_owned());
+    }
+    let (network_name, endpoint) = networks
+        .into_iter()
+        .next()
+        .ok_or("Docker network attachment is missing")?;
+    let address = endpoint
+        .ip_address
         .and_then(|ip| ip.parse::<Ipv4Addr>().ok())
-        .filter(|ip| !ip.is_unspecified())
-        .ok_or("Docker path capture supports one attachment to the default IPv4 bridge")?;
-    let ports = network
+        .filter(|ip| {
+            !ip.is_unspecified() && !ip.is_loopback() && !ip.is_multicast() && !ip.is_broadcast()
+        })
+        .ok_or("Docker did not report a valid IPv4 address for the network attachment")?;
+    let network = NetworkAttachment {
+        id: network_id(endpoint.network_id).ok_or("Docker did not report a valid network ID")?,
+        name: network_name,
+        endpoint_id: network_id(endpoint.endpoint_id)
+            .ok_or("Docker did not report a valid network endpoint ID")?,
+    };
+    let ports = settings
         .ports
         .ok_or("Docker container port bindings are missing")?;
     let mut bindings = ports
@@ -186,6 +252,7 @@ fn attachment(
         pid,
         id: id.to_owned(),
         started_at,
+        network,
     })
 }
 
@@ -222,6 +289,61 @@ mod tests {
     }
 
     #[test]
+    fn network_inspect_resolves_default_generated_and_explicit_bridge_names() {
+        for (name, option, expected) in [
+            ("bridge", Some("docker0"), "docker0"),
+            ("example_default", None, "br-0123456789ab"),
+            ("example_default", Some("example-br"), "example-br"),
+        ] {
+            let mut data = fixture();
+            let endpoint = data["NetworkSettings"]["Networks"]["bridge"].take();
+            data["NetworkSettings"]["Networks"] = json!({(name): endpoint});
+            let attachment = read(data).unwrap();
+            let mut network = json!({"Id": ID, "Name": name, "Driver": "bridge", "Scope": "local"});
+            if let Some(option) = option {
+                network["Options"] = json!({"com.docker.network.bridge.name": option});
+            }
+            assert_eq!(
+                bridge_name(
+                    serde_json::from_value(network).unwrap(),
+                    &attachment.network
+                )
+                .unwrap(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn network_inspect_requires_the_attached_local_bridge() {
+        let attachment = read(fixture()).unwrap();
+        let network = json!({"Id": ID, "Name": "bridge", "Driver": "bridge", "Scope": "local",
+            "Options": {"com.docker.network.bridge.name": "docker0"}});
+        for (path, value) in [
+            ("/Id", json!("abcdef")),
+            ("/Name", json!("different")),
+            ("/Driver", json!("macvlan")),
+            ("/Scope", json!("swarm")),
+            ("/Options", Value::Null),
+            (
+                "/Options/com.docker.network.bridge.name",
+                json!("../bridge"),
+            ),
+        ] {
+            let mut invalid = network.clone();
+            *invalid.pointer_mut(path).unwrap() = value;
+            assert!(
+                bridge_name(
+                    serde_json::from_value(invalid).unwrap(),
+                    &attachment.network
+                )
+                .is_err(),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn inspect_rejects_incompatible_or_ambiguous_attachments() {
         for (path, value, message) in [
             ("/Id", json!("fedcba9876543210"), "different container ID"),
@@ -229,6 +351,16 @@ mod tests {
             ("/State/Pid", json!(0), "valid container PID"),
             ("/State/StartedAt", json!(""), "start time"),
             ("/Name", json!("/"), "name is missing"),
+            (
+                "/NetworkSettings/Networks/bridge/NetworkID",
+                Value::Null,
+                "valid network ID",
+            ),
+            (
+                "/NetworkSettings/Networks/bridge/EndpointID",
+                json!("abc"),
+                "valid network endpoint ID",
+            ),
             (
                 "/NetworkSettings/Networks",
                 json!({

@@ -251,8 +251,99 @@ fn replay_traces_docker_translation_through_forwarding_to_the_container() {
     assert_eq!(steps[1]["stage"], "destination_nat");
     assert_eq!(steps[1]["translation"]["original"], "192.0.2.1:8443");
     assert_eq!(steps[1]["translation"]["translated"], "198.51.100.2:8080");
+    assert_eq!(
+        steps[2]["reason"],
+        "kernel route to 198.51.100.2:8080 through docker0"
+    );
     assert!(steps.iter().any(|step| step["stage"] == "forward"));
     assert_eq!(steps.last().unwrap()["listeners"][0]["inode"], 69);
+}
+
+fn custom_bridge_snapshot() -> Value {
+    let mut value = docker_snapshot();
+    let evidence = &mut value["evidence"];
+    evidence["docker"]["bridge"] = collected("br-0123456789ab");
+    evidence["docker"]["route"] = collected(
+        r#"[{"dst":"198.51.100.2","from":"192.0.2.2","iif":"eth0","dev":"br-0123456789ab"}]"#,
+    );
+    let mut rules: Value =
+        serde_json::from_str(evidence["nftables"]["data"].as_str().unwrap()).unwrap();
+    rules["nftables"].as_array_mut().unwrap().push(json!({
+        "rule": {"family":"ip","table":"docker-bridges","chain":"filter-FORWARD","expr":[
+            {"match":{"op":"!=","left":{"meta":{"key":"oifname"}},"right":"br-0123456789ab"}},
+            {"drop":null}]}
+    }));
+    evidence["nftables"] = collected(rules.to_string());
+    value
+}
+
+#[test]
+fn replay_uses_the_captured_bridge_for_routing_and_forwarding() {
+    let report = replay("custom_bridge_reachable.json", &custom_bridge_snapshot());
+    assert_eq!(report["verdict"], "listener_reachable", "{report}");
+    assert_eq!(report["steps"][2]["stage"], "routing");
+    assert!(
+        report["steps"][2]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("br-0123456789ab")
+    );
+    assert_eq!(
+        report["steps"].as_array().unwrap().last().unwrap()["listeners"][0]["inode"],
+        69
+    );
+}
+
+#[test]
+fn replay_requires_consistent_bridge_evidence_at_each_stage() {
+    for (file, bridge, reason) in [
+        ("bridge_omitted.json", None, "through docker0"),
+        (
+            "bridge_missing.json",
+            Some(json!({"status":"failed","reason":"Docker network unavailable"})),
+            "Docker network unavailable",
+        ),
+        (
+            "bridge_mismatch.json",
+            Some(collected("br-abcdef012345")),
+            "through br-abcdef012345",
+        ),
+        (
+            "bridge_invalid.json",
+            Some(collected("../bridge")),
+            "requires a supported bridge",
+        ),
+        (
+            "bridge_same_ingress.json",
+            Some(collected("eth0")),
+            "distinct from the ingress interface",
+        ),
+    ] {
+        let mut value = custom_bridge_snapshot();
+        let docker = value["evidence"]["docker"].as_object_mut().unwrap();
+        if let Some(bridge) = bridge {
+            docker.insert("bridge".to_owned(), bridge);
+        } else {
+            docker.remove("bridge");
+        }
+        let report = replay(file, &value);
+        assert_eq!(report["verdict"], "unknown", "{report}");
+        let step = report["steps"].as_array().unwrap().last().unwrap();
+        assert_eq!(step["stage"], "routing");
+        assert!(
+            step["reason"].as_str().unwrap().contains(reason),
+            "{report}"
+        );
+    }
+
+    let mut value = custom_bridge_snapshot();
+    value["evidence"]["docker"]["container"] = json!({"status":"failed","reason":"container veth peer is not forwarding on br-0123456789ab"});
+    let report = replay("bridge_peer_missing.json", &value);
+    assert_eq!(report["verdict"], "unknown", "{report}");
+    assert_eq!(
+        report["steps"].as_array().unwrap().last().unwrap()["stage"],
+        "container"
+    );
 }
 
 #[test]
