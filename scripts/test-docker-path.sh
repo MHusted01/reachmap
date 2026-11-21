@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [[ ${1:-} != --inside-lab ]]; then
-    binary=$(realpath "${1:?Usage: test-docker-path.sh LINUX_REACHMAP_BINARY}")
+    binary=$(realpath "${1:?Usage: test-docker-path.sh STATIC_LINUX_REACHMAP_BINARY}")
     script=$(realpath "$0")
     # Use the pinned Docker 29.1.3 image and its native nftables backend.
     exec docker run --rm --privileged \

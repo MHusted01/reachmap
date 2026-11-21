@@ -91,13 +91,7 @@ pub(super) fn walk<'a>(
     let original = packet.destination;
     let (translated, nat_reason) = match rules.docker_hook("prerouting", &packet) {
         PathHookResult::Accept { .. } => {
-            if let Some(docker) = docker
-                && docker
-                    .publish
-                    .as_result()
-                    .map_err(|reason| (Stage::DestinationNat, reason))?
-                    .is_some()
-            {
+            if docker.is_some_and(|docker| matches!(docker.publish.as_result(), Ok(Some(_)))) {
                 return Err((
                     Stage::DestinationNat,
                     "Docker lists a publish without a matching kernel DNAT rule".to_owned(),

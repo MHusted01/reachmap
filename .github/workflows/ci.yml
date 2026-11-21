@@ -49,7 +49,10 @@ jobs:
           fi
           sudo scripts/test-inbound-path.sh target/debug/reachmap
       - name: Test Docker bridge published-port predictions
-        run: scripts/test-docker-path.sh target/debug/reachmap
+        run: |
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --locked --target x86_64-unknown-linux-musl
+          scripts/test-docker-path.sh target/x86_64-unknown-linux-musl/debug/reachmap
       - run: make msrv
 
   build:

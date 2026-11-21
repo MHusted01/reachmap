@@ -318,3 +318,22 @@ fn replay_keeps_unmodelled_forwarding_rules_unknown() {
         "unsupported packet-path rule in ip docker-bridges filter-FORWARD"
     );
 }
+
+#[test]
+fn replay_checks_the_host_listener_when_no_dnat_applies_and_docker_is_unavailable() {
+    let mut value = docker_snapshot();
+    let evidence = &mut value["evidence"];
+    let text = evidence["nftables"]["data"].as_str().unwrap();
+    let mut rules: Value = serde_json::from_str(text).unwrap();
+    rules["nftables"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|item| item.get("rule").is_none());
+    evidence["nftables"] = collected(rules.to_string());
+    evidence["docker"]["publish"] = json!({"status":"failed","reason":"Docker socket unavailable"});
+
+    let report = replay("docker_path_host_listener.json", &value);
+    assert_eq!(report["verdict"], "listener_reachable", "{report}");
+    assert_eq!(report["steps"][2]["stage"], "input");
+    assert_eq!(report["steps"][3]["listeners"][0]["inode"], 42);
+}

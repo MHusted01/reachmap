@@ -20,6 +20,9 @@ use crate::inbound_path::{Flow, PathEvidence};
 use crate::parse::nftables::{PathHookResult, parse_ruleset};
 use crate::socket::AddressFamily;
 
+#[cfg(test)]
+mod tests;
+
 pub(super) fn capture(flow: &Flow, evidence: &PathEvidence) -> Option<DockerEvidence> {
     let packet = original_packet(flow)?;
     let rules = parse_ruleset(evidence.nftables.as_result().ok()?).ok()?;
@@ -87,14 +90,18 @@ fn forwarding(ingress: &str) -> Result<bool, String> {
 }
 
 fn source_is_local(source: Ipv4Addr) -> Result<bool, String> {
+    let evidence = ip(&["-4", "-j", "route", "get", &source.to_string()]);
+    local_source_route(source, evidence.as_result()?)
+}
+
+fn local_source_route(source: Ipv4Addr, raw: &str) -> Result<bool, String> {
     #[derive(Deserialize)]
     struct SourceRoute {
         dst: Ipv4Addr,
         #[serde(rename = "type")]
         kind: Option<String>,
     }
-    let evidence = ip(&["-4", "-j", "route", "get", &source.to_string()]);
-    let [route]: [SourceRoute; 1] = serde_json::from_str(evidence.as_result()?)
+    let [route]: [SourceRoute; 1] = serde_json::from_str(raw)
         .map_err(|_| "could not establish the IPv4 route type for the packet source")?;
     match (route.dst == source, route.kind.as_deref()) {
         (true, Some("local")) => Ok(true),
@@ -186,12 +193,18 @@ impl Link {
 
 fn container_sample(target: SocketAddrV4) -> Result<(Link, ContainerSocketEvidence), String> {
     let evidence = ip(&["-j", "-details", "address", "show"]);
-    let links: Vec<Link> = serde_json::from_str(evidence.as_result()?)
-        .map_err(|_| "could not parse container interfaces")?;
+    let link = container_link(evidence.as_result()?, *target.ip())?;
+    let data = container_listeners(&link, target.port())?;
+    Ok((link, data))
+}
+
+fn container_link(raw: &str, target: Ipv4Addr) -> Result<Link, String> {
+    let links: Vec<Link> =
+        serde_json::from_str(raw).map_err(|_| "could not parse container interfaces")?;
     let mut matching = links.into_iter().filter(|link| {
         link.addr_info
             .iter()
-            .any(|address| address.local == IpAddr::V4(*target.ip()))
+            .any(|address| address.local == IpAddr::V4(target))
     });
     let link = matching
         .next()
@@ -200,6 +213,10 @@ fn container_sample(target: SocketAddrV4) -> Result<(Link, ContainerSocketEviden
     if matching.next().is_some() {
         return Err("container IPv4 endpoint appears on multiple interfaces".to_owned());
     }
+    Ok(link)
+}
+
+fn container_listeners(link: &Link, port: u16) -> Result<ContainerSocketEvidence, String> {
     let legacy = legacy_tables(AddressFamily::Ipv4);
     if !legacy.as_result()?.trim().is_empty() {
         return Err("unsupported legacy IPv4 firewall tables in the container".to_owned());
@@ -222,20 +239,23 @@ fn container_sample(target: SocketAddrV4) -> Result<(Link, ContainerSocketEviden
     }
     let listeners = listeners(
         AddressFamily::Ipv4,
-        target.port(),
+        port,
         Path::new("/proc/thread-self/net"),
     )?;
-    let data = ContainerSocketEvidence {
+    Ok(ContainerSocketEvidence {
         ingress: link.ifindex,
         listeners,
-    };
-    Ok((link, data))
+    })
 }
 
 fn verify_bridge_peer(link: &Link) -> Result<(), String> {
     let evidence = ip(&["-j", "-details", "link", "show", "master", BRIDGE]);
-    let ports: Vec<Link> = serde_json::from_str(evidence.as_result()?)
-        .map_err(|_| "could not parse docker0 bridge ports")?;
+    check_bridge_peer(link, evidence.as_result()?)
+}
+
+fn check_bridge_peer(link: &Link, raw: &str) -> Result<(), String> {
+    let ports: Vec<Link> =
+        serde_json::from_str(raw).map_err(|_| "could not parse docker0 bridge ports")?;
     if !ports.iter().any(|port| {
         link.link_index == Some(port.ifindex)
             && port.link_index == Some(link.ifindex)

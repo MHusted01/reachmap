@@ -188,3 +188,73 @@ fn attachment(
         started_at,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    const ID: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn fixture() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../tests/fixtures/docker-path-inspect.json"
+        ))
+        .unwrap()
+    }
+
+    fn read(fixture: Value) -> Result<Attachment, String> {
+        attachment(
+            serde_json::from_value(fixture).unwrap(),
+            ID,
+            "192.0.2.1:8443".parse().unwrap(),
+        )
+    }
+
+    #[test]
+    fn inspect_confirms_the_wildcard_ipv4_tcp_publish() {
+        let result = read(fixture()).unwrap();
+        assert_eq!(result.pid, 1042);
+        assert_eq!(result.publish.host, "0.0.0.0:8443".parse().unwrap());
+        assert_eq!(result.publish.target, "198.51.100.2:8080".parse().unwrap());
+        assert_eq!(result.publish.name, "example-web");
+    }
+
+    #[test]
+    fn inspect_rejects_incompatible_or_ambiguous_attachments() {
+        for (path, value, message) in [
+            ("/Id", json!("fedcba9876543210"), "different container ID"),
+            ("/State/Status", json!("exited"), "not running"),
+            ("/State/Pid", json!(0), "valid container PID"),
+            ("/State/StartedAt", json!(""), "start time"),
+            ("/Name", json!("/"), "name is missing"),
+            (
+                "/NetworkSettings/Networks",
+                json!({
+                    "bridge": {"IPAddress":"198.51.100.2"},
+                    "other": {"IPAddress":"203.0.113.2"}
+                }),
+                "one attachment",
+            ),
+            (
+                "/NetworkSettings/Ports/8080~1tcp/0/HostIp",
+                json!("192.0.2.4"),
+                "did not confirm",
+            ),
+            (
+                "/NetworkSettings/Ports/8080~1tcp",
+                json!([
+                    {"HostIp":"0.0.0.0","HostPort":"8443"},
+                    {"HostIp":"192.0.2.1","HostPort":"8443"}
+                ]),
+                "more than one",
+            ),
+        ] {
+            let mut data = fixture();
+            *data.pointer_mut(path).unwrap() = value;
+            let error = read(data).err().unwrap();
+            assert!(error.contains(message), "{path}: {error}");
+        }
+    }
+}

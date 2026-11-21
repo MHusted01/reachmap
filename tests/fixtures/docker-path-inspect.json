@@ -1,0 +1,24 @@
+{
+  "Id": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "Name": "/example-web",
+  "State": {
+    "Status": "running",
+    "Pid": 1042,
+    "StartedAt": "2026-01-01T00:00:00Z"
+  },
+  "NetworkSettings": {
+    "Networks": {
+      "bridge": {
+        "IPAddress": "198.51.100.2"
+      }
+    },
+    "Ports": {
+      "8080/tcp": [
+        { "HostIp": "0.0.0.0", "HostPort": "8443" }
+      ],
+      "8080/udp": [
+        { "HostIp": "0.0.0.0", "HostPort": "8443" }
+      ]
+    }
+  }
+}

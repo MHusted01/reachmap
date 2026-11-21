@@ -216,3 +216,88 @@ impl VerdictMap {
         map(name, interface)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn interface_map() -> Value {
+        json!({
+            "family":"ip", "table":"docker-bridges", "name":"forward-jumps",
+            "type":"ifname", "map":"verdict",
+            "elem":[["docker0",{"jump":{"target":"forward-docker0"}}]]
+        })
+    }
+
+    #[test]
+    fn interface_map_distinguishes_no_entry_from_ambiguous_or_unsupported_data() {
+        let raw = interface_map();
+        let map: InterfaceMap = serde_json::from_value(raw.clone()).unwrap();
+        assert_eq!(map.target("docker0"), Ok(Some("forward-docker0")));
+        assert_eq!(map.target("entry0"), Ok(None));
+
+        for (key, value) in [
+            ("type", json!("ifindex")),
+            ("map", json!("mark")),
+            ("flags", json!(["dynamic"])),
+            (
+                "elem",
+                json!([["docker*",{"jump":{"target":"forward-docker0"}}]]),
+            ),
+            (
+                "elem",
+                json!([
+                    ["docker0",{"jump":{"target":"forward-docker0"}}],
+                    ["docker0",{"jump":{"target":"other"}}]
+                ]),
+            ),
+        ] {
+            let mut unsupported = raw.clone();
+            unsupported[key] = value;
+            let map: InterfaceMap = serde_json::from_value(unsupported).unwrap();
+            assert!(map.target("docker0").is_err(), "{key}");
+        }
+    }
+
+    #[test]
+    fn verdict_map_uses_the_requested_packet_interface_and_a_named_map() {
+        let path = MatchPath {
+            source: Ipv4Addr::new(192, 0, 2, 2),
+            destination: Ipv4Addr::new(198, 51, 100, 2),
+            egress: Some("docker0"),
+            local_source: Some(false),
+            local_destination: false,
+            new_connection: true,
+            allow_dnat: false,
+        };
+        let packet = Packet {
+            protocol: Protocol::Tcp,
+            port: 8080,
+            ingress: "entry0",
+            path: Some(path),
+        };
+        for (key, expected) in [("oifname", "docker0"), ("iifname", "entry0")] {
+            let map: VerdictMap = serde_json::from_value(json!({
+                "key":{"meta":{"key":key}}, "data":"@forward-jumps"
+            }))
+            .unwrap();
+            assert_eq!(
+                map.lookup(packet, |name, interface| {
+                    assert_eq!(name, "forward-jumps");
+                    assert_eq!(interface, expected);
+                    Ok(Some("target"))
+                }),
+                Ok(Some("target"))
+            );
+        }
+        for (key, data) in [("oifname", "literal"), ("iif", "@forward-jumps")] {
+            let map: VerdictMap = serde_json::from_value(json!({
+                "key":{"meta":{"key":key}}, "data":data
+            }))
+            .unwrap();
+            assert!(map.lookup(packet, |_, _| unreachable!()).is_err());
+        }
+    }
+}

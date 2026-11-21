@@ -262,3 +262,80 @@ impl MatchValue<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn path_matches_are_based_on_the_packet_at_the_current_hook() {
+        let path = PathPacket {
+            source: Ipv4Addr::new(192, 0, 2, 2),
+            destination: Ipv4Addr::new(198, 51, 100, 2),
+            egress: Some("docker0"),
+            local_destination: false,
+            local_source: Some(false),
+            new_connection: true,
+            allow_dnat: false,
+        };
+        let packet = Packet {
+            protocol: Protocol::Tcp,
+            port: 8080,
+            ingress: "entry0",
+            path: Some(path),
+        };
+        for (rule, expected) in [
+            (
+                json!({"op":"in","left":{"ct":{"key":"state"}},"right":["established","related"]}),
+                Some(false),
+            ),
+            (
+                json!({"op":"in","left":{"ct":{"key":"state"}},"right":["new","related"]}),
+                Some(true),
+            ),
+            (
+                json!({"op":"in","left":{"ct":{"key":"state"}},"right":["new","typo"]}),
+                None,
+            ),
+            (
+                json!({"op":"==","left":{"ct":{"key":"mark"}},"right":0}),
+                None,
+            ),
+            (
+                json!({"op":"==","left":{"fib":{"result":"type","flags":["saddr"]}},"right":"local"}),
+                Some(false),
+            ),
+            (
+                json!({"op":"==","left":{"fib":{"result":"type","flags":["daddr","mark"]}},"right":"local"}),
+                None,
+            ),
+            (
+                json!({"op":"==","left":{"payload":{"protocol":"ip","field":"saddr"}},"right":"192.0.2.2"}),
+                Some(true),
+            ),
+            (
+                json!({"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"198.51.100.3"}),
+                Some(false),
+            ),
+            (
+                json!({"op":"==","left":{"meta":{"key":"oifname"}},"right":"docker0"}),
+                Some(true),
+            ),
+        ] {
+            let comparison: Comparison = serde_json::from_value(rule.clone()).unwrap();
+            assert_eq!(comparison.matches(packet, |_| None), expected, "{rule}");
+            assert_eq!(
+                comparison.matches(
+                    Packet {
+                        path: None,
+                        ..packet
+                    },
+                    |_| None
+                ),
+                None
+            );
+        }
+    }
+}
