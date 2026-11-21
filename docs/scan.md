@@ -231,9 +231,10 @@ the stated source and interface with the default routing policy rules.
 An applicable nftables ingress or prerouting hook, legacy firewall tables,
 XFRM policies or a non-accepting XFRM default, a nonstandard routing policy, or
 an unsupported input rule can make the result `unknown`. The report names the
-first unresolved stage. The
-socket stage checks exact and wildcard bindings, device binding and IPv4
-delivery to dual-stack IPv6 listeners. It reports eligible listener candidates.
+first unresolved stage. The socket stage checks exact and wildcard bindings,
+device binding and IPv4 delivery to dual-stack IPv6 listeners. In JSON,
+`listeners` lists confirmed candidates and `unchecked_listeners` lists candidates
+with missing options. One confirmed candidate is enough for a reachable verdict.
 The scope ends at listener lookup and assumes normal TCP demultiplexing without
 custom BPF socket selection. Return routing, handshake completion, socket
 filters and application behavior are outside this prediction.

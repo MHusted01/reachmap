@@ -35,6 +35,8 @@ pub(super) struct Step<'a> {
     reason: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     listeners: Vec<&'a Listener>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unchecked_listeners: Vec<&'a Listener>,
 }
 
 impl fmt::Display for Step<'_> {
@@ -48,6 +50,13 @@ impl fmt::Display for Step<'_> {
         write!(f, "{stage}: {}", self.reason)?;
         for listener in &self.listeners {
             write!(f, " [bind {}, inode {}]", listener.address, listener.inode)?;
+        }
+        for listener in &self.unchecked_listeners {
+            write!(
+                f,
+                " [bind {}, inode {}, socket options missing]",
+                listener.address, listener.inode
+            )?;
         }
         Ok(())
     }
@@ -90,6 +99,7 @@ fn step(stage: Stage, decision: Decision, reason: impl Into<String>) -> Step<'st
         decision,
         reason: reason.into(),
         listeners: Vec::new(),
+        unchecked_listeners: Vec::new(),
     }
 }
 
@@ -310,6 +320,7 @@ fn match_listeners(
             "matching TCP listener candidates",
         );
         socket.listeners = matches;
+        socket.unchecked_listeners = unchecked;
         return (socket, Verdict::ListenerReachable);
     }
     if !unchecked.is_empty() {
@@ -318,7 +329,7 @@ fn match_listeners(
             Decision::Unknown,
             "socket options are missing for a candidate listener",
         );
-        socket.listeners = unchecked;
+        socket.unchecked_listeners = unchecked;
         return (socket, Verdict::Unknown);
     }
     (

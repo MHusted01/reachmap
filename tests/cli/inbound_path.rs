@@ -105,7 +105,8 @@ fn replay_distinguishes_incompatible_listeners_from_missing_socket_options() {
     value["evidence"]["listeners"]["data"][0]["options"] = Value::Null;
     let report = replay("inbound_path_missing_options.json", &value);
     assert_eq!(report["verdict"], "unknown");
-    assert_eq!(report["steps"][3]["listeners"][0]["inode"], 42);
+    assert!(report["steps"][3]["listeners"].is_null());
+    assert_eq!(report["steps"][3]["unchecked_listeners"][0]["inode"], 42);
 }
 
 #[test]
@@ -211,4 +212,5 @@ fn a_confirmed_listener_is_enough_when_another_candidates_options_are_missing() 
     assert_eq!(report["verdict"], "listener_reachable");
     assert_eq!(report["steps"][3]["listeners"].as_array().unwrap().len(), 1);
     assert_eq!(report["steps"][3]["listeners"][0]["inode"], 42);
+    assert_eq!(report["steps"][3]["unchecked_listeners"][0]["inode"], 43);
 }
