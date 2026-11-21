@@ -279,6 +279,43 @@ the command could not produce a report. Scripts can use `--json` and read
 `unknown`. Collection failures that affect the prediction appear at the stage
 that needs the evidence.
 
+### Comparing a prediction with a client observation
+
+The offline audit library compares an inbound SYN prediction with one TCP
+attempt. It accepts captures for direct IPv4 and IPv6 listeners and supported
+IPv4 Docker bridge publishes.
+
+- Attach the collector identity established by the authenticated capture
+  session and the network context in which it sampled the host. The snapshot's
+  host label is descriptive. On the probe side, establish independently that
+  the selected numeric endpoint belongs to that collector in the same network
+  context. Identical addresses can identify different hosts on different
+  networks.
+- Match the actual client source IP and the numeric destination IP and TCP port
+  to the captured flow. For Docker, compare against the host's published
+  address and port. If translation before ingress makes the mapping uncertain,
+  leave the scope unknown. IPv6 flows requiring a link-local zone are outside
+  the comparison scope.
+- Supply the ingress on the audited host. A declared interface is an
+  assumption. Mark it observed only when there is independent evidence of
+  where the client's SYN arrived.
+- Finish collection before starting the attempt. Supply comparable Unix
+  timestamps and an explicit maximum capture age. The core checks the age from
+  the start of capture to the finish of the attempt. Recollect if the evidence
+  is stale or you know the configuration changed in between.
+
+The report retains both results independently. A completed handshake verifies
+reachability from that client to that endpoint at the observed time. It is
+consistent with a reachable listener and disagrees with a prediction of a
+blocked path or no listener.
+
+A refusal is consistent with a prediction of no listener. An unanswered or
+unreachable attempt is consistent with a blocked path. These observations
+leave the cause and firewall verdict unresolved. Other negative outcomes
+leave the comparison inconclusive. If evidence is missing, mismatched or
+stale, or a path stage is unsupported, the report gives the reason the
+comparison is unavailable.
+
 ## Host-input evidence snapshots
 
 Capture the inputs to the Linux [nftables input check](#nftables-input) and

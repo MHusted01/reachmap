@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- Add an offline core for comparing a Linux inbound TCP prediction with a
+  scoped client handshake observation
+  ([#99](https://github.com/MHusted01/reachmap/issues/99)).
 - Add an opt-in procedure to verify Tailscale Serve and Funnel reports against
   live HTTP observations and offline replay
   ([#95](https://github.com/MHusted01/reachmap/issues/95)).

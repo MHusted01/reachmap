@@ -14,6 +14,7 @@ use crate::host_input_snapshot::{
 };
 use crate::socket::AddressFamily;
 
+pub mod audit;
 pub(crate) mod docker;
 mod evaluate;
 
@@ -131,6 +132,12 @@ pub(crate) struct ListenerOptions {
 }
 
 impl Snapshot {
+    fn validate_details(&self) -> Result<(), PathError> {
+        self.flow.validate()?;
+        validate_host_ref(&self.host_ref)?;
+        Ok(())
+    }
+
     /// Formats evidence as a bounded JSON document for offline replay.
     pub fn render(&self) -> Result<String, PathError> {
         Ok(render_document(self)?)
@@ -208,6 +215,16 @@ struct Header {
     scope: String,
 }
 
+fn validate_format(scope: &str, version: u32) -> Result<(), PathError> {
+    if scope != SCOPE {
+        return Err(PathError::Scope);
+    }
+    if version != VERSION {
+        return Err(PathError::Version(version));
+    }
+    Ok(())
+}
+
 /// Reads a saved capture for replay without querying the host.
 pub fn read(path: &Path) -> Result<Snapshot, PathError> {
     fn invalid(error: &serde_json::Error) -> PathError {
@@ -218,15 +235,9 @@ pub fn read(path: &Path) -> Result<Snapshot, PathError> {
     }
     let text = read_document(path)?;
     let header: Header = serde_json::from_str(&text).map_err(|error| invalid(&error))?;
-    if header.scope != SCOPE {
-        return Err(PathError::Scope);
-    }
-    if header.snapshot_version != VERSION {
-        return Err(PathError::Version(header.snapshot_version));
-    }
+    validate_format(&header.scope, header.snapshot_version)?;
     let snapshot: Snapshot = serde_json::from_str(&text).map_err(|error| invalid(&error))?;
-    snapshot.flow.validate()?;
-    validate_host_ref(&snapshot.host_ref)?;
+    snapshot.validate_details()?;
     Ok(snapshot)
 }
 

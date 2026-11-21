@@ -2,6 +2,9 @@ use serde_json::{Value, json};
 
 use super::{run, scan_file, stderr};
 
+#[path = "inbound_path/audit.rs"]
+mod audit;
+
 fn collected(data: impl Into<Value>) -> Value {
     json!({"status": "collected", "data": data.into()})
 }
