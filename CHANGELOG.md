@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap path` explains a scoped Docker IPv4 TCP publish through destination
+  NAT, forwarding, and the container listener, with offline replay
+  ([#85](https://github.com/MHusted01/reachmap/issues/85)).
 - `reachmap path` predicts scoped inbound IPv4 and IPv6 TCP paths to local
   Linux listeners and can capture and replay the evidence offline
   ([#84](https://github.com/MHusted01/reachmap/issues/84)).

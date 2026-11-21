@@ -1,6 +1,7 @@
 //! Port, interface and transport matches from the nftables JSON snapshot.
 
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
 
 use serde::Deserialize;
 use serde::de::IgnoredAny;
@@ -71,6 +72,8 @@ enum Operator {
     Equal,
     #[serde(rename = "!=")]
     NotEqual,
+    #[serde(rename = "in")]
+    In,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +81,8 @@ enum Operator {
 enum Field {
     Meta { key: String },
     Payload { protocol: Header, field: String },
+    Ct { key: String },
+    Fib { result: String, flags: Vec<String> },
 }
 
 #[derive(Debug, Deserialize)]
@@ -86,12 +91,14 @@ enum Header {
     Tcp,
     Udp,
     Th,
+    Ip,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 enum Right {
     Set { set: Vec<Literal> },
+    Flags(Vec<String>),
     One(Literal),
 }
 
@@ -109,35 +116,93 @@ enum MatchValue<'a> {
     Port(u16),
     Interface(&'a str),
     Transport(Protocol),
+    Address(Ipv4Addr),
+    Local(bool),
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Packet<'a> {
+    pub(super) protocol: Protocol,
+    pub(super) port: u16,
+    pub(super) ingress: &'a str,
+    pub(super) path: Option<PathPacket<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PathPacket<'a> {
+    pub(super) source: Ipv4Addr,
+    pub(super) destination: Ipv4Addr,
+    pub(super) egress: Option<&'a str>,
+    pub(super) local_destination: bool,
+    pub(super) local_source: Option<bool>,
+    pub(super) new_connection: bool,
+    pub(super) allow_dnat: bool,
 }
 
 impl Comparison {
     pub(super) fn matches<'a>(
         &self,
-        protocol: Protocol,
-        port: u16,
-        interface: &str,
+        packet: Packet<'_>,
         named_set: impl FnOnce(&str) -> Option<&'a NamedSet>,
     ) -> Option<bool> {
+        if let Field::Ct { key } = &self.left {
+            if key == "state"
+                && packet.path.is_some_and(|path| path.new_connection)
+                && let (Operator::In, Right::Flags(flags)) = (&self.op, &self.right)
+                && flags.iter().all(|flag| {
+                    matches!(
+                        flag.as_str(),
+                        "new" | "established" | "related" | "invalid" | "untracked"
+                    )
+                })
+            {
+                return Some(flags.iter().any(|flag| flag == "new"));
+            }
+            return None;
+        }
+        if matches!(self.op, Operator::In) {
+            return None;
+        }
         let value = match &self.left {
-            Field::Meta { key } if key == "iifname" => MatchValue::Interface(interface),
-            Field::Meta { key } if key == "l4proto" => MatchValue::Transport(protocol),
+            Field::Meta { key } if key == "iifname" => MatchValue::Interface(packet.ingress),
+            Field::Meta { key } if key == "oifname" => MatchValue::Interface(packet.path?.egress?),
+            Field::Meta { key } if key == "l4proto" => MatchValue::Transport(packet.protocol),
+            Field::Payload {
+                protocol: Header::Ip,
+                field,
+            } => {
+                let path = packet.path?;
+                MatchValue::Address(match field.as_str() {
+                    "saddr" => path.source,
+                    "daddr" => path.destination,
+                    _ => return None,
+                })
+            }
+            Field::Fib { result, flags } if result == "type" => {
+                let path = packet.path?;
+                MatchValue::Local(match flags.as_slice() {
+                    [flag] if flag == "daddr" => path.local_destination,
+                    [flag] if flag == "saddr" => path.local_source?,
+                    _ => return None,
+                })
+            }
             Field::Payload {
                 protocol: header,
                 field,
             } if field == "dport" => {
                 // Negation applies to the port comparison, after the header check.
                 if matches!(
-                    (header, protocol),
+                    (header, packet.protocol),
                     (Header::Tcp, Protocol::Udp) | (Header::Udp, Protocol::Tcp)
                 ) {
                     return Some(false);
                 }
-                MatchValue::Port(port)
+                MatchValue::Port(packet.port)
             }
             _ => return None,
         };
         let matched = match &self.right {
+            Right::Flags(_) => None,
             Right::Set { set } => value.in_set(set),
             Right::One(literal) => {
                 if let Literal::Name(reference) = literal
@@ -170,6 +235,10 @@ impl MatchValue<'_> {
 
     fn matches(self, literal: &Literal) -> Option<bool> {
         match (self, literal) {
+            (Self::Address(address), Literal::Name(other)) => {
+                Some(address == other.parse::<Ipv4Addr>().ok()?)
+            }
+            (Self::Local(local), Literal::Name(kind)) if kind == "local" => Some(local),
             (Self::Port(port), Literal::Number(number)) => Some(port == *number),
             (
                 Self::Port(port),
@@ -190,6 +259,83 @@ impl MatchValue<'_> {
                 _ => None,
             },
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn path_matches_are_based_on_the_packet_at_the_current_hook() {
+        let path = PathPacket {
+            source: Ipv4Addr::new(192, 0, 2, 2),
+            destination: Ipv4Addr::new(198, 51, 100, 2),
+            egress: Some("docker0"),
+            local_destination: false,
+            local_source: Some(false),
+            new_connection: true,
+            allow_dnat: false,
+        };
+        let packet = Packet {
+            protocol: Protocol::Tcp,
+            port: 8080,
+            ingress: "entry0",
+            path: Some(path),
+        };
+        for (rule, expected) in [
+            (
+                json!({"op":"in","left":{"ct":{"key":"state"}},"right":["established","related"]}),
+                Some(false),
+            ),
+            (
+                json!({"op":"in","left":{"ct":{"key":"state"}},"right":["new","related"]}),
+                Some(true),
+            ),
+            (
+                json!({"op":"in","left":{"ct":{"key":"state"}},"right":["new","typo"]}),
+                None,
+            ),
+            (
+                json!({"op":"==","left":{"ct":{"key":"mark"}},"right":0}),
+                None,
+            ),
+            (
+                json!({"op":"==","left":{"fib":{"result":"type","flags":["saddr"]}},"right":"local"}),
+                Some(false),
+            ),
+            (
+                json!({"op":"==","left":{"fib":{"result":"type","flags":["daddr","mark"]}},"right":"local"}),
+                None,
+            ),
+            (
+                json!({"op":"==","left":{"payload":{"protocol":"ip","field":"saddr"}},"right":"192.0.2.2"}),
+                Some(true),
+            ),
+            (
+                json!({"op":"==","left":{"payload":{"protocol":"ip","field":"daddr"}},"right":"198.51.100.3"}),
+                Some(false),
+            ),
+            (
+                json!({"op":"==","left":{"meta":{"key":"oifname"}},"right":"docker0"}),
+                Some(true),
+            ),
+        ] {
+            let comparison: Comparison = serde_json::from_value(rule.clone()).unwrap();
+            assert_eq!(comparison.matches(packet, |_| None), expected, "{rule}");
+            assert_eq!(
+                comparison.matches(
+                    Packet {
+                        path: None,
+                        ..packet
+                    },
+                    |_| None
+                ),
+                None
+            );
         }
     }
 }

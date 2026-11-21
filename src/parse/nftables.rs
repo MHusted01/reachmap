@@ -1,5 +1,8 @@
 //! The subset of `nft -j list ruleset` that can be evaluated for local IP input.
 
+use std::net::{Ipv4Addr, SocketAddrV4};
+use std::num::NonZeroU16;
+
 use serde::Deserialize;
 use serde::de::IgnoredAny;
 use thiserror::Error;
@@ -8,9 +11,12 @@ use crate::socket::{AddressFamily, Protocol};
 
 mod input;
 mod matches;
+mod path;
 mod pre_input;
 pub(crate) use input::InputHook;
-use matches::{Comparison, NamedSetEntry, SetIndex};
+use matches::{Comparison, NamedSetEntry, Packet, SetIndex};
+pub(crate) use path::{PathHookResult, PathPacket};
+use path::{VerdictMap, VerdictMapEntry};
 
 #[derive(Debug, Error)]
 pub(crate) enum RulesetError {
@@ -35,9 +41,9 @@ enum Entry {
     Chain(Chain),
     Rule(Rule),
     Set(NamedSetEntry),
+    Map(VerdictMapEntry),
     #[serde(
-        rename = "map",
-        alias = "element",
+        rename = "element",
         alias = "flowtable",
         alias = "counter",
         alias = "quota",
@@ -109,6 +115,8 @@ impl Chain {
 enum Action {
     Accept,
     Drop,
+    #[serde(skip)]
+    Dnat(SocketAddrV4),
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +153,15 @@ enum Expression {
     Jump(ChainTarget),
     Goto(ChainTarget),
     Return(()),
+    Dnat(Dnat),
+    Vmap(VerdictMap),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Dnat {
+    addr: Ipv4Addr,
+    port: NonZeroU16,
 }
 
 #[derive(Debug, Deserialize)]
@@ -211,26 +228,30 @@ impl Rule {
 
     /// `Ok(None)` means evaluation can proceed to the next rule. An
     /// unsupported statement reached during evaluation can contain a verdict.
-    fn evaluate(
-        &self,
+    fn evaluate<'a>(
+        &'a self,
         sets: &SetIndex<'_>,
         family: AddressFamily,
-        protocol: Protocol,
-        port: u16,
-        interface: &str,
-    ) -> Result<Option<RuleAction<'_>>, &'static str> {
+        packet: Packet<'_>,
+        map: impl Fn(&str, &str) -> Result<Option<&'a str>, &'static str>,
+    ) -> Result<Option<RuleAction<'a>>, &'static str> {
         let mut has_passive_statement = false;
+        let unsupported = if packet.path.is_some() {
+            "unsupported packet-path rule"
+        } else {
+            "unsupported input rule"
+        };
         for (index, statement) in self.expr.iter().enumerate() {
             let last = index + 1 == self.expr.len();
             match statement {
                 Statement::Known(Expression::Match(comparison)) => {
-                    match comparison.matches(protocol, port, interface, |name| {
+                    match comparison.matches(packet, |name| {
                         sets.get(&(self.family.as_str(), self.table.as_str(), name))
                             .copied()
                     }) {
                         Some(true) => continue,
                         Some(false) => return Ok(None),
-                        None => return Err("unsupported input rule"),
+                        None => return Err(unsupported),
                     }
                 }
                 Statement::Known(Expression::Passive(_)) => {
@@ -246,7 +267,7 @@ impl Rule {
                     if last
                         && reply
                             .as_ref()
-                            .is_none_or(|reply| reply.applies_to(family, protocol)) =>
+                            .is_none_or(|reply| reply.applies_to(family, packet.protocol)) =>
                 {
                     return Ok(Some(RuleAction::Verdict(
                         Action::Drop,
@@ -259,16 +280,29 @@ impl Rule {
                 Statement::Known(Expression::Goto(target)) if last => {
                     return Ok(Some(RuleAction::Goto(&target.target)));
                 }
+                Statement::Known(Expression::Dnat(target))
+                    if last && packet.path.is_some_and(|path| path.allow_dnat) =>
+                {
+                    return Ok(Some(RuleAction::Verdict(
+                        Action::Dnat(SocketAddrV4::new(target.addr, target.port.get())),
+                        "matching DNAT rule",
+                    )));
+                }
+                Statement::Known(Expression::Vmap(vmap)) if last && packet.path.is_some() => {
+                    return vmap
+                        .lookup(packet, &map)
+                        .map(|target| target.map(RuleAction::Jump));
+                }
                 Statement::Known(Expression::Return(())) if last => {
                     return Ok(Some(RuleAction::Return));
                 }
-                _ => return Err("unsupported input rule"),
+                _ => return Err(unsupported),
             }
         }
         if has_passive_statement {
             Ok(None)
         } else {
-            Err("unsupported input rule")
+            Err(unsupported)
         }
     }
 }

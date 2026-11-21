@@ -23,6 +23,7 @@ use crate::errors::render_chain;
 use crate::parse::docker::{DockerParseError, parse_inspected_container, validate_container_id};
 use crate::sanitize::sanitize;
 
+pub(crate) mod bridge;
 pub(crate) mod egress;
 
 const DEFAULT_SOCKET: &str = "/var/run/docker.sock";
