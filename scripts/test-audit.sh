@@ -100,7 +100,11 @@ for _ in {1..40}; do
     fi
     sleep 0.25
 done
-[[ $(cat backend) == nftables ]] || { cat dockerd.log >&2; exit 1; }
+if [[ ! -s backend || $(<backend) != nftables ]]; then
+    echo 'The nested Docker daemon did not report the nftables backend.' >&2
+    cat dockerd.log >&2
+    exit 1
+fi
 web_image=busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
 docker run -d --publish 192.0.2.1:8444:8080 "$web_image" \
     sh -ec 'echo reachmap-test >/tmp/index.html; exec httpd -f -p 8080 -h /tmp'

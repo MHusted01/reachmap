@@ -21,8 +21,10 @@ scripts/test-audit.sh target/aarch64-unknown-linux-musl/debug/reachmap
 ```
 
 The script needs a Docker engine that can run a privileged test container.
-It installs tools inside a pinned Docker-in-Docker image, creates temporary
-SSH keys and logins, and changes firewall rules only inside the container's
+It uses a digest-pinned Docker-in-Docker image and installs Alpine packages
+at runtime. Package versions can vary between runs, so compare the printed
+versions with the verification record below. The script creates temporary
+SSH keys and logins and changes firewall rules only inside the container's
 network namespace. It uses a veth link over `192.0.2.0/24` and
 `2001:db8::/64`. Docker uses its native nftables backend for the IPv4
 publish, with the userland proxy disabled. The nested daemon leaves IPv6
