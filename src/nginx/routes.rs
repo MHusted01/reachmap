@@ -99,6 +99,20 @@ pub struct NginxRouteReport {
 }
 
 impl NginxRouteReport {
+    /// Returns the parsed, secret-minimized Nginx configuration.
+    pub fn config(&self) -> &NginxConfig {
+        &self.config
+    }
+
+    /// Whether collection of Nginx config and local TCP socket evidence completed cleanly.
+    pub fn is_collection_complete(&self) -> bool {
+        matches!(self.collection, Collection::Complete)
+    }
+
+    pub(in crate::nginx) fn inventory(&self) -> &TcpEvidence {
+        &self.inventory
+    }
+
     /// Whether collection was complete and the parsed configuration has no
     /// unmodeled or dynamic uncertainties.
     pub fn is_complete(&self) -> bool {
@@ -167,7 +181,7 @@ pub fn scan() -> Result<NginxRouteReport, NginxScanError> {
     collect_with(collect::read_nginx_config(), read_inventory)
 }
 
-fn collect_with(
+pub(in crate::nginx) fn collect_with(
     raw_config: Result<String, CollectError>,
     read_inventory: impl FnOnce() -> Result<Inventory, ScanError>,
 ) -> Result<NginxRouteReport, NginxScanError> {
@@ -264,7 +278,10 @@ fn correlatable_backend_addrs(config: &NginxConfig) -> impl Iterator<Item = Sock
 }
 
 /// Match a local TCP listener against a configured Nginx frontend `listen` directive.
-pub(super) fn listen_candidate(listener: &Listener, listen: &ListenEndpoint) -> Option<bool> {
+pub(in crate::nginx) fn listen_candidate(
+    listener: &Listener,
+    listen: &ListenEndpoint,
+) -> Option<bool> {
     let target = match listen.address {
         ListenAddress::AnyIpv4 {} => {
             SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), listen.port)
@@ -293,7 +310,7 @@ pub(super) fn listen_candidate(listener: &Listener, listen: &ListenEndpoint) -> 
 /// Loopback targets match exact loopback or compatible wildcard listeners;
 /// non-loopback IP targets require an exact local IP bind so a wildcard
 /// `0.0.0.0`/`[::]` listener cannot falsely claim a remote backend is local.
-pub(super) fn backend_candidate(listener: &Listener, target: SocketAddr) -> Option<bool> {
+pub(in crate::nginx) fn backend_candidate(listener: &Listener, target: SocketAddr) -> Option<bool> {
     let ip = target.ip().to_canonical();
     if ip.is_unspecified() {
         return None;

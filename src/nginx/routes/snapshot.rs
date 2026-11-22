@@ -30,7 +30,7 @@ enum Scope {
 }
 
 impl Snapshot {
-    pub(super) fn new(
+    pub(in crate::nginx) fn new(
         host_ref: HostRef,
         captured_at_unix_seconds: u64,
         evidence: NginxRouteReport,
@@ -42,6 +42,32 @@ impl Snapshot {
             scope: Scope::NginxRoutes,
             evidence,
         }
+    }
+
+    /// Descriptive host label attached to the snapshot.
+    pub fn host_ref(&self) -> &str {
+        &self.host_ref
+    }
+
+    /// Unix timestamp (seconds since epoch) when the snapshot was captured.
+    pub fn captured_at_unix_seconds(&self) -> u64 {
+        self.captured_at_unix_seconds
+    }
+
+    /// Captured Nginx configuration, local TCP listener evidence, and collection status.
+    pub fn evidence(&self) -> &NginxRouteReport {
+        &self.evidence
+    }
+
+    /// Validates snapshot version, host label, and internal evidence invariants.
+    pub fn validate(&self) -> Result<(), ReplayError> {
+        if self.snapshot_version != VERSION {
+            return Err(ReplayError::Version(self.snapshot_version));
+        }
+        validate_host_ref(&self.host_ref)
+            .map_err(|_| ReplayError::Invalid("invalid host label"))?;
+        self.evidence.validate().map_err(ReplayError::Invalid)?;
+        Ok(())
     }
 
     /// Whether collection was complete and the captured Nginx config had no uncertainties.
