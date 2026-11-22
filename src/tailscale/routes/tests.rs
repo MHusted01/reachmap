@@ -2,8 +2,8 @@ use super::*;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use crate::host_input_snapshot::render_document;
-use crate::socket::SocketOptions;
-use crate::socket_options::SocketOptionsError;
+use crate::socket::{ListeningSocket, Protocol, SocketOptions};
+use crate::socket_options::{OptionsReport, SocketOptionsError};
 
 const CONFIG: &str = include_str!("../../../tests/fixtures/tailscale_routes.json");
 

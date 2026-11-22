@@ -10,6 +10,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
+pub mod routes;
+
 /// Minimized route, upstream, and uncertainty summary extracted from an
 /// expanded `nginx -T` configuration dump.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

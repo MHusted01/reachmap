@@ -110,6 +110,16 @@ pub enum CollectError {
         /// How long it was given.
         timeout: Duration,
     },
+    /// A command wrote more bytes than its bounded output limit.
+    #[error("`{command}` {stream} output exceeded its {limit_bytes}-byte size limit")]
+    OutputTooLarge {
+        /// The command line.
+        command: String,
+        /// Which stream overflowed (`"stdout"` or `"stderr"`).
+        stream: &'static str,
+        /// Maximum allowed byte length for that stream.
+        limit_bytes: u64,
+    },
     /// A command printed something that is not UTF-8 text.
     #[error("`{command}` printed text that is not UTF-8")]
     NotUtf8 {
@@ -266,6 +276,39 @@ pub(crate) fn read_nftables_rules() -> Result<String, CollectError> {
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) fn read_nftables_rules() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
+/// Dumps the expanded Nginx configuration on disk via `nginx -T` using fixed
+/// root-owned candidate paths (with a trusted absolute root-owned `PATH`
+/// fallback), an isolated environment, explicit timeout, and bounded
+/// stdout/stderr limits.
+#[cfg(target_os = "linux")]
+pub fn read_nginx_config() -> Result<String, CollectError> {
+    let Some(program) = command::locate_with_path(linux::NGINX_PATHS, linux::NGINX_PROGRAM) else {
+        return Err(CollectError::Run {
+            command: format!(
+                "{} {}",
+                linux::NGINX_PROGRAM,
+                linux::NGINX_DUMP_ARGS.join(" ")
+            ),
+            source: io::Error::from(ErrorKind::NotFound),
+        });
+    };
+    command::run_bounded(
+        &program,
+        linux::NGINX_DUMP_ARGS,
+        linux::COMMAND_TIMEOUT,
+        (linux::MAX_NGINX_STDOUT, linux::MAX_NGINX_STDERR),
+        |_| {},
+    )
+}
+
+/// Dumps the expanded Nginx configuration. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn read_nginx_config() -> Result<String, CollectError> {
     Err(CollectError::UnsupportedOs {
         os: std::env::consts::OS,
     })

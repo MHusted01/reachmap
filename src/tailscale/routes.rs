@@ -1,6 +1,5 @@
 //! Correlate configured Serve and Funnel routes with the local TCP inventory.
 
-use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -9,11 +8,14 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::collect::{self, CollectError};
+use crate::local_tcp::{
+    Inventory, TargetMatch, TcpEvidence, candidate, index_targets, match_listeners, read_inventory,
+};
+#[cfg(test)]
+use crate::local_tcp::{Listener, ListenerOptions};
 use crate::parse::tailscale::routes::{Backend, Route, UnsupportedHandler, parse_routes};
 use crate::sanitize::sanitize;
-use crate::scan::{ScanError, parse_tables};
-use crate::socket::{ListeningSocket, Protocol};
-use crate::socket_options::{OptionsReport, read_socket_options};
+use crate::scan::ScanError;
 
 use self::diagnostic::Note;
 
@@ -86,74 +88,6 @@ enum Collection {
     Partial { notes: Vec<Note> },
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-enum TcpEvidence {
-    NotNeeded,
-    Unavailable,
-    Collected { listeners: Vec<Listener> },
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct Listener {
-    address: SocketAddr,
-    options: Option<ListenerOptions>,
-}
-
-type TargetsByPort = BTreeMap<u16, BTreeSet<SocketAddr>>;
-
-impl Listener {
-    fn could_match(&self, by_port: &TargetsByPort) -> bool {
-        by_port.get(&self.address.port()).is_some_and(|targets| {
-            targets
-                .iter()
-                .any(|&target| candidate(self, target).is_some())
-        })
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct ListenerOptions {
-    bound_to_device: bool,
-    ipv6_only: bool,
-}
-
-#[derive(Debug)]
-struct Inventory {
-    sockets: Vec<ListeningSocket>,
-    options: OptionsReport,
-}
-
-impl Inventory {
-    fn relevant_listeners(self, targets: impl Iterator<Item = SocketAddr>) -> Vec<Listener> {
-        let by_port = index_targets(targets);
-        self.sockets
-            .into_iter()
-            .filter(|socket| socket.protocol == Protocol::Tcp)
-            .filter_map(|socket| {
-                let listener = Listener {
-                    address: SocketAddr::new(socket.address, socket.port),
-                    options: self.options.by_inode.get(&socket.inode).map(|options| {
-                        ListenerOptions {
-                            bound_to_device: options.bound_device.is_some(),
-                            ipv6_only: options.ipv6_only,
-                        }
-                    }),
-                };
-                listener.could_match(&by_port).then_some(listener)
-            })
-            .collect()
-    }
-}
-
-fn index_targets(targets: impl Iterator<Item = SocketAddr>) -> TargetsByPort {
-    let mut by_port = TargetsByPort::new();
-    for target in targets {
-        by_port.entry(target.port()).or_default().insert(target);
-    }
-    by_port
-}
-
 fn targets(routes: &[Route]) -> impl Iterator<Item = SocketAddr> + '_ {
     routes
         .iter()
@@ -167,13 +101,7 @@ fn targets(routes: &[Route]) -> impl Iterator<Item = SocketAddr> + '_ {
 /// Reads local Tailscale status and the Linux socket inventory. Makes no
 /// connections to backends and performs no name lookups.
 pub fn scan() -> Result<RouteReport, RouteScanError> {
-    collect_with(collect::read_serve_status(), || {
-        let sockets = parse_tables(&collect::read_socket_tables()?)?;
-        Ok(Inventory {
-            sockets,
-            options: read_socket_options(),
-        })
-    })
+    collect_with(collect::read_serve_status(), read_inventory)
 }
 
 fn collect_with(
@@ -200,8 +128,10 @@ fn collect_with(
                         reason: error.into(),
                     });
                 }
+                let by_port = index_targets(targets(&configured.routes));
                 TcpEvidence::Collected {
-                    listeners: inventory.relevant_listeners(targets(&configured.routes)),
+                    listeners: inventory
+                        .relevant_listeners(|listener| listener.could_match(&by_port)),
                 }
             }
             Err(error) => {
@@ -301,43 +231,19 @@ fn correlate(backend: &Backend, inventory: &TcpEvidence) -> Correlation {
     let TcpEvidence::Collected { listeners } = inventory else {
         return Correlation::Unresolved("TCP socket inventory unavailable");
     };
-    let mut candidates = listeners.iter().filter_map(|listener| {
+    match match_listeners(listeners, |listener| {
         targets
             .iter()
             .filter_map(|&target| candidate(listener, target))
             .max()
-            .map(|confirmed| (listener, confirmed))
-    });
-    match (candidates.next(), candidates.next()) {
-        (_, Some(_)) => Correlation::Unresolved("multiple possible TCP listeners"),
-        (Some((listener, true)), None) => Correlation::Matched(listener.address),
-        (Some((_, false)), None) => {
+    }) {
+        TargetMatch::Ambiguous => Correlation::Unresolved("multiple possible TCP listeners"),
+        TargetMatch::Matched(address) => Correlation::Matched(address),
+        TargetMatch::UncertainOptions => {
             Correlation::Unresolved("listener's socket options leave the match uncertain")
         }
-        (None, None) => Correlation::Unresolved("no matching TCP listener"),
+        TargetMatch::Missing => Correlation::Unresolved("no matching TCP listener"),
     }
-}
-
-/// Returns whether an address match is conclusive. Unknown socket options
-/// leave device binding and IPv6 wildcard behavior uncertain.
-fn candidate(listener: &Listener, target: SocketAddr) -> Option<bool> {
-    if listener.address.port() != target.port() {
-        return None;
-    }
-    let bound = listener.address.ip().to_canonical();
-    let target = target.ip().to_canonical();
-    let options = listener.options.as_ref();
-    let unbound = options.is_some_and(|options| !options.bound_to_device);
-    if bound == target || (bound.is_unspecified() && bound.is_ipv4() == target.is_ipv4()) {
-        return Some(unbound);
-    }
-    if bound.is_unspecified() && bound.is_ipv6() && target.is_ipv4() {
-        return match options {
-            Some(options) if options.ipv6_only => None,
-            _ => Some(unbound),
-        };
-    }
-    None
 }
 
 #[cfg(test)]

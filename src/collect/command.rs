@@ -1,5 +1,9 @@
 //! Running a read-only system command and capturing what it prints.
 
+#[cfg(any(target_os = "linux", test))]
+use std::ffi::OsStr;
+#[cfg(any(target_os = "linux", test))]
+use std::fs;
 use std::io::{self, Read};
 #[cfg(any(target_os = "linux", test))]
 use std::path::Path;
@@ -31,6 +35,72 @@ pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
         .copied()
         .find(|path| Path::new(path).is_file())
         .unwrap_or(fallback)
+}
+
+/// Like [`locate`], but resolves `fallback` against trusted `PATH` entries up
+/// front so the child can run under an isolated environment (`env_clear()`).
+/// Empty, relative, and non-root-owned or group/world-writable `PATH` entries
+/// are skipped.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn locate_with_path(candidates: &[&str], fallback: &str) -> Option<String> {
+    locate_in_trusted_path(
+        candidates,
+        fallback,
+        std::env::var_os("PATH").as_deref(),
+        is_root_owned_not_writable,
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn locate_in_trusted_path(
+    candidates: &[&str],
+    fallback: &str,
+    path_env: Option<&OsStr>,
+    is_trusted: impl Fn(&Path, &Path) -> bool,
+) -> Option<String> {
+    if let Some(found) = candidates
+        .iter()
+        .copied()
+        .find(|path| Path::new(path).is_file())
+    {
+        return Some(found.to_owned());
+    }
+    if let Some(paths) = path_env {
+        for dir in std::env::split_paths(paths) {
+            if !dir.is_absolute() {
+                continue;
+            }
+            let candidate = dir.join(fallback);
+            if candidate.is_file()
+                && is_trusted(&dir, &candidate)
+                && let Some(text) = candidate.to_str()
+            {
+                return Some(text.to_owned());
+            }
+        }
+    }
+    None
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn is_root_owned_not_writable(dir: &Path, file: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let (Ok(dir_meta), Ok(file_meta)) = (fs::metadata(dir), fs::metadata(file)) else {
+            return false;
+        };
+        file_meta.is_file()
+            && dir_meta.uid() == 0
+            && (dir_meta.mode() & 0o022) == 0
+            && file_meta.uid() == 0
+            && (file_meta.mode() & 0o022) == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (dir, file);
+        false
+    }
 }
 
 /// Runs `program` with `args` and returns its standard output. Standard input
@@ -160,12 +230,21 @@ fn capture(
         child.kill().ok();
         return Err(timed_out());
     };
-    let stdout = receive(&stdout, deadline)
-        .ok_or_else(timed_out)?
-        .map_err(failed_to_run)?;
-    let stderr = receive(&stderr, deadline)
-        .ok_or_else(timed_out)?
-        .map_err(failed_to_run)?;
+    let receive_stream =
+        |receiver: &Receiver<Result<Vec<u8>, ReadError>>, stream: &'static str| match receive(
+            receiver, deadline,
+        ) {
+            None => Err(timed_out()),
+            Some(Ok(bytes)) => Ok(bytes),
+            Some(Err(ReadError::Io(source))) => Err(failed_to_run(source)),
+            Some(Err(ReadError::ExceededLimit(limit_bytes))) => Err(CollectError::OutputTooLarge {
+                command: command(),
+                stream,
+                limit_bytes,
+            }),
+        };
+    let stdout = receive_stream(&stdout, "stdout")?;
+    let stderr = receive_stream(&stderr, "stderr")?;
 
     Ok(Output {
         status,
@@ -202,12 +281,24 @@ fn describe(program: &str, args: &[&str]) -> String {
     }
 }
 
+#[derive(Debug)]
+enum ReadError {
+    Io(io::Error),
+    ExceededLimit(u64),
+}
+
+impl From<io::Error> for ReadError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 /// Reads `pipe` to its end on a new thread, so that a full pipe never blocks
 /// the command, and sends the bytes back once it is done.
 fn read_in_background(
     pipe: Option<impl Read + Send + 'static>,
     limit: Option<u64>,
-) -> Receiver<io::Result<Vec<u8>>> {
+) -> Receiver<Result<Vec<u8>, ReadError>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let result = pipe.map_or_else(|| Ok(Vec::new()), |pipe| read_output(pipe, limit));
@@ -217,7 +308,7 @@ fn read_in_background(
     receiver
 }
 
-fn read_output(mut pipe: impl Read, limit: Option<u64>) -> io::Result<Vec<u8>> {
+fn read_output(mut pipe: impl Read, limit: Option<u64>) -> Result<Vec<u8>, ReadError> {
     let mut bytes = Vec::new();
     (&mut pipe)
         .take(limit.map_or(u64::MAX, |limit| limit + 1))
@@ -226,7 +317,9 @@ fn read_output(mut pipe: impl Read, limit: Option<u64>) -> io::Result<Vec<u8>> {
         // Let a finite writer finish without holding the remaining bytes or
         // hitting a broken pipe. The caller still enforces its deadline.
         io::copy(&mut pipe, &mut io::sink()).ok();
-        return Err(io::Error::other("command output exceeded its size limit"));
+        if let Some(limit) = limit {
+            return Err(ReadError::ExceededLimit(limit));
+        }
     }
     Ok(bytes)
 }
@@ -247,16 +340,16 @@ fn wait_until(child: &mut Child, deadline: Instant) -> io::Result<Option<ExitSta
 /// What a reader thread sent. `None` means nothing came before `deadline`: the
 /// command exited, but a child it left behind still holds the pipe open.
 fn receive(
-    reader: &Receiver<io::Result<Vec<u8>>>,
+    reader: &Receiver<Result<Vec<u8>, ReadError>>,
     deadline: Instant,
-) -> Option<io::Result<Vec<u8>>> {
+) -> Option<Result<Vec<u8>, ReadError>> {
     let remaining = deadline.saturating_duration_since(Instant::now());
     match reader.recv_timeout(remaining) {
         Ok(result) => Some(result),
         Err(RecvTimeoutError::Timeout) => None,
-        Err(RecvTimeoutError::Disconnected) => {
-            Some(Err(io::Error::other("the output reader stopped")))
-        }
+        Err(RecvTimeoutError::Disconnected) => Some(Err(ReadError::Io(io::Error::other(
+            "the output reader stopped",
+        )))),
     }
 }
 
@@ -285,7 +378,7 @@ mod tests {
         }
         let mut output = io::Cursor::new(b"12345678");
         let error = read_output(&mut output, Some(4)).unwrap_err();
-        assert_eq!(error.to_string(), "command output exceeded its size limit");
+        assert!(matches!(error, ReadError::ExceededLimit(4)));
         assert_eq!(output.position(), 8);
     }
 
@@ -301,7 +394,36 @@ mod tests {
     fn isolated_commands_report_oversized_output() {
         let error =
             run_isolated("/usr/bin/head", &["-c", "131072", "/dev/zero"], LONG).unwrap_err();
-        assert!(render_chain(&error).contains("command output exceeded its size limit"));
+        assert!(matches!(
+            error,
+            CollectError::OutputTooLarge {
+                stream: "stdout",
+                limit_bytes: MAX_PROBE_OUTPUT,
+                ..
+            }
+        ));
+        assert!(render_chain(&error).contains("stdout output exceeded its 65536-byte size limit"));
+    }
+
+    #[test]
+    fn bounded_commands_report_oversized_stderr_with_its_own_limit() {
+        let error = run_bounded(
+            "/bin/sh",
+            &["-c", "head -c 128 /dev/zero >&2"],
+            LONG,
+            (1024, 32),
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CollectError::OutputTooLarge {
+                stream: "stderr",
+                limit_bytes: 32,
+                ..
+            }
+        ));
+        assert!(render_chain(&error).contains("stderr output exceeded its 32-byte size limit"));
     }
 
     fn assert_times_out(script: &str) {
@@ -495,5 +617,38 @@ mod tests {
 
         assert_eq!(locate(&[not_a_file, missing.to_str().unwrap()], "ip"), "ip");
         assert_eq!(locate(&[], "ip"), "ip");
+    }
+
+    #[test]
+    fn locate_with_path_requires_absolute_trusted_directories() {
+        let dir = TempDir::new("locate-with-path");
+        let binary = dir.file("bin/nginx", "");
+        let found = locate_with_path(&[binary.to_str().unwrap()], "nginx");
+        assert_eq!(found.as_deref(), Some(binary.to_str().unwrap()));
+
+        let missing = dir.path().join("no-such-nginx");
+        let missing_str = missing.to_str().unwrap();
+
+        // Empty and relative PATH entries are skipped even when trusted.
+        let rel_dir = dir.path().file_name().unwrap().to_str().unwrap();
+        let rel_env =
+            std::env::join_paths([Path::new(""), Path::new("."), Path::new(rel_dir)]).unwrap();
+        assert_eq!(
+            locate_in_trusted_path(&[missing_str], "Cargo.toml", Some(&rel_env), |_, _| true),
+            None
+        );
+
+        // Untrusted absolute directories are skipped.
+        let abs_env = std::env::join_paths([binary.parent().unwrap()]).unwrap();
+        assert_eq!(
+            locate_in_trusted_path(&[missing_str], "nginx", Some(&abs_env), |_, _| false),
+            None
+        );
+
+        // Trusted absolute directories succeed.
+        assert_eq!(
+            locate_in_trusted_path(&[missing_str], "nginx", Some(&abs_env), |_, _| true).as_deref(),
+            Some(binary.to_str().unwrap())
+        );
     }
 }

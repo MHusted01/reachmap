@@ -110,6 +110,31 @@ fn tailscale_routes_has_its_own_output_mode() {
     assert!(stderr(&out).contains("cannot be used with"));
 }
 
+#[test]
+fn scan_help_lists_the_nginx_routes_flag_and_enforces_conflicts() {
+    let help = run(&["scan", "--help"]);
+    assert!(help.status.success());
+    assert!(stdout(&help).contains("--nginx-routes"));
+
+    for args in [
+        &["scan", "--nginx-routes", "--json"][..],
+        &["scan", "--nginx-routes", "--tailscale-routes"][..],
+    ] {
+        let out = run(args);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(stderr(&out).contains("cannot be used with"));
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn nginx_capture_accepts_snapshot_flags_but_needs_linux() {
+    let out = run(&["scan", "--nginx-routes", "--snapshot", "--host-ref", "test"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("Linux"));
+    assert!(stdout(&out).is_empty());
+}
+
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn tailscale_capture_accepts_snapshot_flags_but_needs_linux() {
@@ -421,6 +446,8 @@ fn scan_of(rows: &[String]) -> String {
 mod host_input_snapshot;
 #[path = "cli/inbound_path.rs"]
 mod inbound_path;
+#[path = "cli/nginx_snapshot.rs"]
+mod nginx_snapshot;
 #[path = "cli/tailscale_snapshot.rs"]
 mod tailscale_snapshot;
 

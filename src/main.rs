@@ -25,6 +25,7 @@ use reachmap::scan::ScanReport;
 use reachmap::snapshot_replay;
 use reachmap::table::Report;
 
+mod nginx_cli;
 mod path_cli;
 mod tailscale_cli;
 
@@ -57,9 +58,12 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Explain configured Tailscale Serve and Funnel routes on Linux
-        #[arg(long, conflicts_with = "json")]
+        #[arg(long, conflicts_with_all = ["json", "nginx_routes"])]
         tailscale_routes: bool,
-        /// On Linux, print host-input or Tailscale route evidence as JSON
+        /// Explain configured Nginx reverse proxy routes on Linux
+        #[arg(long, conflicts_with_all = ["json", "tailscale_routes"])]
+        nginx_routes: bool,
+        /// On Linux, print host-input, Tailscale, or Nginx route evidence as JSON
         #[arg(long, requires = "host_ref", conflicts_with = "json")]
         snapshot: bool,
         /// A label you choose for the host in the snapshot
@@ -148,6 +152,11 @@ fn main() -> ExitCode {
             host_ref,
             ..
         } => tailscale_cli::run(host_ref),
+        Command::Scan {
+            nginx_routes: true,
+            host_ref,
+            ..
+        } => nginx_cli::run(host_ref),
         Command::Scan {
             host_ref: Some(host_ref),
             ..
@@ -334,6 +343,13 @@ fn run_replay(path: &Path, json: bool) -> ExitCode {
                 return ExitCode::from(BAD_ARGUMENTS);
             }
             return tailscale_cli::write_report(&snapshot, snapshot.is_complete());
+        }
+        Ok(snapshot_replay::Report::NginxRoutes(snapshot)) => {
+            if json {
+                eprintln!("error: --json is only supported for replaying host-input snapshots");
+                return ExitCode::from(BAD_ARGUMENTS);
+            }
+            return nginx_cli::write_report(&snapshot, snapshot.is_complete());
         }
         Err(error) => {
             let message = format!(
