@@ -15,6 +15,33 @@ pub(super) enum ScopeKind {
     Location,
 }
 
+#[derive(Default)]
+pub(super) struct ScopeAclState {
+    defined_in_scope: bool,
+    terminated_open: bool,
+}
+
+impl ScopeAclState {
+    fn record_rule(&mut self, name: &str, args: &[Cow<'_, str>], auth: &mut AuthSignals) -> bool {
+        if !self.defined_in_scope {
+            // In Nginx, any allow/deny in a child scope replaces inherited rules.
+            self.defined_in_scope = true;
+            auth.access_control = false;
+        }
+        if self.terminated_open {
+            return false;
+        }
+        if name == "allow" && args.len() == 1 && args[0].as_ref() == "all" {
+            self.terminated_open = true;
+            return false;
+        }
+        if name == "deny" {
+            auth.access_control = true;
+        }
+        true
+    }
+}
+
 pub(super) enum LocationHeader {
     Parsed(LocationModifier, String),
     Regex,
@@ -56,6 +83,7 @@ pub(super) fn apply_shared_directive(
     directive: &Directive<'_>,
     source_file: Option<&str>,
     auth: &mut AuthSignals,
+    acl_state: &mut ScopeAclState,
     scope: ScopeKind,
     uncertainties: &mut Vec<Uncertainty>,
 ) {
@@ -114,15 +142,33 @@ pub(super) fn apply_shared_directive(
             ),
         },
         "allow" | "deny" => {
-            auth.access_control = true;
-            push_uncertainty(
+            if acl_state.record_rule(name, &directive.args, auth) {
+                push_uncertainty(
+                    uncertainties,
+                    UncertaintyKind::AccessControl,
+                    name,
+                    source_file,
+                    directive.line,
+                );
+            }
+        }
+        "satisfy" => match directive.args.first().map(Cow::as_ref) {
+            Some("all") if directive.args.len() == 1 => {}
+            Some("any") if directive.args.len() == 1 => push_uncertainty(
                 uncertainties,
-                UncertaintyKind::AccessControl,
-                name,
+                UncertaintyKind::DynamicControlFlow,
+                "satisfy",
                 source_file,
                 directive.line,
-            );
-        }
+            ),
+            _ => push_uncertainty(
+                uncertainties,
+                UncertaintyKind::InvalidDirective,
+                "satisfy",
+                source_file,
+                directive.line,
+            ),
+        },
         "limit_except" if matches!(scope, ScopeKind::Location) => {
             push_uncertainty(
                 uncertainties,

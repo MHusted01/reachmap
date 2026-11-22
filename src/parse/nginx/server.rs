@@ -5,7 +5,9 @@ use std::collections::BTreeSet;
 use crate::nginx::{AuthSignals, LocationRoute, ServerBlock, UncertaintyKind};
 use crate::sanitize::sanitize;
 
-use super::directives::{LocationHeader, ScopeKind, apply_shared_directive, parse_location_header};
+use super::directives::{
+    LocationHeader, ScopeAclState, ScopeKind, apply_shared_directive, parse_location_header,
+};
 use super::listen::{parse_listen, parse_server_names, push_uncertainty};
 use super::parser::Directive;
 use super::project::Projector;
@@ -36,10 +38,12 @@ impl<'a> Projector<'a> {
         };
         let mut pending_locations = Vec::new();
         let mut visited = BTreeSet::new();
+        let mut acl = ScopeAclState::default();
         self.collect_server_items(
             block,
             source_file,
             &mut server,
+            &mut acl,
             &mut pending_locations,
             &mut visited,
         );
@@ -64,6 +68,7 @@ impl<'a> Projector<'a> {
         block: &'a [Directive<'a>],
         source_file: Option<&'a str>,
         server: &mut ServerBlock,
+        acl: &mut ScopeAclState,
         pending_locations: &mut Vec<(&'a Directive<'a>, Option<&'a str>)>,
         visited: &mut BTreeSet<usize>,
     ) {
@@ -100,6 +105,7 @@ impl<'a> Projector<'a> {
                             &inc_file.directives,
                             inc_file.source_file,
                             server,
+                            acl,
                             pending_locations,
                             visited,
                         );
@@ -109,6 +115,7 @@ impl<'a> Projector<'a> {
                     directive,
                     source_file,
                     &mut server.auth,
+                    acl,
                     ScopeKind::Server,
                     &mut self.config.uncertainties,
                 ),
@@ -175,7 +182,8 @@ impl<'a> Projector<'a> {
             auth: server.auth,
         };
         let mut visited = BTreeSet::new();
-        self.collect_location_items(block, source_file, &mut route, &mut visited);
+        let mut acl = ScopeAclState::default();
+        self.collect_location_items(block, source_file, &mut route, &mut acl, &mut visited);
         server.locations.push(route);
     }
 
@@ -184,6 +192,7 @@ impl<'a> Projector<'a> {
         block: &'a [Directive<'a>],
         source_file: Option<&'a str>,
         route: &mut LocationRoute,
+        acl: &mut ScopeAclState,
         visited: &mut BTreeSet<usize>,
     ) {
         for directive in block {
@@ -228,6 +237,7 @@ impl<'a> Projector<'a> {
                             &inc_file.directives,
                             inc_file.source_file,
                             route,
+                            acl,
                             visited,
                         );
                     }
@@ -236,6 +246,7 @@ impl<'a> Projector<'a> {
                     directive,
                     source_file,
                     &mut route.auth,
+                    acl,
                     ScopeKind::Location,
                     &mut self.config.uncertainties,
                 ),

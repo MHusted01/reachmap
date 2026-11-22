@@ -426,3 +426,89 @@ fn rejects_malformed_truncated_and_over_bounded_inputs() {
         })
     );
 }
+
+#[test]
+fn handles_braced_variables_acl_overrides_http_includes_and_duplicate_upstreams() {
+    let config = parse_nginx_config(
+        r#"
+        # configuration file /etc/nginx/nginx.conf:
+        http {
+            include /etc/nginx/missing_http.conf;
+            upstream dup_up {
+                server 127.0.0.1:8080;
+            }
+            upstream dup_up {
+                server 127.0.0.1:8081;
+            }
+            server {
+                listen 80;
+                deny all;
+                location /open {
+                    allow all;
+                    proxy_pass http://${x};
+                }
+                location /protected {
+                    satisfy any;
+                    set $a ${b};
+                    proxy_pass http://dup_up;
+                }
+                location /allow_only {
+                    allow 10.0.0.0/8;
+                    proxy_pass http://127.0.0.1:8082;
+                }
+            }
+        }
+        "#,
+    )
+    .expect("braced variables and overrides should parse cleanly");
+
+    assert!(!config.servers[0].locations[0].auth.access_control);
+    assert_eq!(
+        config.servers[0].locations[0].target,
+        Some(ProxyTarget::Unsupported {
+            reason: UnsupportedProxyReason::Variable,
+        })
+    );
+    assert!(config.servers[0].locations[1].auth.access_control);
+    assert!(!config.servers[0].locations[2].auth.access_control);
+    assert_eq!(
+        config.servers[0].locations[1].target,
+        Some(ProxyTarget::Upstream {
+            scheme: ProxyScheme::Http,
+            name: "dup_up".into(),
+            targets: vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 8080)],
+            complete: false,
+        })
+    );
+
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::UnresolvedInclude && u.directive == "include")
+    );
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::AmbiguousDirective && u.directive == "upstream")
+    );
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::DynamicTarget && u.directive == "proxy_pass")
+    );
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::DynamicControlFlow && u.directive == "satisfy")
+    );
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::UnmodeledDirective && u.directive == "set")
+    );
+}

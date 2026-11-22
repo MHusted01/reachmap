@@ -7,7 +7,7 @@ use crate::nginx::{AuthSignals, NginxConfig, UncertaintyKind, UpstreamGroup};
 use crate::sanitize::sanitize;
 
 use super::directives::{
-    ScopeKind, apply_shared_directive, glob_match, is_benign_top_level,
+    ScopeAclState, ScopeKind, apply_shared_directive, glob_match, is_benign_top_level,
     is_benign_upstream_directive, is_secret_bearing, record_common_uncertainty,
     resolve_relative_pattern,
 };
@@ -60,10 +60,12 @@ impl<'a> Projector<'a> {
 
                 let mut visited = BTreeSet::from([index]);
                 let mut http_auth = AuthSignals::default();
+                let mut http_acl = ScopeAclState::default();
                 self.project_http_directives(
                     block,
                     self.files[index].source_file,
                     &mut http_auth,
+                    &mut http_acl,
                     &mut visited,
                 );
             } else {
@@ -112,10 +114,12 @@ impl<'a> Projector<'a> {
             self.collect_http_upstreams(&file.directives, file.source_file, &mut visited);
             let mut visited = BTreeSet::from([file_index]);
             let mut auth = AuthSignals::default();
+            let mut acl = ScopeAclState::default();
             self.project_http_directives(
                 &file.directives,
                 file.source_file,
                 &mut auth,
+                &mut acl,
                 &mut visited,
             );
             return;
@@ -156,7 +160,7 @@ impl<'a> Projector<'a> {
                     source_file,
                     directive.line,
                     &mut visited,
-                    false,
+                    true,
                 ) {
                     self.consumed[included] = true;
                     self.project_top_level_file(&self.files[included], included, saw_stream);
@@ -256,6 +260,18 @@ impl<'a> Projector<'a> {
             }
         }
 
+        if let Some(existing) = self.upstreams.get_mut(&name) {
+            existing.complete = false;
+            push_uncertainty(
+                &mut self.config.uncertainties,
+                UncertaintyKind::AmbiguousDirective,
+                "upstream",
+                source_file,
+                directive.line,
+            );
+            return;
+        }
+
         self.upstreams.insert(
             name.clone(),
             UpstreamGroup {
@@ -272,6 +288,7 @@ impl<'a> Projector<'a> {
         directives: &'a [Directive<'a>],
         source_file: Option<&'a str>,
         http_auth: &mut AuthSignals,
+        http_acl: &mut ScopeAclState,
         visited: &mut BTreeSet<usize>,
     ) {
         let mut server_directives = Vec::new();
@@ -285,7 +302,7 @@ impl<'a> Projector<'a> {
                         source_file,
                         directive.line,
                         visited,
-                        false,
+                        true,
                     ) {
                         self.consumed[included] = true;
                         let inc_file = &self.files[included];
@@ -293,6 +310,7 @@ impl<'a> Projector<'a> {
                             &inc_file.directives,
                             inc_file.source_file,
                             http_auth,
+                            http_acl,
                             visited,
                         );
                     }
@@ -301,6 +319,7 @@ impl<'a> Projector<'a> {
                     directive,
                     source_file,
                     http_auth,
+                    http_acl,
                     ScopeKind::Http,
                     &mut self.config.uncertainties,
                 ),

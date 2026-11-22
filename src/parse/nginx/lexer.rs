@@ -228,9 +228,25 @@ fn lex_unquoted<'a>(
     let mut pos = start;
     let mut escaped: Option<String> = None;
     let mut chunk_start = pos;
+    let mut prev_unescaped_dollar = false;
 
     while pos < bytes.len() {
         let byte = bytes[pos];
+        if byte == b'{' && prev_unescaped_dollar {
+            // Keep `${var}` braced variable references inside the same word.
+            pos += 1;
+            while pos < bytes.len()
+                && !bytes[pos].is_ascii_whitespace()
+                && !matches!(bytes[pos], b';' | b'}')
+            {
+                pos += 1;
+            }
+            if pos < bytes.len() && bytes[pos] == b'}' {
+                pos += 1;
+            }
+            prev_unescaped_dollar = false;
+            continue;
+        }
         if byte.is_ascii_whitespace() || matches!(byte, b';' | b'{' | b'}') {
             break;
         }
@@ -255,8 +271,10 @@ fn lex_unquoted<'a>(
             buf.push(next_char);
             pos += 1 + next_char.len_utf8();
             chunk_start = pos;
+            prev_unescaped_dollar = false;
             continue;
         }
+        prev_unescaped_dollar = byte == b'$';
         pos += 1;
     }
 

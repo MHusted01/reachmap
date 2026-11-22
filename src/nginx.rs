@@ -138,12 +138,16 @@ pub enum ProxyScheme {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProxyTarget {
     /// Static HTTP or HTTPS IP/localhost target.
+    ///
+    /// When the target host is `localhost`, `targets` lists both `127.0.0.1`
+    /// and `[::1]` without performing host DNS/NSS resolution; listener
+    /// correlation must verify which address families actually bind locally.
     StaticHttp {
         /// Upstream scheme.
         scheme: ProxyScheme,
         /// Sanitized `scheme://authority[/path]` without credentials, query, or fragment.
         endpoint: String,
-        /// Resolved socket addresses (`localhost` expands to IPv4 and IPv6 loopback).
+        /// Resolved socket addresses (`localhost` assumes both IPv4 and IPv6 loopback).
         targets: Vec<SocketAddr>,
     },
     /// Reference to a static named `upstream` group.
@@ -203,7 +207,8 @@ pub struct UpstreamGroup {
 /// One statically resolved `server` directive inside an [`UpstreamGroup`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UpstreamServer {
-    /// Resolved socket addresses (`localhost` expands to IPv4 and IPv6 loopback).
+    /// Resolved socket addresses (`localhost` assumes both `127.0.0.1` and `[::1]`
+    /// without host DNS/NSS lookup; verify bound families against local sockets).
     pub targets: Vec<SocketAddr>,
     /// Whether `backup` was specified.
     pub backup: bool,
