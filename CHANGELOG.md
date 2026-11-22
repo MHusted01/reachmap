@@ -6,6 +6,11 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Add a pure, bounded Nginx configuration parser and secret-minimized route
+  model ([#108](https://github.com/MHusted01/reachmap/issues/108)).
+
 ## [0.5.0] - 2026-11-22
 
 Tailscale route reports describe configured Serve and Funnel routes and local
