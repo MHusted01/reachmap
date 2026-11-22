@@ -17,10 +17,11 @@ PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM              
 warning: UFW is active, but it does not apply to these Docker ports: 8080
 ```
 
-> **Status.** v0.4.0 adds Linux host-input snapshots and inbound TCP path
-> prediction for local listeners and supported IPv4 Docker bridge publishes.
-> Captured evidence can be replayed offline on Linux and macOS. [Changelog](CHANGELOG.md) ·
-> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md) · [TCP path](docs/scan.md#linux-inbound-tcp-paths) · [SSH audit](docs/audit.md)
+> **Status.** v0.5.0 adds configured Tailscale Serve and Funnel route
+> explanations with offline replay, plus single-endpoint Linux TCP audits over
+> authenticated SSH that pair an inbound SYN prediction with a client
+> handshake. [Changelog](CHANGELOG.md) ·
+> [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md) · [TCP path](docs/scan.md#linux-inbound-tcp-paths) · [Tailscale routes](docs/scan.md#tailscale) · [SSH audit](docs/audit.md)
 
 ## Install
 
@@ -45,7 +46,7 @@ See the [macOS scan scope](docs/scan.md#macos).
   root), it says so instead of guessing "safe".
 - **Notices changes.** `reachmap diff` compares a host with a saved scan and
   exits with 1 when something changed, for cron jobs.
-- **No telemetry.** Network traffic comes from the `probe` and `egress` checks you start yourself.
+- **No telemetry.** Network traffic comes from the `probe`, `egress` and `audit` checks you start yourself.
 
 Background: [why Docker ports can bypass UFW](docs/docker-and-ufw.md).
 

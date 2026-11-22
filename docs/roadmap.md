@@ -16,16 +16,13 @@ evidence behind each result and identify where the evidence runs out.
 
 ## Current capabilities
 
-v0.4.0 includes the [Linux packet paths](https://github.com/MHusted01/reachmap/milestone/4)
-and [Docker bridge coverage](https://github.com/MHusted01/reachmap/milestone/5) work.
+v0.5.0 includes the
+[Tailscale proxy and tunnel paths](https://github.com/MHusted01/reachmap/milestone/6)
+and [Verified Linux TCP audits](https://github.com/MHusted01/reachmap/milestone/7)
+milestones on top of v0.4.0's
+[Linux packet paths](https://github.com/MHusted01/reachmap/milestone/4) and
+[Docker bridge coverage](https://github.com/MHusted01/reachmap/milestone/5) work.
 The [changelog](../CHANGELOG.md) lists the changes by release.
-
-Since v0.4.0, the [Tailscale milestone](https://github.com/MHusted01/reachmap/milestone/6)
-added configured Serve and Funnel route explanations and offline replay.
-Disposable deployments corroborated selected HTTP routes. A route report
-describes configuration and local backend evidence. Client access still
-requires a separate observation from the relevant vantage point. See the
-[verification guide](tailscale-verification.md).
 
 | Release | Capabilities | Evidence limits |
 | --- | --- | --- |
@@ -34,10 +31,11 @@ requires a separate observation from the relevant vantage point. See the
 | v0.3.0 | Linux nftables input checks for native TCP and UDP sockets, with multiple base chains, chain transfers, and supported interface and port matches. IPv6 Docker publishes report host-input evidence. | The check assumes a packet reaches the input hook. Missing evidence and relevant unsupported rules can yield unknown. Effective Docker forwarding and upstream paths remain outside the evaluation. |
 | v0.3.0 | macOS TCP and UDP socket inventory and global application firewall state. Linux Docker egress checks compare the host and workload using named observers. | macOS reports visible process ownership and the global firewall setting. Egress observations cover the selected observers and workload network namespace. |
 | v0.4.0 | `scan --snapshot` and `replay` capture and reevaluate Linux host-input evidence. `path predict`, `path capture` and `path replay` explain IPv4 and IPv6 inbound TCP to local Linux listeners and IPv4 TCP publishes on `docker0` or one user-defined bridge. | The prediction follows a new inbound SYN through supported stages up to listener lookup. Docker requires native nftables and kernel DNAT with the userland proxy disabled. Missing or unsupported evidence can yield `unknown`. Return traffic and handshake completion are outside scope. |
+| v0.5.0 | `scan --tailscale-routes` and `--snapshot` explain and replay configured Tailscale Serve and Funnel routes and local loopback TCP listener links. `reachmap audit` collects one Linux inbound TCP prediction over authenticated SSH and compares it with a client TCP handshake from Linux or macOS. | Tailscale route reports describe configuration and local socket evidence; upstream policy, DNS, TLS and application authentication remain separate observations. `audit` covers one explicit numeric TCP endpoint using an installed remote collector; disagreements and evidence gaps stay visible, and failed handshakes do not establish firewall verdicts. See [Tailscale verification](tailscale-verification.md) and [audit verification](audit-verification.md). |
 
 See the current command and output contracts in [scan](scan.md), [probe](probe.md),
-[diff](diff.md), [JSON](json.md), [egress](egress.md), [Docker and UFW](docker-and-ufw.md)
-and [Linux inbound TCP paths](scan.md#linux-inbound-tcp-paths).
+[diff](diff.md), [JSON](json.md), [egress](egress.md), [Docker and UFW](docker-and-ufw.md),
+[Linux inbound TCP paths](scan.md#linux-inbound-tcp-paths) and [SSH audit](audit.md).
 
 ## Platform targets
 
@@ -49,7 +47,7 @@ OS-specific verification. Each support level can ship independently.
 | --- | --- | --- | --- | --- |
 | **P0 Linux** | Released | First collector target and an audit operator platform | TCP/UDP sockets, owning processes and containers. Extend to native service ownership where evidence is available. | Reference platform for Netfilter, routing, NAT, namespaces, Docker and stateful packet paths. |
 | **P1 Windows 11 and supported Windows Server versions** | Planned | Planned as operator and audited host, with transport and privilege support validated separately | Native listening ports, owning processes, services and network inventory | Windows Firewall profiles and policy, Windows Filtering Platform (WFP), and relevant enterprise, virtual and container networking. |
-| **P2 macOS** | Released with local scans, TCP probes and diffs. | Planned as operator and audited host. The audit command is pending. | TCP/UDP sockets and visible owning processes ([#16](https://github.com/MHusted01/reachmap/issues/16)). | Global application firewall state. Planned analysis of pf and app rules, with emphasis on local development and virtualized networking. |
+| **P2 macOS** | Released with local scans, TCP probes and diffs. | Released as an audit operator for Linux TCP endpoints ([audit](audit.md)). Audited host support is planned. | TCP/UDP sockets and visible owning processes ([#16](https://github.com/MHusted01/reachmap/issues/16)). | Global application firewall state. Planned analysis of pf and app rules, with emphasis on local development and virtualized networking. |
 
 The lightweight macOS inventory can ship before deep Windows analysis. Building
 a CLI for an OS, running it as an audit client, collecting evidence from that OS
@@ -167,13 +165,13 @@ default. Test each adapter before claiming support for its path.
 
 ### Integrated remote auditing
 
-**Active milestone.** [Verified Linux TCP audits](https://github.com/MHusted01/reachmap/milestone/7)
-starts with one explicit TCP endpoint and an installed Linux collector over
-authenticated SSH. It pairs an inbound SYN prediction with a TCP handshake
-observation from the operator's machine. The first scope is direct IPv4 and
-IPv6 listeners and supported IPv4 Docker bridge publishes. Disagreements and
-evidence gaps stay visible. Establish this workflow before adding more proxy
-or tunnel adapters so later integrations can use the same evidence model.
+**Delivered initial milestone.** [Verified Linux TCP audits](https://github.com/MHusted01/reachmap/milestone/7)
+shipped in v0.5.0 for one explicit numeric TCP endpoint using an installed Linux
+collector over authenticated SSH. It pairs an inbound SYN prediction with a TCP
+handshake observation from a Linux or macOS operator machine for direct IPv4 and
+IPv6 listeners and supported IPv4 Docker bridge publishes, keeping disagreements
+and evidence gaps visible. Later proxy and tunnel adapters can build on the same
+evidence and correlation model.
 
 **Outcome.** Bring remote collection, local probes and correlation into one
 explicit audit, such as `reachmap audit ssh://user@host`. Start with Linux
