@@ -6,17 +6,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
-### Added
-
-- Add a scoped five-layer offline correlation module for Nginx reverse proxy
-  paths, a disposable Linux verification lab (`scripts/test-nginx-routes.sh`),
-  and verification docs (`docs/nginx-verification.md`)
-  ([#110](https://github.com/MHusted01/reachmap/issues/110)).
-- `reachmap scan --nginx-routes` reports configured Nginx reverse proxy routes
-  with local TCP listener linking, `--snapshot --host-ref LABEL` capture, and
-  offline `reachmap replay` ([#109](https://github.com/MHusted01/reachmap/issues/109)).
-- Add a pure, bounded Nginx configuration parser and secret-minimized route
-  model ([#108](https://github.com/MHusted01/reachmap/issues/108)).
+Unreleased changes are kept as one file per change in
+[`changelog.d/`](changelog.d/) and folded into the next version section when it
+is released; see "Releases" in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## [0.5.0] - 2026-11-22
 

@@ -16,5 +16,5 @@ Closes #
 - [ ] Read-only: nothing changes firewall rules, containers or system settings
 - [ ] Tests written before the implementation
 - [ ] No `unwrap()`/`expect()` outside tests, no `unsafe`
-- [ ] `CHANGELOG.md` and docs updated if behaviour changed
+- [ ] `changelog.d/` fragment added and docs updated if behaviour changed
 - [ ] All review comments addressed and resolved
