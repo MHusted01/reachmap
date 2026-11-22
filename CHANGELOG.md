@@ -6,6 +6,8 @@ All notable changes to reachmap are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-22
+
 ### Added
 
 - Add a disposable verification lab for SSH TCP audits and document how to
@@ -26,6 +28,19 @@ All notable changes to reachmap are listed here. The format follows
 - `reachmap scan --tailscale-routes` reports configured host-level Serve and
   Funnel routes and links supported loopback backends to local TCP listeners
   ([#93](https://github.com/MHusted01/reachmap/issues/93)).
+
+### Security
+
+- Update the transitive `url` dependency to 2.5.9 (`RUSTSEC-2026-0592`).
+
+Tailscale route reports describe configured Serve and Funnel routes and local
+loopback TCP listeners; client reachability, upstream policy and application
+authentication remain separate observations. `reachmap audit` pairs one
+Linux inbound SYN prediction collected over authenticated SSH with a TCP
+handshake from the operator's machine and keeps disagreements and evidence
+gaps visible. See the
+[Tailscale route scope](https://github.com/MHusted01/reachmap/blob/f3b9328/docs/scan.md#tailscale)
+and [SSH audit scope](https://github.com/MHusted01/reachmap/blob/f3b9328/docs/audit.md).
 
 ## [0.4.0] - 2026-11-21
 
