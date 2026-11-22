@@ -10,6 +10,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
+pub mod audit;
 pub mod routes;
 
 /// Minimized route, upstream, and uncertainty summary extracted from an

@@ -8,6 +8,10 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- Add a scoped five-layer offline correlation module for Nginx reverse proxy
+  paths, a disposable Linux verification lab (`scripts/test-nginx-routes.sh`),
+  and verification docs (`docs/nginx-verification.md`)
+  ([#110](https://github.com/MHusted01/reachmap/issues/110)).
 - `reachmap scan --nginx-routes` reports configured Nginx reverse proxy routes
   with local TCP listener linking, `--snapshot --host-ref LABEL` capture, and
   offline `reachmap replay` ([#109](https://github.com/MHusted01/reachmap/issues/109)).
