@@ -56,10 +56,34 @@ and Docker, which runs the workflow and script linters.
 - Non-test code under 400 lines per file (800 at most with tests), small
   functions. New dependencies need a reason and must pass `make deny`.
 
+## Changelog
+
+A PR with a user-visible change adds one fragment file to `changelog.d/` instead
+of editing `CHANGELOG.md`, so PRs that merge in any order never conflict on the
+changelog. Name it `<issue>.<category>.md`, where `<category>` is the
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) group: `added`,
+`changed`, `deprecated`, `removed`, `fixed` or `security`. It holds one bullet
+that ends with the absolute issue link; continuation lines are indented by two
+spaces. For example, `changelog.d/123.fixed.md`:
+
+```markdown
+- `reachmap scan` shows the owning process of sockets in another network
+  namespace ([#123](https://github.com/MHusted01/reachmap/issues/123)).
+```
+
+`scripts/changelog-assemble.sh --check` checks every fragment without changing
+anything; the CI `lint` job runs it on every PR.
+
 ## Releases
 
-Changes go under `## [Unreleased]` in `CHANGELOG.md`. Before a release, that
-section is renamed to `## [X.Y.Z] - YYYY-MM-DD` in a PR. Maintainers then tag
+A release PR runs `scripts/changelog-assemble.sh X.Y.Z YYYY-MM-DD`. It folds the
+fragments into a new `## [X.Y.Z] - YYYY-MM-DD` section below `## [Unreleased]`,
+with the groups in Keep a Changelog order and the newest issue first, and
+deletes them. It checks the version, the date and every fragment first, and
+changes nothing if one is wrong. If a fragment cannot be deleted after the
+section is written, it stops and names the files left; run
+`git restore CHANGELOG.md changelog.d/` and try again. The PR then adds an optional summary paragraph
+under the heading and bumps the version in `Cargo.toml`. Maintainers then tag
 the merged commit on `main` with `vX.Y.Z`; the release workflow uses that
 section as the release notes. A tag without a matching section fails, so
 pre-release tags are not supported.
