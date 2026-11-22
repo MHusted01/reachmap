@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- Add a disposable verification lab for SSH TCP audits and document how to
+  check the operator path from Linux and macOS
+  ([#101](https://github.com/MHusted01/reachmap/issues/101)).
 - `reachmap audit` compares one Linux inbound TCP prediction collected over
   authenticated SSH with a handshake from the operator's machine
   ([#100](https://github.com/MHusted01/reachmap/issues/100)).
