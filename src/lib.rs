@@ -27,6 +27,7 @@ pub mod inbound_path;
 pub mod json;
 pub mod network;
 pub mod nftables;
+pub mod nginx;
 pub mod parse;
 pub mod probe;
 pub mod reach;

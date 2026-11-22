@@ -7,6 +7,7 @@ pub mod iptables;
 #[cfg(any(target_os = "macos", test))]
 pub(crate) mod lsof;
 pub(crate) mod nftables;
+pub mod nginx;
 pub mod probe_args;
 pub mod proc_net;
 pub mod proc_pid;
