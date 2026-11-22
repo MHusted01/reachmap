@@ -18,7 +18,7 @@ pub(super) enum ScopeKind {
 #[derive(Default)]
 pub(super) struct ScopeAclState {
     defined_in_scope: bool,
-    terminated_open: bool,
+    terminated: bool,
 }
 
 impl ScopeAclState {
@@ -28,14 +28,16 @@ impl ScopeAclState {
             self.defined_in_scope = true;
             auth.access_control = false;
         }
-        if self.terminated_open {
+        if self.terminated {
             return false;
         }
-        if name == "allow" && args.len() == 1 && args[0].as_ref() == "all" {
-            self.terminated_open = true;
+        let is_all = args.len() == 1 && args[0].as_ref() == "all";
+        if name == "allow" && is_all {
+            self.terminated = true;
             return false;
         }
-        if name == "deny" {
+        if name == "deny" && is_all {
+            self.terminated = true;
             auth.access_control = true;
         }
         true

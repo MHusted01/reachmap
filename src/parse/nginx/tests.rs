@@ -456,6 +456,15 @@ fn handles_braced_variables_acl_overrides_http_includes_and_duplicate_upstreams(
                     allow 10.0.0.0/8;
                     proxy_pass http://127.0.0.1:8082;
                 }
+                location /deny_single_ip {
+                    deny 192.0.2.5;
+                    proxy_pass http://127.0.0.1:8083;
+                }
+                location /deny_ip_then_allow_all {
+                    deny 192.0.2.5;
+                    allow all;
+                    proxy_pass http://127.0.0.1:8084;
+                }
             }
         }
         "#,
@@ -471,6 +480,8 @@ fn handles_braced_variables_acl_overrides_http_includes_and_duplicate_upstreams(
     );
     assert!(config.servers[0].locations[1].auth.access_control);
     assert!(!config.servers[0].locations[2].auth.access_control);
+    assert!(!config.servers[0].locations[3].auth.access_control);
+    assert!(!config.servers[0].locations[4].auth.access_control);
     assert_eq!(
         config.servers[0].locations[1].target,
         Some(ProxyTarget::Upstream {
