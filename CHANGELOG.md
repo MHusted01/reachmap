@@ -8,6 +8,9 @@ All notable changes to reachmap are listed here. The format follows
 
 ### Added
 
+- `reachmap scan --nginx-routes` reports configured Nginx reverse proxy routes
+  with local TCP listener linking, `--snapshot --host-ref LABEL` capture, and
+  offline `reachmap replay` ([#109](https://github.com/MHusted01/reachmap/issues/109)).
 - Add a pure, bounded Nginx configuration parser and secret-minimized route
   model ([#108](https://github.com/MHusted01/reachmap/issues/108)).
 

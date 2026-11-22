@@ -271,6 +271,29 @@ pub(crate) fn read_nftables_rules() -> Result<String, CollectError> {
     })
 }
 
+/// Dumps the expanded Nginx configuration on disk via `nginx -T` using fixed
+/// root-owned candidate paths (with `PATH` lookup fallback), an isolated
+/// environment, explicit timeout, and bounded stdout/stderr limits.
+#[cfg(target_os = "linux")]
+pub fn read_nginx_config() -> Result<String, CollectError> {
+    let program = command::locate_with_path(linux::NGINX_PATHS, linux::NGINX_PROGRAM);
+    command::run_bounded(
+        &program,
+        linux::NGINX_DUMP_ARGS,
+        linux::COMMAND_TIMEOUT,
+        (linux::MAX_NGINX_STDOUT, linux::MAX_NGINX_STDERR),
+        |_| {},
+    )
+}
+
+/// Dumps the expanded Nginx configuration. Only Linux is supported for now.
+#[cfg(not(target_os = "linux"))]
+pub fn read_nginx_config() -> Result<String, CollectError> {
+    Err(CollectError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
+}
+
 /// Reads each source in order, skipping optional sources that do not exist.
 pub fn read_tables(sources: &[TableSource]) -> Result<Vec<RawTable>, CollectError> {
     let mut tables = Vec::with_capacity(sources.len());

@@ -528,6 +528,63 @@ without a snapshot.
 For a live comparison with HTTP requests from inside and outside a test
 tailnet, see [Verify Serve and Funnel routes](tailscale-verification.md).
 
+## Nginx
+
+Nginx often accepts external HTTP/TLS connections and forwards them to local
+loopback or internal upstreams, so the backend socket's own row does not show
+which frontend server names, paths, or proxy-layer auth apply. Run
+`reachmap scan --nginx-routes` on Linux to inspect configured `http` reverse
+proxy routes alongside local TCP listener evidence.
+
+```text
+Server app.example.test (/etc/nginx/sites-enabled/app.conf)
+  listen: 0.0.0.0:443 [ssl] (TCP listener 0.0.0.0:443)
+  proxy auth: ssl_verify_client=on; application auth: unverified
+  location /api (/etc/nginx/sites-enabled/app.conf)
+    proxy auth: auth_basic=on, ssl_verify_client=on; application auth: unverified
+    target: http://127.0.0.1:8080/v1 (TCP listener 127.0.0.1:8080)
+```
+
+- **Evidence boundary (disk vs. running master).** `reachmap` runs `nginx -T`
+  and reads `/proc/net/tcp*` plus `sock_diag`. The output reflects configuration
+  on disk, which can differ from a running Nginx master process if configuration
+  was edited without reloading. It does not verify TCP connectivity, HTTP
+  responses, upstream policy, or application-level authentication.
+- **Separate layers.** Frontend `listen` listener state, backend target
+  listener state, configured proxy-layer auth indicators (`auth_basic`,
+  `auth_request`, `ssl_verify_client`, `allow`/`deny`), and unverified
+  application authentication are reported separately. Non-loopback IP targets
+  only match an exact local bind so wildcard listeners cannot mask remote
+  hosts; hostnames other than `localhost` are reported as unresolved without
+  making DNS queries.
+- **Privileges and binary lookup.** `reachmap` tries `/usr/sbin/nginx`,
+  `/sbin/nginx`, `/usr/bin/nginx` and `/bin/nginx` before falling back to
+  `PATH`, with an isolated environment (`LC_ALL=C`), timeout, and bounded
+  output limits. Reading `/etc/nginx/` and included files often requires
+  `sudo`. Missing `nginx`, permission errors, non-zero exits, timeouts, and
+  oversized output fail cleanly with exit 1 without echoing raw `nginx -T`
+  lines or stderr secrets.
+- **Exit status.** Returns exit 0 only when collection is complete and no
+  configuration uncertainties (`if`, `rewrite`, `auth_request`, `allow`/`deny`,
+  regex locations, etc.) were found; returns exit 1 for partial collection,
+  configuration uncertainties, or collector/parse failure; returns exit 2 for
+  invalid arguments.
+
+### Capture and replay Nginx evidence
+
+```sh
+(umask 077; reachmap scan --nginx-routes --snapshot --host-ref example-host > nginx.json)
+reachmap replay nginx.json
+```
+
+The versioned JSON (`snapshot_version: 1`, `scope: "nginx_routes"`) records the
+host label, capture time, minimized route structure, relevant local TCP
+listeners, and collection diagnostics. Raw `nginx -T` text, comments, headers,
+credentials, key/password paths, query strings, fragments, static bodies, and
+unrelated listeners are discarded in memory and never written to the snapshot.
+Because server names, paths, ports, and config file paths remain, keep the
+snapshot file private. Replay works identically offline on Linux and macOS.
+
 ### Tailscale entries in the regular scan
 
 A row that Tailscale forwards to gains `tailnet`, and with Funnel also
@@ -622,6 +679,9 @@ when you share the port on purpose. Serve alone is no warning.
   `/usr/bin/tailscale`, `/usr/local/bin/tailscale`, `/bin/tailscale` and
   `/snap/bin/tailscale` that exists, and looks `tailscale` up through `PATH` only
   if none does.
+- **Nginx routes need `nginx`.** `reachmap scan --nginx-routes` runs `nginx -T`
+  from `/usr/sbin/nginx`, `/sbin/nginx`, `/usr/bin/nginx` or `/bin/nginx` (or
+  `PATH` fallback) and often needs `sudo` to read `/etc/nginx/` files.
 - **TCP and UDP only.** Other protocols, such as a port Docker publishes as
   `sctp`, are not listed.
 - When IPv6 is disabled in the kernel, `/proc/net/tcp6` and `/proc/net/udp6` do

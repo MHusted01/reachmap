@@ -71,6 +71,26 @@ pub(super) const NFT_PATHS: &[&str] = &["/usr/sbin/nft", "/sbin/nft", "/usr/bin/
 /// Lists the active configuration as JSON without changing it.
 pub(super) const NFT_ARGS: &[&str] = &["-j", "list", "ruleset"];
 
+/// Standard root-owned paths for Nginx, tried in order before falling back to `PATH`.
+pub(super) const NGINX_PATHS: &[&str] = &[
+    "/usr/sbin/nginx",
+    "/sbin/nginx",
+    "/usr/bin/nginx",
+    "/bin/nginx",
+];
+
+/// The name to look up through `PATH` when `nginx` is in none of [`NGINX_PATHS`].
+pub(super) const NGINX_PROGRAM: &str = "nginx";
+
+/// Prints the expanded Nginx configuration on stdout without mutating anything.
+pub(super) const NGINX_DUMP_ARGS: &[&str] = &["-T"];
+
+/// Maximum stdout accepted from `nginx -T` (matches the bounded Nginx parser limit).
+pub(super) const MAX_NGINX_STDOUT: u64 = crate::parse::nginx::MAX_INPUT_BYTES as u64;
+
+/// Maximum stderr accepted from `nginx -T`.
+pub(super) const MAX_NGINX_STDERR: u64 = 64 * 1024;
+
 /// How long a command may run. All of them answer in well under a second on a
 /// healthy host; a hung Docker daemon must not hang the scan.
 pub(super) const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);

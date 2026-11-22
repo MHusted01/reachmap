@@ -33,6 +33,30 @@ pub(super) fn locate<'a>(candidates: &[&'a str], fallback: &'a str) -> &'a str {
         .unwrap_or(fallback)
 }
 
+/// Like [`locate`], but resolves `fallback` against `PATH` up front so the
+/// child can still be started under an isolated environment (`env_clear()`).
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn locate_with_path(candidates: &[&str], fallback: &str) -> String {
+    if let Some(found) = candidates
+        .iter()
+        .copied()
+        .find(|path| Path::new(path).is_file())
+    {
+        return found.to_owned();
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(fallback);
+            if candidate.is_file()
+                && let Some(text) = candidate.to_str()
+            {
+                return text.to_owned();
+            }
+        }
+    }
+    fallback.to_owned()
+}
+
 /// Runs `program` with `args` and returns its standard output. Standard input
 /// is `/dev/null`, so the command cannot wait for input. A command that
 /// cannot be started, exits with a failure status, or prints something other
@@ -495,5 +519,22 @@ mod tests {
 
         assert_eq!(locate(&[not_a_file, missing.to_str().unwrap()], "ip"), "ip");
         assert_eq!(locate(&[], "ip"), "ip");
+    }
+
+    #[test]
+    fn locate_with_path_finds_candidates_and_existing_system_binaries() {
+        let dir = TempDir::new("locate-with-path");
+        let binary = dir.file("bin/nginx", "");
+        let found = locate_with_path(&[binary.to_str().unwrap()], "nginx");
+        assert_eq!(found, binary.to_str().unwrap());
+
+        let missing = dir.path().join("no-such-nginx");
+        let from_path = locate_with_path(&[missing.to_str().unwrap()], "sh");
+        assert!(Path::new(&from_path).is_file(), "got: {from_path}");
+
+        assert_eq!(
+            locate_with_path(&[missing.to_str().unwrap()], "reachmap-no-such-binary"),
+            "reachmap-no-such-binary"
+        );
     }
 }
