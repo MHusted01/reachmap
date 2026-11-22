@@ -559,11 +559,16 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
   making DNS queries.
 - **Privileges and binary lookup.** `reachmap` tries `/usr/sbin/nginx`,
   `/sbin/nginx`, `/usr/bin/nginx` and `/bin/nginx` before falling back to
-  `PATH`, with an isolated environment (`LC_ALL=C`), timeout, and bounded
-  output limits. Reading `/etc/nginx/` and included files often requires
-  `sudo`. Missing `nginx`, permission errors, non-zero exits, timeouts, and
-  oversized output fail cleanly with exit 1 without echoing raw `nginx -T`
-  lines or stderr secrets.
+  absolute, root-owned, non-group/world-writable `PATH` directories and
+  binaries (otherwise `nginx` is reported missing), with an isolated environment
+  (`LC_ALL=C`), timeout, and bounded output limits. Reading `/etc/nginx/` and
+  included files often requires `sudo`. While `reachmap` itself never writes
+  files or reloads Nginx, `nginx -T` runs Nginx's own configuration test before
+  dumping, so Nginx may open configured log files or create configured temp/PID
+  parent directories during the check; `--nginx-routes` is therefore opt-in.
+  Missing `nginx`, permission errors, non-zero exits, timeouts, and oversized
+  output fail cleanly with exit 1 without echoing raw `nginx -T` lines or stderr
+  secrets.
 - **Exit status.** Returns exit 0 only when collection is complete and no
   configuration uncertainties (`if`, `rewrite`, `auth_request`, `allow`/`deny`,
   regex locations, etc.) were found; returns exit 1 for partial collection,

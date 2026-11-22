@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use super::NginxScanError;
 use crate::collect::CollectError;
 use crate::local_tcp::SocketFailure;
-use crate::parse::nginx::MAX_INPUT_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -43,15 +42,16 @@ pub(super) fn classify_nginx_error(error: CollectError) -> NginxScanError {
         CollectError::Run { source, .. } if source.kind() == ErrorKind::PermissionDenied => {
             NginxScanError::PermissionDenied
         }
-        CollectError::Run { source, .. }
-            if source.kind() == ErrorKind::Other && source.to_string().contains("size limit") =>
-        {
-            NginxScanError::OutputTooLarge {
-                limit_bytes: MAX_INPUT_BYTES,
-            }
-        }
         CollectError::Run { source, .. } => NginxScanError::RunFailed {
             kind: source.kind().to_string(),
+        },
+        CollectError::OutputTooLarge {
+            stream,
+            limit_bytes,
+            ..
+        } => NginxScanError::OutputTooLarge {
+            stream,
+            limit_bytes,
         },
         CollectError::CommandFailed { status, stderr, .. } => {
             let lower = stderr.to_ascii_lowercase();

@@ -315,15 +315,49 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     .unwrap_err();
     assert!(matches!(timed_out, NginxScanError::TimedOut { .. }));
 
-    let oversized = collect_with(
-        Err(CollectError::Run {
+    let oversized_stdout = collect_with(
+        Err(CollectError::OutputTooLarge {
             command: "nginx -T".into(),
-            source: std::io::Error::other("command output exceeded its size limit"),
+            stream: "stdout",
+            limit_bytes: 8 * 1024 * 1024,
         }),
         || panic!("should not read sockets"),
     )
     .unwrap_err();
-    assert!(matches!(oversized, NginxScanError::OutputTooLarge { .. }));
+    assert!(matches!(
+        oversized_stdout,
+        NginxScanError::OutputTooLarge {
+            stream: "stdout",
+            limit_bytes: 8_388_608
+        }
+    ));
+    assert!(
+        oversized_stdout
+            .to_string()
+            .contains("stdout output exceeded the 8388608-byte")
+    );
+
+    let oversized_stderr = collect_with(
+        Err(CollectError::OutputTooLarge {
+            command: "nginx -T".into(),
+            stream: "stderr",
+            limit_bytes: 64 * 1024,
+        }),
+        || panic!("should not read sockets"),
+    )
+    .unwrap_err();
+    assert!(matches!(
+        oversized_stderr,
+        NginxScanError::OutputTooLarge {
+            stream: "stderr",
+            limit_bytes: 65_536
+        }
+    ));
+    assert!(
+        oversized_stderr
+            .to_string()
+            .contains("stderr output exceeded the 65536-byte")
+    );
 
     let not_utf8 = collect_with(
         Err(CollectError::NotUtf8 {

@@ -48,11 +48,13 @@ pub enum NginxScanError {
         /// Timeout enforced by the collector.
         timeout: Duration,
     },
-    /// `nginx -T` output exceeded the bounded safety limit.
-    #[error("`nginx -T` output exceeded the {limit_bytes}-byte safety limit")]
+    /// `nginx -T` stdout or stderr exceeded its bounded safety limit.
+    #[error("`nginx -T` {stream} output exceeded the {limit_bytes}-byte safety limit")]
     OutputTooLarge {
-        /// Maximum accepted output length in bytes.
-        limit_bytes: usize,
+        /// Which stream overflowed (`"stdout"` or `"stderr"`).
+        stream: &'static str,
+        /// Maximum accepted output length in bytes for that stream.
+        limit_bytes: u64,
     },
     /// `nginx -T` produced non-UTF-8 output.
     #[error("`nginx -T` printed output that is not valid UTF-8")]
