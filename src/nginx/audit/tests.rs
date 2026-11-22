@@ -394,11 +394,21 @@ fn handles_404_redirects_and_non_local_or_unresolved_backends() {
         Comparison::Disagrees {}
     );
 
-    // 3xx on live backend -> Consistent.
+    // 3xx on live backend -> Consistent; on absent backend -> HttpStatusInconclusive (nginx can emit redirects itself).
     let redir = default_obs(HttpOutcome::Redirect3xx { status_code: 302 });
     assert_eq!(
         correlate(Some(cap), Some(redir), 30).comparison,
         Comparison::Consistent {}
+    );
+    let redir_absent = HttpObservation {
+        path: "/missing/",
+        ..default_obs(HttpOutcome::Redirect3xx { status_code: 301 })
+    };
+    assert_eq!(
+        correlate(Some(cap), Some(redir_absent), 30).comparison,
+        Comparison::Unavailable {
+            reason: Gap::HttpStatusInconclusive,
+        }
     );
 
     // Non-loopback remote backend -> BackendUnverified.
@@ -448,7 +458,7 @@ http {
         }
     );
 
-    // Other HTTP status (418) -> HttpStatusInconclusive on live backend, Disagrees on absent.
+    // Other HTTP status (418/429/500) -> HttpStatusInconclusive regardless of backend presence.
     let other_live = default_obs(HttpOutcome::OtherStatus { status_code: 418 });
     assert_eq!(
         correlate(Some(cap), Some(other_live), 30).comparison,
@@ -456,6 +466,18 @@ http {
             reason: Gap::HttpStatusInconclusive,
         }
     );
+    for code in [429, 500] {
+        let other_absent = HttpObservation {
+            path: "/missing/",
+            ..default_obs(HttpOutcome::OtherStatus { status_code: code })
+        };
+        assert_eq!(
+            correlate(Some(cap), Some(other_absent), 30).comparison,
+            Comparison::Unavailable {
+                reason: Gap::HttpStatusInconclusive,
+            }
+        );
+    }
 }
 
 #[test]

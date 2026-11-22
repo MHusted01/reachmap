@@ -310,7 +310,13 @@ fn correlate_http_layer(
                 }
             }
             match backend {
-                BackendEvidence::LocalTcpAbsent {} => Ok(Comparison::Disagrees {}),
+                BackendEvidence::LocalTcpAbsent {} => {
+                    if matches!(observation.outcome, HttpOutcome::Success2xx { .. }) {
+                        Ok(Comparison::Disagrees {})
+                    } else {
+                        Err(Gap::HttpStatusInconclusive)
+                    }
+                }
                 BackendEvidence::LocalTcpPresent { .. } | BackendEvidence::NoProxyTarget {} => {
                     Ok(Comparison::Consistent {})
                 }
@@ -336,9 +342,6 @@ fn correlate_http_layer(
             | BackendEvidence::UnsupportedTarget { .. },
             _,
         ) => Err(Gap::BackendUnverified),
-        (HttpOutcome::OtherStatus { .. }, BackendEvidence::LocalTcpAbsent {}, _) => {
-            Ok(Comparison::Disagrees {})
-        }
         (HttpOutcome::OtherStatus { .. }, _, _) => Err(Gap::HttpStatusInconclusive),
     }
 }
