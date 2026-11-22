@@ -71,13 +71,18 @@ spaces. For example, `changelog.d/123.fixed.md`:
   namespace ([#123](https://github.com/MHusted01/reachmap/issues/123)).
 ```
 
+`scripts/changelog-assemble.sh --check` checks every fragment without changing
+anything; the CI `lint` job runs it on every PR.
+
 ## Releases
 
 A release PR runs `scripts/changelog-assemble.sh X.Y.Z YYYY-MM-DD`. It folds the
 fragments into a new `## [X.Y.Z] - YYYY-MM-DD` section below `## [Unreleased]`,
 with the groups in Keep a Changelog order and the newest issue first, and
 deletes them. It checks the version, the date and every fragment first, and
-changes nothing if one is wrong. The PR then adds an optional summary paragraph
+changes nothing if one is wrong. If a fragment cannot be deleted after the
+section is written, it stops and names the files left; run
+`git restore CHANGELOG.md changelog.d/` and try again. The PR then adds an optional summary paragraph
 under the heading and bumps the version in `Cargo.toml`. Maintainers then tag
 the merged commit on `main` with `vX.Y.Z`; the release workflow uses that
 section as the release notes. A tag without a matching section fails, so

@@ -251,6 +251,49 @@ reset_repo '# Changelog
 fragment 5.added.md "- Five ([#5]($url/5))."
 expect_error "no Unreleased heading" 1 1.1.0 2026-02-03
 
+# --check validates the fragments and changes nothing.
+check() {
+    local name=$1 want=$2 status=0
+    rm -rf "$work/before"
+    cp -R "$repo" "$work/before"
+    assemble --check >/dev/null 2>&1 || status=$?
+    if [[ $status != "$want" ]]; then
+        fail "$name (exit $status, want $want)"
+    fi
+    if ! diff -r "$work/before" "$repo" >/dev/null; then
+        fail "$name: changed files"
+    fi
+}
+
+error_case
+fragment 6.fixed.md "- Six ([#6]($url/6))."
+check "check valid fragments" 0
+
+reset_repo "$released"
+check "check without fragments" 0
+
+error_case
+fragment 6.added.md "- Six."
+check "check a malformed fragment" 1
+expect_error "check a malformed fragment" 1 --check
+expect_error "check with an extra argument" 2 --check 1.1.0
+
+rm -rf "$repo/changelog.d"
+expect_error "check without changelog.d" 1 --check
+
+# A fragment that cannot be deleted after the section is written: the script
+# fails and says how to recover. Root can delete anyway, so skip it there.
+if [[ $(id -u) -ne 0 ]]; then
+    error_case
+    chmod a-w "$repo/changelog.d"
+    status=0
+    assemble 1.1.0 2026-02-03 >/dev/null 2>"$work/stderr" || status=$?
+    chmod u+w "$repo/changelog.d"
+    if [[ $status != 1 ]] || ! grep -q 'git restore' "$work/stderr"; then
+        fail "fragments that cannot be deleted (exit $status, want 1 with recovery hint)"
+    fi
+fi
+
 if [[ $failures -ne 0 ]]; then
     exit 1
 fi

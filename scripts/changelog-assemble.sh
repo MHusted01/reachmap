@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Folds the fragments in changelog.d/ into a new "## [<version>] - <date>"
 # section of CHANGELOG.md, directly below "## [Unreleased]", and deletes them.
-# Every input is checked first: on any error nothing is changed.
+# Every input is checked first: on any error nothing is changed. With --check
+# it only checks the fragments (run by the CI lint job on every pull request).
 # CHANGELOG and CHANGELOG_DIR override the defaults (used by the tests).
 set -euo pipefail
 
@@ -73,6 +74,7 @@ check_fragment() {
 # Prints one "<rank> <issue> <path>" line per fragment, after checking it.
 collect_fragments() {
     local path name rank
+    [[ -d $fragments_dir ]] || die "$fragments_dir not found."
     for path in "$fragments_dir"/*; do
         [[ -e $path ]] || continue
         name=${path##*/}
@@ -85,10 +87,11 @@ collect_fragments() {
     done
 }
 
-# Prints the new section from sorted "<rank> <issue> <path>" lines on stdin.
+# Prints the section for version $1 and date $2 from sorted
+# "<rank> <issue> <path>" lines on stdin.
 build_section() {
     local last_rank='' rank issue path
-    printf '## [%s] - %s\n' "$version" "$date"
+    printf '## [%s] - %s\n' "$1" "$2"
     while read -r rank issue path; do
         if [[ $rank != "$last_rank" ]]; then
             printf '\n### %s\n\n' "${titles[rank]}"
@@ -119,43 +122,66 @@ insert_section() {
     ' "$1" "$2"
 }
 
-if [[ $# -ne 2 ]]; then
-    echo "usage: $0 <version> <date>   (e.g. $0 1.1.0 2026-01-31)" >&2
-    exit 2
-fi
+# Both callers run collect_fragments as `entries=$(collect_fragments)` directly:
+# a failed check exits its subshell with status 1, so the assignment fails and
+# set -e stops this script. Nesting it in another $(...) would lose that,
+# because set -e does not carry into command substitutions.
 
-version=$1
-date=$2
-root="$(dirname "$0")/.."
+# --check: validates the fragments only, for CI on every pull request.
+check_only() {
+    local entries count=0
+    entries=$(collect_fragments)
+    if [[ -n $entries ]]; then
+        count=$(grep -c '' <<<"$entries")
+    fi
+    echo "$fragments_dir: $count fragments OK."
+}
+
+assemble() {
+    local version=$1 date=$2 entries sorted path
+    check_version "$version"
+    check_date "$date"
+    check_changelog "$version"
+    entries=$(collect_fragments)
+    [[ -n $entries ]] || die "no fragments in $fragments_dir; add one per change before a release."
+    sorted=$(sort -k1,1n -k2,2nr <<<"$entries")
+
+    section_file=$(mktemp)
+    build_section "$version" "$date" <<<"$sorted" >"$section_file"
+
+    # Write next to CHANGELOG.md with its permissions, then replace it in one step.
+    new_changelog=$(mktemp "$changelog.XXXXXX")
+    cp -p "$changelog" "$new_changelog"
+    insert_section "$section_file" "$changelog" >"$new_changelog"
+    mv "$new_changelog" "$changelog"
+
+    local paths=()
+    while read -r _ _ path; do
+        paths+=("$path")
+    done <<<"$sorted"
+    rm -- "${paths[@]}" ||
+        die "added '## [$version]' to $changelog, but the fragments named above are left." \
+            "Run 'git restore CHANGELOG.md changelog.d/' and try again, or delete them by hand."
+    echo "Added '## [$version] - $date' to $changelog from ${#paths[@]} fragments."
+}
+
+usage() {
+    echo "usage: $0 <version> <date>   fold the fragments (e.g. $0 1.1.0 2026-01-31)" >&2
+    echo "       $0 --check            only check the fragments" >&2
+    exit 2
+}
+
+root=$(cd "$(dirname "$0")/.." && pwd)
 changelog=${CHANGELOG:-"$root/CHANGELOG.md"}
 fragments_dir=${CHANGELOG_DIR:-"$root/changelog.d"}
-
-check_version "$version"
-check_date "$date"
-check_changelog "$version"
-[[ -d $fragments_dir ]] || die "$fragments_dir not found."
-
-# Command substitution runs in a subshell, so a failed check ends it with
-# status 1 and the assignment fails, which stops this script too.
-entries=$(collect_fragments)
-[[ -n $entries ]] || die "no fragments in $fragments_dir; add one per change before a release."
-sorted=$(sort -k1,1n -k2,2nr <<<"$entries")
-
 section_file=''
 new_changelog=''
 trap 'rm -f "$section_file" "$new_changelog"' EXIT
-section_file=$(mktemp)
-build_section <<<"$sorted" >"$section_file"
 
-# Write next to CHANGELOG.md with its permissions, then replace it in one step.
-new_changelog=$(mktemp "$changelog.XXXXXX")
-cp -p "$changelog" "$new_changelog"
-insert_section "$section_file" "$changelog" >"$new_changelog"
-mv "$new_changelog" "$changelog"
-
-count=0
-while read -r _ _ path; do
-    rm -- "$path"
-    count=$((count + 1))
-done <<<"$sorted"
-echo "Added '## [$version] - $date' to $changelog from $count fragments."
+if [[ $# -eq 1 && $1 == --check ]]; then
+    check_only
+elif [[ $# -eq 2 && $1 != --check ]]; then
+    assemble "$1" "$2"
+else
+    usage
+fi

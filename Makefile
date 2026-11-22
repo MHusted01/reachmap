@@ -61,6 +61,7 @@ check-macos:
 check: lint lint-ci test msrv deny build check-macos
 	scripts/test-changelog-section.sh
 	scripts/test-changelog-assemble.sh
+	scripts/changelog-assemble.sh --check
 	scripts/test-release.sh
 
 clean:
