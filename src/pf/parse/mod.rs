@@ -12,8 +12,8 @@ use crate::socket::AddressFamily;
 use super::fields::{Operator, PortMatch, TcpFlags};
 use super::lex::{Token, tokenize};
 use super::model::{
-    Action, AnchorName, Construct, Criteria, Direction, Entry, Kind, RuleProtocol, Ruleset, Skip,
-    TargetEndpoint, TargetPort, TranslationTarget,
+    Action, AnchorName, BinatTarget, Construct, Criteria, Direction, Entry, Kind, RuleProtocol,
+    Ruleset, Skip, TargetEndpoint, TargetPort, TranslationTarget,
 };
 
 mod endpoints;
@@ -96,27 +96,58 @@ fn anchor(cursor: &mut Cursor<'_>) -> Parsed {
 }
 
 fn translation(first: &str, cursor: &mut Cursor<'_>) -> Parsed {
-    let well_formed = match first {
-        "no" => matches!(cursor.next(), Some(Token::Word("rdr" | "nat" | "binat"))),
+    let (is_no, kind) = match first {
+        "no" => match cursor.next() {
+            Some(Token::Word(kind @ ("rdr" | "nat" | "binat"))) => (true, kind),
+            _ => return Parsed::Entry(Kind::Unparseable),
+        },
         "rdr-anchor" | "nat-anchor" | "binat-anchor" => {
-            matches!(cursor.next(), Some(Token::Quoted(_) | Token::Word(_)))
+            if !matches!(cursor.next(), Some(Token::Quoted(_) | Token::Word(_))) {
+                return Parsed::Entry(Kind::Unparseable);
+            }
+            (false, first)
         }
-        _ => true,
+        _ => (false, first),
     };
-    if !well_formed {
-        return Parsed::Entry(Kind::Unparseable);
-    }
     cursor.next_if(|token| *token == Token::Word("pass"));
     let (criteria, saw_arrow) = criteria(cursor, true);
-    let target = match first {
-        "no" | "nat" => TranslationTarget::None,
-        "rdr-anchor" | "nat-anchor" | "binat-anchor" => TranslationTarget::Any,
-        _ if criteria.protocol == Some(RuleProtocol::Other) => TranslationTarget::None,
-        _ if criteria.unsupported.is_some() => TranslationTarget::Any,
-        _ if !saw_arrow => return Parsed::Entry(Kind::Unparseable),
-        _ => parse_translation_target(cursor, &criteria),
+    let target = if criteria.protocol == Some(RuleProtocol::Other) {
+        TranslationTarget::None
+    } else {
+        match (is_no, kind) {
+            (true, "binat") => TranslationTarget::Binat(BinatTarget::None),
+            (true, _) | (false, "nat") => TranslationTarget::None,
+            (false, "binat-anchor") => TranslationTarget::Binat(BinatTarget::Any),
+            (false, "rdr-anchor" | "nat-anchor") => TranslationTarget::Any,
+            (false, "binat") => {
+                if criteria.unsupported.is_some() {
+                    TranslationTarget::Binat(BinatTarget::Any)
+                } else if !saw_arrow {
+                    return Parsed::Entry(Kind::Unparseable);
+                } else {
+                    TranslationTarget::Binat(parse_binat_target(cursor))
+                }
+            }
+            (false, "rdr") => {
+                if criteria.unsupported.is_some() {
+                    TranslationTarget::Any
+                } else if !saw_arrow {
+                    return Parsed::Entry(Kind::Unparseable);
+                } else {
+                    parse_translation_target(cursor, &criteria)
+                }
+            }
+            _ => TranslationTarget::Any,
+        }
     };
     Parsed::Entry(Kind::Translation { criteria, target })
+}
+
+fn parse_binat_target(cursor: &mut Cursor<'_>) -> BinatTarget {
+    if matches!(cursor.peek(), None | Some(Token::Open)) {
+        return BinatTarget::Any;
+    }
+    address(cursor).map_or(BinatTarget::Any, BinatTarget::Address)
 }
 
 fn parse_translation_target(cursor: &mut Cursor<'_>, criteria: &Criteria) -> TranslationTarget {
@@ -151,6 +182,7 @@ fn set_option(cursor: &mut Cursor<'_>) -> Parsed {
     if cursor.next() == Some(Token::Word("on"))
         && let Some(names) = skip_names(cursor)
         && !names.is_empty()
+        && cursor.peek().is_none()
     {
         return Parsed::Skip(names);
     }

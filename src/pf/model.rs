@@ -25,6 +25,7 @@ pub(super) enum Construct {
     List,
     Probability,
     StateLimit,
+    TcpEcnFlags,
     UnrecognizedSyntax,
     UnparseableRule,
     MissingAnchor,
@@ -50,6 +51,7 @@ impl fmt::Display for Construct {
             Self::List => "list",
             Self::Probability => "probability",
             Self::StateLimit => "state limit",
+            Self::TcpEcnFlags => "tcp flags (ECN)",
             Self::UnrecognizedSyntax => "unrecognized syntax",
             Self::UnparseableRule => "unparseable text",
             Self::MissingAnchor => "missing anchor ruleset",
@@ -129,23 +131,34 @@ impl AnchorName {
         &self.display
     }
 
-    pub(super) fn resolve(&self, parent: Option<&Self>) -> Self {
-        if let Some(absolute) = self.lookup.strip_prefix('/') {
-            return Self::new(absolute);
-        }
-        let Some(parent) = parent else {
-            return self.clone();
+    pub(super) fn resolve(&self, parent: Option<&Self>) -> Option<Self> {
+        let mut parts = Vec::new();
+        let relative = match self.lookup.strip_prefix('/') {
+            Some(absolute) => absolute,
+            None => {
+                if let Some(parent) = parent {
+                    let base = parent.lookup.strip_suffix("/*").unwrap_or(&parent.lookup);
+                    if base != "*" {
+                        parts.extend(base.split('/').filter(|part| !part.is_empty()));
+                    }
+                }
+                &self.lookup
+            }
         };
-        let base = parent
-            .lookup
-            .strip_suffix("/*")
-            .unwrap_or(&parent.lookup)
-            .trim_end_matches('/');
-        if base.is_empty() || base == "*" {
-            self.clone()
-        } else {
-            Self::new(&format!("{base}/{}", self.lookup))
+        for segment in relative.split('/') {
+            match segment {
+                "" | "." => {}
+                ".." => {
+                    parts.pop()?;
+                }
+                _ => parts.push(segment),
+            }
         }
+        (!parts.is_empty()).then(|| Self::new(&parts.join("/")))
+    }
+
+    pub(super) fn is_wildcard(&self) -> bool {
+        self.lookup == "*" || self.lookup.ends_with("/*")
     }
 }
 
@@ -169,10 +182,18 @@ pub(super) struct TargetEndpoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum BinatTarget {
+    None,
+    Any,
+    Address(Address),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum TranslationTarget {
     None,
     Any,
     Endpoint(TargetEndpoint),
+    Binat(BinatTarget),
 }
 
 /// Every condition of a rule that the evaluator understands, plus the first

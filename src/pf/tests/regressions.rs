@@ -1,8 +1,8 @@
 use crate::socket::Protocol;
 
 use super::{
-    HOST, Ruleset, Verdict, anchors, block_at, check, default_pass, pass_at, tcp, tcp_to, traffic,
-    unknown,
+    DEFAULT_MACOS, HOST, Ruleset, Verdict, anchors, block_at, check, default_pass, ip, pass_at,
+    tcp, tcp_to, traffic, unknown,
 };
 
 const SCOPED_ANCHORS: &str = include_str!("../../../tests/fixtures/pf/scoped_anchors.txt");
@@ -268,6 +268,223 @@ fn parse_time_sanitization_strips_bidi_from_debug_and_rejects_bad_names() {
     );
     assert_eq!(
         tcp("set skip on lo0\u{202e}\nblock drop in all", "lo0", 22),
+        unknown("unparseable text in rule at line 1")
+    );
+}
+
+#[test]
+fn inbound_binat_reverse_mapping_triggers_unknown_for_internal_listener() {
+    let rules = "binat pass on en0 inet from 192.0.2.10 to 198.51.100.0/24 -> 203.0.113.10\nblock drop in all";
+    assert_eq!(
+        tcp_to(rules, "en0", HOST, 22),
+        unknown("translation rule in rule at line 1")
+    );
+    assert_eq!(
+        tcp_to(rules, "en0", "203.0.113.10", 22),
+        unknown("translation rule in rule at line 1")
+    );
+    assert_eq!(tcp_to(rules, "en0", "192.0.2.99", 22), block_at(2));
+    assert_eq!(tcp_to(rules, "en1", HOST, 22), block_at(2));
+
+    let mut allowed_peer = traffic("en0", Protocol::Tcp, HOST, 22);
+    allowed_peer.source = Some(ip("198.51.100.5"));
+    assert_eq!(
+        check(rules, &Default::default(), &allowed_peer),
+        unknown("translation rule in rule at line 1")
+    );
+
+    let mut other_peer = traffic("en0", Protocol::Tcp, HOST, 22);
+    other_peer.source = Some(ip("192.0.2.50"));
+    assert_eq!(check(rules, &Default::default(), &other_peer), block_at(2));
+}
+
+#[test]
+fn tcp_ecn_opening_syn_flags_are_evaluated_alongside_bare_syn() {
+    assert_eq!(
+        tcp(
+            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW",
+            "en0",
+            22
+        ),
+        unknown("tcp flags (ECN) in rule at line 2")
+    );
+    assert_eq!(
+        tcp(
+            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SAEW",
+            "en0",
+            22
+        ),
+        unknown("tcp flags (ECN) in rule at line 2")
+    );
+    assert_eq!(
+        tcp(
+            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SAEW\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW",
+            "en0",
+            22
+        ),
+        pass_at(2)
+    );
+    assert_eq!(
+        tcp(
+            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SA",
+            "en0",
+            22
+        ),
+        pass_at(2)
+    );
+}
+
+#[test]
+fn wildcard_anchors_evaluate_direct_children_and_require_complete_marker() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let ordered = anchors(&[
+        ("com.apple/*", ""),
+        (
+            "com.apple/200.allow",
+            "pass in on en0 proto tcp from any to any port = 22",
+        ),
+        (
+            "com.apple/250.deny",
+            "block drop in on en0 proto tcp from any to any port = 22",
+        ),
+    ]);
+    assert_eq!(
+        check(DEFAULT_MACOS, &ordered, &packet),
+        Verdict::Block {
+            reason: "matched block rule at line 1 of anchor \"com.apple/250.deny\"".to_string()
+        }
+    );
+
+    let quick_child = anchors(&[
+        ("com.apple/*", ""),
+        (
+            "com.apple/200.allow",
+            "pass in quick on en0 proto tcp from any to any port = 22",
+        ),
+        (
+            "com.apple/250.deny",
+            "block drop in on en0 proto tcp from any to any port = 22",
+        ),
+    ]);
+    assert_eq!(
+        check(DEFAULT_MACOS, &quick_child, &packet),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"com.apple/200.allow\"".to_string()
+        }
+    );
+
+    let incomplete = anchors(&[(
+        "com.apple/200.allow",
+        "pass in on en0 proto tcp from any to any port = 22",
+    )]);
+    assert_eq!(
+        check(DEFAULT_MACOS, &incomplete, &packet),
+        unknown("missing anchor ruleset in rule at line 2")
+    );
+
+    let quick_wildcard = anchors(&[
+        ("site/*", ""),
+        ("site/web", "pass in proto tcp from any to any port = 22"),
+        (
+            "site/web/sub",
+            "block drop in proto tcp from any to any port = 22",
+        ),
+    ]);
+    assert_eq!(
+        check(
+            "anchor \"site/*\" quick all\nblock drop in all",
+            &quick_wildcard,
+            &packet
+        ),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"site/web\"".to_string()
+        }
+    );
+
+    let child_rdr = anchors(&[
+        ("site/*", ""),
+        (
+            "site/web",
+            "rdr on en0 inet proto tcp from any to any port = 80 -> 192.0.2.10 port 8080",
+        ),
+    ]);
+    assert_eq!(
+        check(
+            "anchor \"site/*\" all",
+            &child_rdr,
+            &traffic("en0", Protocol::Tcp, HOST, 8080)
+        ),
+        unknown("translation rule in rule at line 1 of anchor \"site/web\"")
+    );
+}
+
+#[test]
+fn parent_relative_anchor_paths_resolve_against_parent() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let sibling = anchors(&[
+        ("site", "anchor \"app\" all"),
+        ("site/app", "anchor \"../rules\" all"),
+        ("site/rules", "pass in proto tcp from any to any port = 22"),
+    ]);
+    assert_eq!(
+        check(SCOPED_ANCHORS, &sibling, &packet),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"site/rules\"".to_string()
+        }
+    );
+
+    let to_root = anchors(&[
+        ("site", "anchor \"app\" all"),
+        ("site/app", "anchor \"../../root_rules\" all"),
+        ("root_rules", "pass in proto tcp from any to any port = 22"),
+    ]);
+    assert_eq!(
+        check(SCOPED_ANCHORS, &to_root, &packet),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"root_rules\"".to_string()
+        }
+    );
+
+    let above_root = anchors(&[("site", "anchor \"../../escape\" all")]);
+    assert_eq!(
+        check(SCOPED_ANCHORS, &above_root, &packet),
+        unknown("missing anchor ruleset in rule at line 1 of anchor \"site\"")
+    );
+
+    let sibling_rdr = anchors(&[
+        ("site", "anchor \"app\" all"),
+        ("site/app", "anchor \"../rules\" all"),
+        (
+            "site/rules",
+            "rdr on en0 inet proto tcp from any to any port = 80 -> 192.0.2.10 port 8080",
+        ),
+    ]);
+    assert_eq!(
+        check(
+            SCOPED_ANCHORS,
+            &sibling_rdr,
+            &traffic("en0", Protocol::Tcp, HOST, 8080)
+        ),
+        unknown("translation rule in rule at line 1 of anchor \"site/rules\"")
+    );
+}
+
+#[test]
+fn set_skip_rejects_trailing_tokens() {
+    assert_eq!(
+        tcp(
+            "set skip on lo0 garbage\nblock drop in quick all",
+            "lo0",
+            22
+        ),
+        unknown("unparseable text in rule at line 1")
+    );
+    assert_eq!(
+        tcp(
+            "set skip on { lo0 } extra\nblock drop in quick all",
+            "lo0",
+            22
+        ),
         unknown("unparseable text in rule at line 1")
     );
 }

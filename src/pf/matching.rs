@@ -8,7 +8,8 @@ use crate::socket::{AddressFamily, Protocol};
 use super::Traffic;
 use super::fields::PortMatch;
 use super::model::{
-    Address, Construct, Criteria, Direction, Endpoint, RuleProtocol, TargetPort, TranslationTarget,
+    Address, BinatTarget, Construct, Criteria, Direction, Endpoint, RuleProtocol, TargetPort,
+    TranslationTarget,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,18 +52,34 @@ fn family(ip: IpAddr) -> AddressFamily {
 
 impl Criteria {
     /// Matches one new inbound connection or datagram.
-    pub(super) fn matches(&self, traffic: &Traffic<'_>) -> Match {
-        self.matches_common(traffic)
+    pub(super) fn matches(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
+        self.matches_common(traffic, opening_flags)
             .and(destination(&self.destination, traffic))
     }
 
     /// Matches either the original packet or the redirected target of a
     /// translation rule, so redirects targeting a local listener are caught.
+    /// For `binat`, inbound traffic arrives for the external target and maps to
+    /// the rule's internal `from` address.
     pub(super) fn matches_translation(
         &self,
         target: &TranslationTarget,
         traffic: &Traffic<'_>,
+        opening_flags: u8,
     ) -> Match {
+        if let TranslationTarget::Binat(binat_target) = target {
+            let peer = source(&self.destination, traffic);
+            let internal = dest_address(&self.source.address, traffic);
+            let external = match binat_target {
+                BinatTarget::None => Match::No,
+                BinatTarget::Any => Match::Maybe(Construct::Translation),
+                BinatTarget::Address(address) => dest_address(address, traffic),
+            };
+            return self
+                .matches_header(traffic, opening_flags)
+                .and(peer)
+                .and(internal.or(external));
+        }
         let orig = destination(&self.destination, traffic);
         let redirected = match target {
             TranslationTarget::None => Match::No,
@@ -81,8 +98,10 @@ impl Criteria {
                 };
                 address.and(port)
             }
+            TranslationTarget::Binat(_) => unreachable!(),
         };
-        self.matches_common(traffic).and(orig.or(redirected))
+        self.matches_common(traffic, opening_flags)
+            .and(orig.or(redirected))
     }
 
     pub(super) fn effect_construct(&self) -> Option<Construct> {
@@ -92,7 +111,12 @@ impl Criteria {
         })
     }
 
-    fn matches_common(&self, traffic: &Traffic<'_>) -> Match {
+    fn matches_common(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
+        self.matches_header(traffic, opening_flags)
+            .and(source(&self.source, traffic))
+    }
+
+    fn matches_header(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
         [
             Match::of(self.direction != Some(Direction::Out)),
             self.interface.as_ref().map_or(Match::Yes, |interface| {
@@ -107,9 +131,8 @@ impl Criteria {
                     (RuleProtocol::Tcp | RuleProtocol::Udp | RuleProtocol::Other, _) => false,
                 })
             }),
-            source(&self.source, traffic),
             self.flags.map_or(Match::Yes, |flags| {
-                Match::of(traffic.protocol != Protocol::Tcp || flags.matches_new_connection())
+                Match::of(traffic.protocol != Protocol::Tcp || flags.matches(opening_flags))
             }),
             self.unsupported.map_or(Match::Yes, Match::Maybe),
         ]

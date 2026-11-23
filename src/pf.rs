@@ -33,10 +33,14 @@ pub use model::Ruleset;
 #[cfg(test)]
 mod tests;
 
-/// The rules of anchors, keyed by anchor path (a wildcard such as
-/// `com.apple/*` is looked up as written; nested relative anchors use
-/// slash-separated paths such as `site/rules`, while names starting with `/`
-/// resolve from the root).
+/// The rules of anchors, keyed by anchor path.
+///
+/// Nested relative anchors use slash-separated paths (such as `site/rules`),
+/// leading `/` resolves from the root, and `..` moves up one segment. For a
+/// wildcard anchor such as `com.apple/*`, supply its direct children under
+/// keys like `com.apple/250.ApplicationFirewall` and include the wildcard key
+/// (`com.apple/*`, usually empty) to mark the child list as complete; omitting
+/// the wildcard key leaves the child list incomplete and yields `unknown`.
 pub type AnchorRulesets = BTreeMap<String, Ruleset>;
 
 /// A new inbound TCP connection or UDP datagram to a local address.

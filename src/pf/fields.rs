@@ -164,8 +164,10 @@ pub(super) struct TcpFlags {
     mask: u8,
 }
 
-/// The flags of the first packet of a connection: SYN alone.
-const SYN: u8 = 0x02;
+/// The flags of the first packet of a connection: bare SYN, or SYN+ECE+CWR
+/// when ECN is negotiated (RFC 3168 §6.1.1).
+pub(super) const SYN: u8 = 0x02;
+pub(super) const SYN_ECN: u8 = SYN | 0x40 | 0x80;
 
 impl TcpFlags {
     pub(super) fn parse(text: &str) -> Option<Self> {
@@ -179,9 +181,14 @@ impl TcpFlags {
         (set & !mask == 0).then_some(Self { set, mask })
     }
 
-    /// Whether the opening SYN of a new connection matches.
-    pub(super) fn matches_new_connection(self) -> bool {
-        SYN & self.mask == self.set
+    /// Whether a packet with `packet_flags` matches this rule condition.
+    pub(super) fn matches(self, packet_flags: u8) -> bool {
+        packet_flags & self.mask == self.set
+    }
+
+    /// Whether bare SYN and ECN-capable SYN disagree on this condition.
+    pub(super) fn depends_on_ecn(self) -> bool {
+        self.matches(SYN) != self.matches(SYN_ECN)
     }
 }
 
