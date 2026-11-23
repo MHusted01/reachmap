@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::io::{self, ErrorKind};
 
 use super::*;
-use crate::collect::nginx_files::EntryName;
 use crate::nginx::UncertaintyKind;
 use crate::parse::nginx::parse_nginx_config;
+use std::ffi::OsString;
+use std::os::unix::ffi::OsStringExt;
 
 /// What a fake path holds.
 enum Entry {
@@ -62,17 +63,11 @@ impl ConfigFiles for FakeFiles {
         if names.len() > limit {
             return Ok(DirList::TooMany);
         }
-        // Directory order is arbitrary; the walk must sort. A `\u{fffd}` marks
-        // a name that is not UTF-8 on disk.
+        // Directory order is arbitrary; the walk must sort. A `\u{fffd}` in a
+        // fake name stands for the single invalid byte 0xff on disk.
         names.reverse();
         Ok(DirList::Entries(
-            names
-                .into_iter()
-                .map(|name| EntryName {
-                    utf8: !name.contains('\u{fffd}'),
-                    name,
-                })
-                .collect(),
+            names.iter().map(|name| disk_name(name)).collect(),
         ))
     }
 
@@ -80,6 +75,13 @@ impl ConfigFiles for FakeFiles {
         let prefix = format!("{path}/");
         Ok(self.0.contains_key(path) || self.0.keys().any(|key| key.starts_with(&prefix)))
     }
+}
+
+/// The on-disk form of a fake name: each `\u{fffd}` becomes the single
+/// invalid byte 0xff.
+fn disk_name(name: &str) -> OsString {
+    let parts: Vec<&[u8]> = name.split('\u{fffd}').map(str::as_bytes).collect();
+    OsString::from_vec(parts.join(&0xff))
 }
 
 const MAIN: &str = "/etc/nginx/nginx.conf";
@@ -270,6 +272,21 @@ fn escaped_and_non_ascii_includes_load_their_routes() {
 }
 
 #[test]
+fn escaped_literal_parts_of_glob_patterns_are_unescaped() {
+    let files = FakeFiles::default()
+        .text(MAIN, "http { include 'conf\\.d/*.conf'; }")
+        .text("/etc/nginx/conf.d/app.conf", "server { listen 81; }");
+    let dump = read_config(MAIN, &files).unwrap();
+    let config = parse_nginx_config(&dump).unwrap();
+    assert!(
+        config.uncertainties.is_empty(),
+        "{:?}",
+        config.uncertainties
+    );
+    assert_eq!(config.servers.len(), 1);
+}
+
+#[test]
 fn expands_wildcards_in_directory_components() {
     let files = FakeFiles::default()
         .text(MAIN, "http { include /srv/vhosts/*/site.conf; }")
@@ -325,6 +342,16 @@ fn unsafe_or_unreadable_files_fail_cleanly() {
     assert!(
         read_config(MAIN, &bad_name).is_ok(),
         "a name that cannot match is skipped"
+    );
+    let one_byte_stem = FakeFiles::default()
+        .text(MAIN, "include conf.d/?.conf;")
+        .text("/etc/nginx/conf.d/\u{fffd}.conf", "");
+    assert!(
+        matches!(
+            read_config(MAIN, &one_byte_stem),
+            Err(NginxScanError::UnreadableFile { .. })
+        ),
+        "`?` matches the single invalid byte, so the file must not be dropped"
     );
     let bad_match = bad_name.text("/etc/nginx/conf.d/x\u{fffd}.conf", "");
     assert!(matches!(

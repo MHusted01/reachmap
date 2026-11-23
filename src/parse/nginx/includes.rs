@@ -6,10 +6,10 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use super::directives::resolve_relative_pattern;
-use super::glob::glob_match;
+use super::glob::{glob_match, unescape};
 use super::listen::push_uncertainty;
 use super::parser::Directive;
-use super::project::{MAX_INCLUDE_PROJECTIONS, Projector};
+use super::project::{MAX_INCLUDE_WORK, Projector};
 use super::{NginxParseError, lexer, parser};
 use crate::nginx::UncertaintyKind;
 
@@ -72,7 +72,10 @@ pub fn conf_path_from_build_info(build_info: &str) -> Option<String> {
             .next_back()
     };
     let prefix = value("--prefix=").unwrap_or(DEFAULT_PREFIX);
-    let conf = value("--conf-path=").unwrap_or(DEFAULT_CONF_PATH);
+    // An explicit empty `--conf-path=` means the default, as in Nginx's build.
+    let conf = value("--conf-path=")
+        .filter(|conf| !conf.is_empty())
+        .unwrap_or(DEFAULT_CONF_PATH);
     // An explicit empty `--prefix=` makes Nginx resolve a relative path from
     // its startup directory, which reachmap cannot know.
     let quoted = [prefix, conf]
@@ -98,6 +101,10 @@ pub fn is_glob_component(component: &str) -> bool {
 /// Whether `path` is named by the `include` pattern `pattern`, both absolute.
 /// Matching is per path component, as in `glob()`, so `*` never crosses `/`.
 pub fn include_path_matches(pattern: &str, path: &str) -> bool {
+    // Without wildcards Nginx opens the path as written, backslashes included.
+    if !is_glob_component(pattern) {
+        return pattern == path;
+    }
     let mut pattern = pattern.split('/');
     let mut path = path.split('/');
     loop {
@@ -108,7 +115,7 @@ pub fn include_path_matches(pattern: &str, path: &str) -> bool {
                     return false;
                 }
             }
-            (Some(want), Some(have)) if want == have => {}
+            (Some(want), Some(have)) if unescape(want) == have => {}
             _ => return false,
         }
     }
@@ -117,7 +124,14 @@ pub fn include_path_matches(pattern: &str, path: &str) -> bool {
 /// Whether a directory entry matches one glob component. Like `glob()`, a
 /// leading `.` must be matched explicitly.
 pub fn matches_glob_component(component: &str, name: &str) -> bool {
-    (!name.starts_with('.') || component.starts_with('.')) && glob_match(component, name)
+    matches_glob_name(component, name.as_bytes())
+}
+
+/// Like [`matches_glob_component`], for a file name as raw bytes, which need
+/// not be UTF-8.
+pub fn matches_glob_name(component: &str, name: &[u8]) -> bool {
+    (name.first() != Some(&b'.') || component.starts_with('.'))
+        && glob_match(component.as_bytes(), name)
 }
 
 impl<'a> Projector<'a> {
@@ -133,7 +147,7 @@ impl<'a> Projector<'a> {
         visited: &mut BTreeSet<usize>,
         report_missing_literal: bool,
     ) -> Vec<usize> {
-        if self.include_projections > MAX_INCLUDE_PROJECTIONS {
+        if self.include_work > MAX_INCLUDE_WORK {
             return Vec::new();
         }
         let Some(pattern) = args.first().filter(|_| args.len() == 1) else {
@@ -188,8 +202,12 @@ impl<'a> Projector<'a> {
         if is_glob {
             matched.sort_unstable_by_key(|&index| self.files[index].source_file);
         }
-        self.include_projections += matched.len();
-        if self.include_projections > MAX_INCLUDE_PROJECTIONS {
+        // Every projection costs at least one, so empty files count too.
+        self.include_work += matched
+            .iter()
+            .map(|&index| self.file_sizes[index].max(1))
+            .sum::<usize>();
+        if self.include_work > MAX_INCLUDE_WORK {
             return Vec::new();
         }
 
@@ -275,6 +293,11 @@ mod tests {
     fn non_absolute_conf_paths_are_rejected() {
         let relative_prefix = "configure arguments: --prefix=nginx --conf-path=nginx.conf";
         assert_eq!(conf_path_from_build_info(relative_prefix), None);
+        let empty_conf = "configure arguments: --prefix=/opt/nginx --conf-path=";
+        assert_eq!(
+            conf_path_from_build_info(empty_conf).as_deref(),
+            Some("/opt/nginx/conf/nginx.conf")
+        );
         let quoted = "configure arguments: --conf-path='/etc/my nginx/nginx.conf'";
         assert_eq!(conf_path_from_build_info(quoted), None);
         let empty_prefix = "configure arguments: --prefix= --conf-path=conf/nginx.conf";
@@ -302,6 +325,18 @@ mod tests {
         assert!(!matches("/srv/*/site.conf", "/srv/site.conf"));
         assert!(!matches("/etc/nginx/*", "/etc/nginx/.hidden"));
         assert!(matches("/etc/nginx/a.conf", "/etc/nginx/a.conf"));
+        assert!(matches(
+            r"/etc/nginx/conf\.d/*.conf",
+            "/etc/nginx/conf.d/a.conf"
+        ));
+        assert!(matches(
+            r"/etc/nginx/my\file.conf",
+            r"/etc/nginx/my\file.conf"
+        ));
+        assert!(!matches(
+            r"/etc/nginx/my\file.conf",
+            "/etc/nginx/myfile.conf"
+        ));
     }
 
     #[test]

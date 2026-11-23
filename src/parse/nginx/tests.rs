@@ -649,19 +649,27 @@ fn include_globs_do_not_cross_directories() {
 }
 
 #[test]
-fn exponential_include_fan_out_fails_with_a_budget_error() {
+fn include_expansion_is_bounded_by_directives_projected() {
+    // Exponential fan-out: each file includes the next twice, thirty deep.
+    let filler = "worker_processes 1;\n".repeat(50);
     let mut dump = String::from("# configuration file /etc/nginx/nginx.conf:\ninclude 0.conf;\n");
     for index in 0..30 {
         let next = index + 1;
         dump.push_str(&format!(
-            "# configuration file /etc/nginx/{index}.conf:\ninclude {next}.conf;\ninclude {next}.conf;\n"
+            "# configuration file /etc/nginx/{index}.conf:\ninclude {next}.conf;\ninclude {next}.conf;\n{filler}"
         ));
     }
     dump.push_str("# configuration file /etc/nginx/30.conf:\nworker_processes 1;\n");
-    assert!(matches!(
-        parse_nginx_config(&dump),
-        Err(NginxParseError::TooManyIncludeProjections { limit: 100_000 })
-    ));
+    let budget_error = Err(NginxParseError::IncludeExpansionTooLarge { limit: 500_000 });
+    assert_eq!(parse_nginx_config(&dump), budget_error);
+
+    // A large snippet repeated a few hundred times, far below any file limit.
+    let snippet = "proxy_set_header X-Lab 1;\n".repeat(5_000);
+    let includes = "include big.conf;\n".repeat(200);
+    let repeated_snippet = format!(
+        "# configuration file /etc/nginx/nginx.conf:\nhttp {{ server {{ listen 80; location / {{\n{includes}}} }} }}\n# configuration file /etc/nginx/big.conf:\n{snippet}"
+    );
+    assert_eq!(parse_nginx_config(&repeated_snippet), budget_error);
 
     let repeated = parse_nginx_config(
         "# configuration file /etc/nginx/nginx.conf:

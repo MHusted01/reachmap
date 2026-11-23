@@ -12,9 +12,10 @@ use thiserror::Error;
 
 use crate::nginx::NginxConfig;
 
+pub use glob::unescape as unescape_glob_component;
 pub use includes::{
     conf_path_from_build_info, include_path_matches, include_patterns, is_glob_component,
-    matches_glob_component,
+    matches_glob_component, matches_glob_name,
 };
 
 mod directives;
@@ -55,10 +56,10 @@ pub enum NginxParseError {
         /// Maximum allowed token count.
         limit: usize,
     },
-    /// Following `include`s would project more files than the parser allows.
-    #[error("nginx configuration includes expand to more than {limit} included files")]
-    TooManyIncludeProjections {
-        /// Maximum number of included files projected.
+    /// Following `include`s would project more directives than the parser allows.
+    #[error("nginx configuration includes expand to more than {limit} directives")]
+    IncludeExpansionTooLarge {
+        /// Maximum number of directives projected through includes.
         limit: usize,
     },
     /// Block nesting exceeded the parser depth bound.

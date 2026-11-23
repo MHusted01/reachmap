@@ -3,6 +3,7 @@
 //! [`ConfigFiles`]; [`DiskFiles`] is the thin Linux shell over the filesystem.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+use std::ffi::OsString;
 use std::io;
 
 /// What reading one configuration file found.
@@ -22,22 +23,13 @@ pub(crate) enum FileRead {
     Bytes(Vec<u8>),
 }
 
-/// One directory entry. A name that is not UTF-8 is kept lossily, so the walk
-/// can tell whether a pattern would have matched it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct EntryName {
-    /// The name, with invalid UTF-8 replaced when `utf8` is false.
-    pub(crate) name: String,
-    /// Whether the name is valid UTF-8.
-    pub(crate) utf8: bool,
-}
-
 /// What listing one directory found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DirList {
-    /// Every entry, in no particular order. A missing path, or one that is
-    /// not a directory, has none, as for `glob()`.
-    Entries(Vec<EntryName>),
+    /// Every entry name as stored, which need not be UTF-8, in no particular
+    /// order. A missing path, or one that is not a directory, has none, as
+    /// for `glob()`.
+    Entries(Vec<OsString>),
     /// The directory has more entries than the limit it was listed with.
     TooMany,
 }
@@ -112,14 +104,7 @@ impl ConfigFiles for DiskFiles {
             if names.len() == limit {
                 return Ok(DirList::TooMany);
             }
-            let name = entry?.file_name();
-            names.push(match name.into_string() {
-                Ok(name) => EntryName { name, utf8: true },
-                Err(name) => EntryName {
-                    name: name.to_string_lossy().into_owned(),
-                    utf8: false,
-                },
-            });
+            names.push(entry?.file_name());
         }
         Ok(DirList::Entries(names))
     }
@@ -251,16 +236,9 @@ mod tests {
         let DirList::Entries(mut names) = DiskFiles.list(&text(&dir, "conf.d"), 3).unwrap() else {
             panic!("three entries fit a limit of three");
         };
-        names.sort_by(|a, b| a.name.cmp(&b.name));
-        let utf8: Vec<(&str, bool)> = names.iter().map(|n| (n.name.as_str(), n.utf8)).collect();
-        assert_eq!(
-            utf8,
-            [
-                ("a.conf", true),
-                ("b.conf", true),
-                ("c\u{fffd}.conf", false)
-            ]
-        );
+        names.sort();
+        let bytes: Vec<&[u8]> = names.iter().map(|name| name.as_bytes()).collect();
+        assert_eq!(bytes, [&b"a.conf"[..], b"b.conf", b"c\xff.conf"]);
         assert_eq!(
             DiskFiles.list(&text(&dir, "conf.d"), 2).unwrap(),
             DirList::TooMany

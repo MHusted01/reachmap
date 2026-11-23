@@ -14,20 +14,29 @@ use super::listen::push_uncertainty;
 use super::parser::{Directive, FileAst};
 use super::target::parse_upstream_server;
 
-/// Most included files projected in one parse. Each `include` is projected
-/// where it appears, so a file that includes the next one twice, thirty files
-/// deep, would otherwise mean over a billion projections.
-pub(super) const MAX_INCLUDE_PROJECTIONS: usize = 100_000;
+/// Most directives projected through `include`s in one parse. Each include is
+/// projected where it appears, so repeating a large snippet, or a file that
+/// includes the next one twice, thirty files deep, would otherwise mean
+/// millions of model entries or a billion projections.
+pub(super) const MAX_INCLUDE_WORK: usize = 500_000;
 
 pub(super) fn project(files: &[FileAst<'_>]) -> Result<NginxConfig, NginxParseError> {
     let mut projector = Projector::new(files);
     projector.run();
-    if projector.include_projections > MAX_INCLUDE_PROJECTIONS {
-        return Err(NginxParseError::TooManyIncludeProjections {
-            limit: MAX_INCLUDE_PROJECTIONS,
+    if projector.include_work > MAX_INCLUDE_WORK {
+        return Err(NginxParseError::IncludeExpansionTooLarge {
+            limit: MAX_INCLUDE_WORK,
         });
     }
     Ok(projector.config)
+}
+
+/// Directives in a block, nested blocks included.
+fn directive_count(directives: &[Directive<'_>]) -> usize {
+    directives
+        .iter()
+        .map(|directive| 1 + directive.block.as_deref().map_or(0, directive_count))
+        .sum()
 }
 
 pub(super) struct Projector<'a> {
@@ -35,9 +44,11 @@ pub(super) struct Projector<'a> {
     pub(super) consumed: Vec<bool>,
     pub(super) upstreams: BTreeMap<String, UpstreamGroup>,
     pub(super) config: NginxConfig,
-    /// Included files projected so far; past [`MAX_INCLUDE_PROJECTIONS`] no
-    /// further include is followed and the parse fails.
-    pub(super) include_projections: usize,
+    /// Directives in each file, nested blocks included.
+    pub(super) file_sizes: Vec<usize>,
+    /// Directives projected through includes so far; past
+    /// [`MAX_INCLUDE_WORK`] no further include is followed and the parse fails.
+    pub(super) include_work: usize,
 }
 
 impl<'a> Projector<'a> {
@@ -47,7 +58,11 @@ impl<'a> Projector<'a> {
             consumed: vec![false; files.len()],
             upstreams: BTreeMap::new(),
             config: NginxConfig::default(),
-            include_projections: 0,
+            file_sizes: files
+                .iter()
+                .map(|file| directive_count(&file.directives))
+                .collect(),
+            include_work: 0,
         }
     }
 

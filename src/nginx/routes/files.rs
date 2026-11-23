@@ -5,18 +5,22 @@
 
 use std::collections::BTreeSet;
 use std::io::{self, ErrorKind};
+use std::os::unix::ffi::OsStrExt;
 
 use super::NginxScanError;
 use crate::collect::nginx_files::{ConfigFiles, DirList, FileRead};
 use crate::parse::nginx::{
-    MAX_INPUT_BYTES, include_patterns, is_glob_component, matches_glob_component,
+    MAX_INPUT_BYTES, include_patterns, is_glob_component, matches_glob_name,
+    unescape_glob_component,
 };
 use crate::sanitize::sanitize;
 
 /// Most configuration files one scan reads, and most paths one glob expands to.
 pub(super) const MAX_FILES: usize = 1024;
 
-/// Deepest chain of nested `include`s followed.
+/// Deepest chain of nested `include`s the walk recurses through to find new
+/// files. Each file is read once, so this bounds the walk's recursion, not
+/// every include chain: a file first found shallow is not walked again deeper.
 pub(super) const MAX_INCLUDE_DEPTH: usize = 32;
 
 /// Most directory entries one `include` pattern may scan while expanding.
@@ -130,8 +134,10 @@ impl<F: ConfigFiles> Walk<'_, F> {
             let glob = is_glob_component(component);
             expanding |= glob;
             let mut next = Vec::new();
+            // `glob()` removes escapes from the literal parts of a pattern.
+            let literal = unescape_glob_component(component);
             for base in &paths {
-                let path = format!("{base}/{component}");
+                let path = format!("{base}/{literal}");
                 if glob {
                     self.extend_matches(base, component, &mut budget, &mut next)?;
                 } else if !expanding || self.exists(&path)? {
@@ -174,15 +180,15 @@ impl<F: ConfigFiles> Walk<'_, F> {
         };
         *budget -= entries.len();
         for entry in entries {
-            if !matches_glob_component(component, &entry.name) {
+            if !matches_glob_name(component, entry.as_bytes()) {
                 continue;
             }
-            // A name that is not UTF-8 cannot be read into the text format;
+            // A name that is not UTF-8 cannot be written in the text format;
             // fail rather than drop a file Nginx would include.
-            if !entry.utf8 {
+            let Some(name) = entry.to_str() else {
                 return Err(unreadable(dir, "a matching file name is not valid UTF-8"));
-            }
-            paths.push(format!("{base}/{}", entry.name));
+            };
+            paths.push(format!("{base}/{name}"));
         }
         Ok(())
     }

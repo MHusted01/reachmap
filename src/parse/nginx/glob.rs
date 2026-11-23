@@ -1,12 +1,31 @@
 //! `glob()`-style matching of one path component, as Nginx uses for `include`.
 //! Matching is on bytes, as `glob()` does in the C locale.
 
+use std::borrow::Cow;
+
+/// Removes `glob()` backslash escapes from a pattern component without
+/// wildcards, as `glob()` does for the literal parts of a pattern.
+pub fn unescape(component: &str) -> Cow<'_, str> {
+    if !component.contains('\\') {
+        return Cow::Borrowed(component);
+    }
+    let mut plain = String::with_capacity(component.len());
+    let mut chars = component.chars();
+    while let Some(c) = chars.next() {
+        plain.push(if c == '\\' {
+            chars.next().unwrap_or(c)
+        } else {
+            c
+        });
+    }
+    Cow::Owned(plain)
+}
+
 /// Matches `text` against a `glob()` pattern: `*` matches any run of bytes,
 /// `?` one byte, `\` makes the next byte literal, and `[...]` matches one byte
 /// from a class with ranges (`a-z`), negation (`!` or `^`) and POSIX classes
 /// such as `[:digit:]`. A `[` without a closing `]` is a literal.
-pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
-    let (pattern, text) = (pattern.as_bytes(), text.as_bytes());
+pub(super) fn glob_match(pattern: &[u8], text: &[u8]) -> bool {
     let (mut p, mut t) = (0usize, 0usize);
     // After a `*`: the pattern index behind it and the text index it covers up to.
     let mut star: Option<(usize, usize)> = None;
@@ -126,21 +145,32 @@ fn named_class(name: &[u8], byte: u8) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::glob_match;
+    use super::{glob_match, unescape};
 
     #[test]
     fn backslash_escapes_match_literally() {
-        assert!(glob_match("site\\?.conf", "site?.conf"));
-        assert!(!glob_match("site\\?.conf", "site1.conf"));
-        assert!(glob_match("a\\*", "a*"));
-        assert!(!glob_match("a\\*", "ab"));
-        assert!(glob_match("[\\]]", "]"));
+        assert!(glob_match(b"site\\?.conf", "site?.conf".as_bytes()));
+        assert!(!glob_match(b"site\\?.conf", "site1.conf".as_bytes()));
+        assert!(glob_match(b"a\\*", "a*".as_bytes()));
+        assert!(!glob_match(b"a\\*", "ab".as_bytes()));
+        assert!(glob_match(b"[\\]]", "]".as_bytes()));
     }
 
     #[test]
     fn matching_counts_bytes_like_the_c_locale() {
-        assert!(glob_match("??.conf", "é.conf"), "é is two bytes");
-        assert!(!glob_match("?.conf", "é.conf"));
-        assert!(glob_match("*.conf", "é.conf"));
+        assert!(
+            glob_match(b"??.conf", "é.conf".as_bytes()),
+            "é is two bytes"
+        );
+        assert!(!glob_match(b"?.conf", "é.conf".as_bytes()));
+        assert!(glob_match(b"*.conf", "é.conf".as_bytes()));
+    }
+
+    #[test]
+    fn literal_components_lose_their_escapes() {
+        assert_eq!(unescape(r"conf\.d"), "conf.d");
+        assert_eq!(unescape(r"a\\b"), r"a\b");
+        assert_eq!(unescape("plain"), "plain");
+        assert_eq!(unescape("trailing\\"), "trailing\\");
     }
 }

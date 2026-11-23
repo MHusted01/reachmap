@@ -582,9 +582,11 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
   files and temp directories. Reading `/etc/nginx/` and included files often
   requires `sudo`. Missing `nginx` or configuration files, permission errors,
   `nginx -V` failures, timeouts, and configurations over 8 MiB, 1024 files,
-  32 nested includes, 65536 directory entries scanned per pattern or 100000
-  included-file projections fail cleanly with exit 1 without echoing configuration
-  lines.
+  65536 directory entries scanned per pattern or 500000 directives projected
+  through includes fail cleanly with exit 1 without echoing configuration
+  lines. Reading also stops when newly found files are nested more than 32
+  includes deep; a file is read once, so a shared file first found at a
+  shallow depth is not counted again where it is included deeper.
 - **Exit status.** Returns exit 0 only when collection is complete and no
   configuration uncertainties (`if`, `rewrite`, `auth_request`, `allow`/`deny`,
   regex locations, etc.) were found; returns exit 1 for partial collection,
