@@ -1,0 +1,4 @@
+pass in on en0 inet proto tcp from any to any port = 22 flags S/SA keep state
+block drop in quick on en0 inet proto tcp from any to any port > 1024
+pass in quick on en0 inet proto tcp from any to any port = 8080 flags S/SA keep state
+pass in on en0 inet proto tcp from any to any port = 9000 flags S/SA keep state

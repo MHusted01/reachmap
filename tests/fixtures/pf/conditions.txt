@@ -1,0 +1,5 @@
+block drop in all
+pass in on en0 inet proto tcp from any to 192.0.2.10 port = 22 flags S/SA keep state
+block drop in quick on ! en0 inet proto tcp from any to any port = 80
+pass in on en1 inet6 proto tcp from any to 2001:db8::/32 port = 443 flags S/SA keep state
+block drop in on en0 inet proto tcp from 198.51.100.0/24 to any port = 8443
