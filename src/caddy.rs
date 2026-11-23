@@ -141,11 +141,13 @@ pub struct Route {
     pub terminal: bool,
 }
 
-/// A route `group`. Routes are in the same group exactly when their `id`s
-/// are equal; the label is for display and may be cut short.
+/// A route `group`. Caddy applies a group within one route list only, so
+/// two routes of the same list are in the same group exactly when their
+/// `id`s are equal; ids of different lists are unrelated. The label is for
+/// display and may be cut short.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteGroup {
-    /// Number assigned to the full group name, unique within one config.
+    /// Number assigned to the full group name, unique within one route list.
     pub id: usize,
     /// Sanitized, length-bounded group name.
     pub label: String,

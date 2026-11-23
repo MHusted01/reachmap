@@ -303,3 +303,36 @@ fn uncertainties_are_bounded_but_still_counted() {
         "an omitted uncertainty still counts"
     );
 }
+
+#[test]
+fn group_numbers_are_scoped_to_their_route_list() {
+    let subroute = r#"{"handler": "subroute", "routes": [{"group": "b"}, {"group": "b"}]}"#;
+    let routes = format!(
+        r#"[{{"group": "a"}}, {{"group": "b", "handle": [{subroute}]}}, {{"group": "b"}}]"#
+    );
+    let json = format!(
+        r#"{{"apps": {{"http": {{"servers": {{
+            "one": {{"listen": [":80"], "routes": {routes}}},
+            "two": {{"listen": [":81"], "routes": [{{"group": "b"}}]}}
+        }}}}}}}}"#
+    );
+    let config = parse(&json);
+    let ids = |routes: &[Route]| -> Vec<usize> {
+        routes
+            .iter()
+            .map(|route| route.group.as_ref().expect("grouped").id)
+            .collect()
+    };
+    let one = &config.servers[0].routes;
+    assert_eq!(ids(one), [0, 1, 1], "the outer list keeps its numbering");
+    assert_eq!(
+        ids(subroutes(&one[1].handlers[0])),
+        [0, 0],
+        "a subroute restarts"
+    );
+    assert_eq!(
+        ids(&config.servers[1].routes),
+        [0],
+        "another server restarts"
+    );
+}

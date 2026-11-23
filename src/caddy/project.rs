@@ -79,8 +79,9 @@ impl Projector {
         self.uncertainties.len() + self.omitted
     }
 
-    /// The group of a route, numbered by its full name so that names which
-    /// differ only after the display bound stay apart.
+    /// The group of a route, numbered by its full name within the current
+    /// route list, so that names which differ only after the display bound
+    /// stay apart.
     fn group(&mut self, name: &str) -> RouteGroup {
         let next = self.groups.len();
         let id = *self.groups.entry(name.to_owned()).or_insert(next);
@@ -222,11 +223,17 @@ impl Projector {
         }
     }
 
+    /// One route list. Group numbers restart for each list, as Caddy only
+    /// applies a group among the routes of one list.
     fn routes(&mut self, raw: Vec<RawRoute>, at: &JsonPath, depth: usize) -> Vec<Route> {
-        raw.into_iter()
+        let outer_groups = std::mem::take(&mut self.groups);
+        let routes = raw
+            .into_iter()
             .enumerate()
             .map(|(index, route)| self.route(route, &at.index(index), depth))
-            .collect()
+            .collect();
+        self.groups = outer_groups;
+        routes
     }
 
     fn route(&mut self, raw: RawRoute, at: &JsonPath, depth: usize) -> Route {
