@@ -57,11 +57,23 @@ pub(super) fn evaluate_scrub(
     {
         Reassembly::Reassembled
     } else {
-        let uncertain = paths
+        let any_reassembled = paths
             .iter()
-            .filter_map(|path| path.uncertain.as_ref())
-            .min()
-            .cloned();
+            .any(|path| matches!(path.state, ScrubState::Reassembled));
+        let all_non_reassembled_uncertain = paths
+            .iter()
+            .filter(|path| !matches!(path.state, ScrubState::Reassembled))
+            .all(|path| path.uncertain.is_some());
+        let uncertain = if any_reassembled && all_non_reassembled_uncertain {
+            paths
+                .iter()
+                .filter(|path| !matches!(path.state, ScrubState::Reassembled))
+                .filter_map(|path| path.uncertain.as_ref())
+                .min()
+                .cloned()
+        } else {
+            None
+        };
         Reassembly::MaybeUnreassembled(uncertain)
     }
 }
@@ -210,8 +222,18 @@ fn branch_scrub(
                 origin: origin.clone(),
                 construct,
             };
-            let moved = taken(live.clone(), Some(&uncertain));
-            live.into_iter().chain(moved).collect()
+            let stayed: ScrubPaths = live
+                .iter()
+                .cloned()
+                .map(|mut path| {
+                    if path.uncertain.is_none() {
+                        path.uncertain = Some(uncertain.clone());
+                    }
+                    path
+                })
+                .collect();
+            let moved = taken(live, Some(&uncertain));
+            stayed.into_iter().chain(moved).collect()
         }
     };
     finished.into_iter().chain(next).collect()

@@ -16,21 +16,19 @@ mod state;
 
 use scrub::{Reassembly, evaluate_scrub};
 use state::{
-    Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, branch, combine_fragment_verdict,
-    combine_tcp_verdicts, direct_children, has_filter_entries, promote_anchor_stops, unknown,
-    verdict,
+    AnchorQuick, Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, branch,
+    combine_fragment_verdict, combine_tcp_verdicts, direct_children, has_filter_entries,
+    promote_anchor_stops, unknown, unwind_anchor_path, verdict,
 };
 
 /// Anchors may contain anchors. Deeper than this the walk gives up.
 const MAX_ANCHOR_DEPTH: usize = 8;
 
-#[derive(Clone, Copy)]
-struct AnchorQuick {
-    is_quick: bool,
-    has_more: bool,
-    is_wildcard: bool,
-}
-
+/// Evaluates an inbound packet against parsed PF rules and anchors.
+///
+/// Both TCP and non-TCP traffic run the fragment walk when `scrub ... fragment
+/// reassemble` is not guaranteed: UDP datagrams can arrive as fragments, and
+/// TCP Fast Open SYNs (RFC 7413) can carry payload and fragment too.
 pub(super) fn evaluate(
     rules: &Ruleset,
     anchors: &AnchorRulesets,
@@ -208,8 +206,9 @@ impl Walker<'_> {
                             .flags
                             .is_some_and(TcpFlags::depends_on_ecn)
                             .then(|| origin.clone());
-                        let fragment_origin = (!self.fragment && criteria.skipped_by_fragment())
-                            .then(|| origin.clone());
+                        let fragment_origin = (!self.fragment
+                            && criteria.skipped_by_fragment(self.traffic.protocol))
+                        .then(|| origin.clone());
                         let stop = if criteria.quick {
                             Stop::Full
                         } else {
@@ -240,8 +239,9 @@ impl Walker<'_> {
                             .flags
                             .is_some_and(TcpFlags::depends_on_ecn)
                             .then(|| origin.clone());
-                        let fragment_origin = (!self.fragment && criteria.skipped_by_fragment())
-                            .then(|| origin.clone());
+                        let fragment_origin = (!self.fragment
+                            && criteria.skipped_by_fragment(self.traffic.protocol))
+                        .then(|| origin.clone());
                         let quick = AnchorQuick {
                             is_quick: criteria.quick,
                             has_more: has_filter_entries(&rules.entries[idx + 1..]),
@@ -367,24 +367,7 @@ impl Walker<'_> {
         }
         current
             .into_iter()
-            .map(|mut path| {
-                let stop_here = matches!(path.stop, Stop::Anchor) || path.matched;
-                path.stop = match path.stop {
-                    Stop::Full => Stop::Full,
-                    Stop::Anchor | Stop::None if quick.is_quick && stop_here => {
-                        if quick.has_more {
-                            Stop::Full
-                        } else {
-                            Stop::Anchor
-                        }
-                    }
-                    Stop::Anchor | Stop::None => Stop::None,
-                };
-                if quick.is_wildcard {
-                    path.matched = false;
-                }
-                path
-            })
+            .map(|path| unwind_anchor_path(path, quick))
             .collect()
     }
 }

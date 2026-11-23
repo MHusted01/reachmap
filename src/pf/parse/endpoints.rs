@@ -49,7 +49,8 @@ pub(super) fn protocol(word: &str) -> Result<RuleProtocol, Construct> {
     match word {
         "tcp" | "6" => Ok(RuleProtocol::Tcp),
         "udp" | "17" => Ok(RuleProtocol::Udp),
-        "icmp" | "icmp6" | "esp" | "ah" | "gre" | "igmp" => Ok(RuleProtocol::Other),
+        "ipv6-opts" | "60" | "ah" | "51" => Ok(RuleProtocol::Ipv6PostFrag),
+        "icmp" | "icmp6" | "esp" | "gre" | "igmp" => Ok(RuleProtocol::Other),
         _ if word.parse::<u8>().is_ok() => Ok(RuleProtocol::Other),
         _ => Err(Construct::UnrecognizedSyntax),
     }

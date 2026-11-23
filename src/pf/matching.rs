@@ -50,40 +50,62 @@ fn family(ip: IpAddr) -> AddressFamily {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ProtoMode {
+    Exact,
+    Ignore,
+    Ipv6Fragment,
+}
+
 impl Criteria {
     /// Whether evaluating this rule requires parsing transport-layer headers
-    /// beyond the first IPv4 fragment.
-    pub(super) fn skipped_by_fragment(&self) -> bool {
+    /// beyond the first IP fragment.
+    pub(super) fn skipped_by_fragment(&self, protocol: Protocol) -> bool {
         self.source.as_ref().is_some_and(|ep| ep.port.is_some())
             || self
                 .destination
                 .as_ref()
                 .is_some_and(|ep| ep.port.is_some())
-            || self.flags.is_some_and(TcpFlags::is_constrained)
+            || (protocol == Protocol::Tcp && self.flags.is_some_and(TcpFlags::is_constrained))
     }
 
-    /// Matches one new inbound connection, datagram, or non-initial IPv4 fragment.
+    /// Matches one new inbound connection, datagram, or non-initial fragment.
     pub(super) fn matches(
         &self,
         traffic: &Traffic<'_>,
         opening_flags: u8,
         fragment: bool,
     ) -> Match {
-        if fragment && self.skipped_by_fragment() {
+        if fragment && self.skipped_by_fragment(traffic.protocol) {
             return Match::No;
         }
-        self.matches_common(traffic, opening_flags)
+        let proto_mode = if fragment && traffic.destination.is_ipv6() {
+            ProtoMode::Ipv6Fragment
+        } else {
+            ProtoMode::Exact
+        };
+        let src = self
+            .source
+            .as_ref()
+            .map_or(Match::Yes, |ep| source(ep, traffic));
+        self.matches_header_with_proto(traffic, opening_flags, proto_mode)
+            .and(src)
             .and(opt_destination(self.destination.as_ref(), traffic))
     }
 
     /// Matches one IPv4 or IPv6 packet against a `scrub` / `no scrub` rule.
     /// Apple PF ignores the `proto` predicate during IPv6 normalization.
     pub(super) fn matches_scrub(&self, traffic: &Traffic<'_>) -> Match {
+        let proto_mode = if traffic.destination.is_ipv6() {
+            ProtoMode::Ignore
+        } else {
+            ProtoMode::Exact
+        };
         let src = self
             .source
             .as_ref()
             .map_or(Match::Yes, |ep| source(ep, traffic));
-        self.matches_header_with_proto(traffic, super::fields::SYN, traffic.destination.is_ipv6())
+        self.matches_header_with_proto(traffic, super::fields::SYN, proto_mode)
             .and(src)
             .and(opt_destination(self.destination.as_ref(), traffic))
     }
@@ -167,15 +189,37 @@ impl Criteria {
     }
 
     fn matches_header(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
-        self.matches_header_with_proto(traffic, opening_flags, false)
+        self.matches_header_with_proto(traffic, opening_flags, ProtoMode::Exact)
     }
 
     fn matches_header_with_proto(
         &self,
         traffic: &Traffic<'_>,
         opening_flags: u8,
-        ignore_proto: bool,
+        proto_mode: ProtoMode,
     ) -> Match {
+        let protocol_match = match proto_mode {
+            ProtoMode::Ignore => Match::Yes,
+            ProtoMode::Exact => self.protocol.map_or(Match::Yes, |wanted| {
+                Match::of(matches!(
+                    (wanted, traffic.protocol),
+                    (RuleProtocol::Tcp, Protocol::Tcp) | (RuleProtocol::Udp, Protocol::Udp)
+                ))
+            }),
+            ProtoMode::Ipv6Fragment => {
+                self.protocol
+                    .map_or(Match::Yes, |wanted| match (wanted, traffic.protocol) {
+                        (RuleProtocol::Tcp, Protocol::Tcp)
+                        | (RuleProtocol::Udp, Protocol::Udp)
+                        | (RuleProtocol::Ipv6PostFrag, _) => {
+                            Match::Maybe(Construct::UnreassembledFragment)
+                        }
+                        (RuleProtocol::Tcp | RuleProtocol::Udp | RuleProtocol::Other, _) => {
+                            Match::No
+                        }
+                    })
+            }
+        };
         [
             Match::of(self.direction != Some(Direction::Out)),
             self.interface.as_ref().map_or(Match::Yes, |interface| {
@@ -184,18 +228,7 @@ impl Criteria {
             self.family.map_or(Match::Yes, |wanted| {
                 Match::of(wanted == family(traffic.destination))
             }),
-            if ignore_proto {
-                Match::Yes
-            } else {
-                self.protocol.map_or(Match::Yes, |wanted| {
-                    Match::of(match (wanted, traffic.protocol) {
-                        (RuleProtocol::Tcp, Protocol::Tcp) | (RuleProtocol::Udp, Protocol::Udp) => {
-                            true
-                        }
-                        (RuleProtocol::Tcp | RuleProtocol::Udp | RuleProtocol::Other, _) => false,
-                    })
-                })
-            },
+            protocol_match,
             self.flags.map_or(Match::Yes, |flags| {
                 Match::of(traffic.protocol != Protocol::Tcp || flags.matches(opening_flags))
             }),

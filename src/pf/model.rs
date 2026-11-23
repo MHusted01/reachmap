@@ -30,6 +30,7 @@ pub(super) enum Construct {
     StateLimit,
     TcpEcnFlags,
     Tos,
+    FragmentCondition,
     UnreassembledFragment,
     UnrecognizedSyntax,
     UnparseableRule,
@@ -61,6 +62,7 @@ impl fmt::Display for Construct {
             Self::StateLimit => "state limit",
             Self::TcpEcnFlags => "tcp flags (ECN)",
             Self::Tos => "tos condition",
+            Self::FragmentCondition => "fragment condition",
             Self::UnreassembledFragment => "unreassembled fragment",
             Self::UnrecognizedSyntax => "unrecognized syntax",
             Self::UnparseableRule => "unparseable text",
@@ -84,12 +86,14 @@ pub(super) enum Direction {
     Out,
 }
 
-/// The protocol a rule names. `Other` covers every protocol that is not TCP or
-/// UDP, so such a rule never matches a listening socket.
+/// The protocol a rule names. `Ipv6PostFrag` covers IPv6 extension headers
+/// that RFC 8200 allows after a Fragment header (`ipv6-opts` / `60`, `ah` / `51`).
+/// `Other` covers remaining protocols other than TCP or UDP.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RuleProtocol {
     Tcp,
     Udp,
+    Ipv6PostFrag,
     Other,
 }
 

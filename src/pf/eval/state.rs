@@ -195,6 +195,38 @@ pub(super) fn combine_tcp_verdicts(plain: &Paths, ecn: &Paths) -> Verdict {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct AnchorQuick {
+    pub(super) is_quick: bool,
+    pub(super) has_more: bool,
+    pub(super) is_wildcard: bool,
+}
+
+/// Applies Apple PF's `pf_step_out_of_anchor` unwind rules to one path leaving
+/// an anchor or wildcard anchor body.
+pub(super) fn unwind_anchor_path(mut path: Path, quick: AnchorQuick) -> Path {
+    if path.stop == Stop::Full {
+        return path;
+    }
+    let mut pending_quick = matches!(path.stop, Stop::Anchor);
+    if path.matched {
+        pending_quick = quick.is_quick;
+        if quick.is_wildcard {
+            path.matched = false;
+        }
+    }
+    path.stop = if pending_quick {
+        if quick.has_more {
+            Stop::Full
+        } else {
+            Stop::Anchor
+        }
+    } else {
+        Stop::None
+    };
+    path
+}
+
 pub(super) fn combine_fragment_verdict(
     unfragmented: Verdict,
     full_a: &Paths,
@@ -205,7 +237,22 @@ pub(super) fn combine_fragment_verdict(
     let v_frag = verdict(frag);
     match (&unfragmented, &v_frag) {
         (Verdict::Unknown { .. }, _) => unfragmented,
-        (_, Verdict::Unknown { .. }) => v_frag,
+        (_, Verdict::Unknown { .. }) => {
+            let frag_only_unknown = !frag
+                .iter()
+                .any(|path| matches!(path.outcome, Outcome::Unknown(_)))
+                && frag
+                    .iter()
+                    .filter_map(|path| path.uncertain.as_ref())
+                    .min()
+                    .is_some_and(|u| u.construct == Construct::UnreassembledFragment);
+            match scrub_uncertain.filter(|_| frag_only_unknown) {
+                Some(uncertain) => Verdict::Unknown {
+                    reason: uncertain.to_string(),
+                },
+                None => v_frag,
+            }
+        }
         (Verdict::Pass { .. }, Verdict::Pass { .. })
         | (Verdict::Block { .. }, Verdict::Block { .. }) => unfragmented,
         (Verdict::Pass { .. }, Verdict::Block { .. })

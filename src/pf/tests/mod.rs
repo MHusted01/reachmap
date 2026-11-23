@@ -647,6 +647,10 @@ fn verdicts_serialize_with_a_verdict_tag() {
         json!({"verdict": "pass", "reason": "matched pass rule at line 3"})
     );
     assert_eq!(
+        serde_json::to_value(block_at(1)).unwrap(),
+        json!({"verdict": "block", "reason": "matched block rule at line 1"})
+    );
+    assert_eq!(
         serde_json::to_value(unknown("table in rule at line 2")).unwrap(),
         json!({"verdict": "unknown", "reason": "table in rule at line 2"})
     );

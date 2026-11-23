@@ -324,3 +324,116 @@ fn scrub_rule_with_table_preserves_table_reason_without_table_name() {
         assert!(!reason.contains("secret_tbl"));
     }
 }
+
+#[test]
+fn non_quick_outer_preserves_stop_from_trailing_quick_wildcard() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let tree = anchors(&[
+        ("outer", "anchor \"sub/*\" quick all"),
+        ("outer/sub/*", ""),
+        ("outer/sub/10", "pass in all"),
+    ]);
+    assert_eq!(
+        check("anchor \"outer\" all\nblock drop in all", &tree, &packet),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"outer/sub/10\"".to_string()
+        }
+    );
+}
+
+#[test]
+fn ipv6_portless_protocol_rule_requires_reassembly_while_ipv4_does_not() {
+    let udp_v6 = traffic("en0", Protocol::Udp, "2001:db8::1", 5353);
+    let udp_v4 = traffic("en0", Protocol::Udp, HOST, 5353);
+
+    let lone_v6 = "block drop in quick inet6 proto udp all";
+    assert_eq!(
+        check(lone_v6, &Default::default(), &udp_v6),
+        unknown("unreassembled fragment in rule at line 1")
+    );
+    assert_eq!(
+        check(
+            &format!("scrub in all fragment reassemble\n{lone_v6}"),
+            &Default::default(),
+            &udp_v6
+        ),
+        block_at(2)
+    );
+    assert_eq!(
+        check(
+            "block drop in quick inet proto udp all",
+            &Default::default(),
+            &udp_v4
+        ),
+        block_at(1)
+    );
+
+    let table_scrub = "scrub in on en0 from <secret_tbl> to any fragment reassemble\nblock drop in quick inet6 proto udp all";
+    let table_result = check(table_scrub, &Default::default(), &udp_v6);
+    assert_eq!(table_result, unknown("table in rule at line 1"));
+    if let Verdict::Unknown { reason } = table_result {
+        assert!(!reason.contains("secret_tbl"));
+    }
+
+    let port_then_portless = "block drop in quick inet6 proto udp from any to any port = 5353\npass in quick inet6 proto udp all\nblock drop in all";
+    assert_eq!(
+        check(port_then_portless, &Default::default(), &udp_v6),
+        unknown("unreassembled fragment in rule at line 2")
+    );
+
+    let post_frag_header = "block drop in all\npass in quick inet6 proto 60 all";
+    assert_eq!(
+        check(post_frag_header, &Default::default(), &udp_v6),
+        unknown("unreassembled fragment in rule at line 2")
+    );
+    assert_eq!(
+        check(
+            &format!("scrub in all fragment reassemble\n{post_frag_header}"),
+            &Default::default(),
+            &udp_v6
+        ),
+        block_at(2)
+    );
+}
+
+#[test]
+fn fragment_filter_predicate_yields_named_unknown_with_line() {
+    assert_eq!(
+        tcp("block drop in quick all fragment", "en0", 22),
+        unknown("fragment condition in rule at line 1")
+    );
+    assert_eq!(
+        tcp(
+            "pass in all\nblock drop in quick inet proto tcp all fragment",
+            "en0",
+            22
+        ),
+        unknown("fragment condition in rule at line 2")
+    );
+    assert_eq!(
+        tcp("block drop in quick proto udp all fragment", "en0", 22),
+        default_pass()
+    );
+}
+
+#[test]
+fn flags_without_proto_tcp_do_not_trigger_fragment_skip_for_udp() {
+    let udp_v4 = traffic("en0", Protocol::Udp, HOST, 5353);
+    assert_eq!(
+        check("block drop in all flags S/SA", &Default::default(), &udp_v4),
+        block_at(1)
+    );
+    assert_eq!(
+        tcp("block drop in all flags S/SA", "en0", 22),
+        unknown("unreassembled fragment in rule at line 1")
+    );
+}
+
+#[test]
+fn uncertain_no_scrub_without_reassembly_blames_fragment_rule_not_table() {
+    let rules = "no scrub in on en0 from <secret_tbl> to any\nblock drop in all\npass in on en0 proto tcp from any to any port = 22";
+    assert_eq!(
+        tcp(rules, "en0", 22),
+        unknown("unreassembled fragment in rule at line 3")
+    );
+}

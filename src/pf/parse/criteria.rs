@@ -218,6 +218,7 @@ fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result
         "os" => return Err(Construct::OsFingerprint),
         "received-on" => return Err(Construct::ReceivedOn),
         "probability" => return Err(Construct::Probability),
+        "fragment" => return Err(Construct::FragmentCondition),
         _ => return Err(Construct::UnrecognizedSyntax),
     }
     Ok(())
