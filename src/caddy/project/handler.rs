@@ -38,7 +38,12 @@ impl Projector {
                 Handler::Unmodeled {}
             }
             RawHandler::StaticResponse {} => respond(Responder::StaticResponse),
-            RawHandler::FileServer {} => respond(Responder::FileServer),
+            RawHandler::FileServer { pass_thru: false } => respond(Responder::FileServer),
+            RawHandler::FileServer { pass_thru: true } => {
+                let kind = UncertaintyKind::ConditionalFallthrough;
+                self.note(kind, "pass_thru", &at.field("pass_thru"));
+                Handler::Unmodeled {}
+            }
             RawHandler::Error {} => respond(Responder::Error),
             RawHandler::Headers {} => middleware(Middleware::Headers),
             RawHandler::Encode {} => middleware(Middleware::Encode),
@@ -84,7 +89,7 @@ impl Projector {
 
     /// A proxy is complete when this added no uncertainty.
     fn reverse_proxy(&mut self, raw: RawReverseProxy, at: &JsonPath) -> ReverseProxy {
-        let before = self.uncertainties.len();
+        let before = self.found();
         if raw.dynamic_upstreams.is_some() {
             let field = "dynamic_upstreams";
             self.note(UncertaintyKind::DynamicUpstreams, field, &at.field(field));
@@ -95,19 +100,25 @@ impl Projector {
                 &at.field("upstreams"),
             );
         }
+        let forward_auth = raw.is_forward_auth();
+        if !forward_auth && !raw.handle_response.is_empty() {
+            let field = "handle_response";
+            self.note(UncertaintyKind::ResponseHandling, field, &at.field(field));
+        }
         let tls = raw
             .transport
             .as_ref()
             .is_some_and(|transport| transport.tls.is_some());
-        if let Some(protocol) = raw
+        let other_protocol = raw
             .transport
-            .and_then(|transport| transport.protocol)
-            .filter(|protocol| protocol != HTTP_TRANSPORT)
-        {
+            .as_ref()
+            .and_then(|transport| transport.protocol.as_deref())
+            .is_some_and(|protocol| protocol != HTTP_TRANSPORT);
+        if other_protocol {
             let protocol_at = at.field("transport").field("protocol");
             self.note(
                 UncertaintyKind::UnsupportedTransport,
-                &protocol,
+                "protocol",
                 &protocol_at,
             );
         }
@@ -120,14 +131,20 @@ impl Projector {
             .collect();
         ReverseProxy {
             upstreams,
-            complete: self.uncertainties.len() == before,
+            complete: self.found() == before,
             tls,
-            forward_auth: !raw.handle_response.is_empty(),
+            forward_auth,
         }
     }
 
     /// A static upstream; a host name is kept but noted, as it needs DNS.
+    /// With `lookup_srv`, Caddy ignores `dial` and asks DNS for targets.
     fn upstream(&mut self, raw: &RawUpstream, at: &JsonPath) -> Option<DialTarget> {
+        if raw.lookup_srv.is_some() {
+            let field = "lookup_srv";
+            self.note(UncertaintyKind::DynamicUpstreams, field, &at.field(field));
+            return None;
+        }
         let dial_at = at.field("dial");
         let Some(text) = raw.dial.as_deref() else {
             self.note(UncertaintyKind::Malformed, "dial", &dial_at);

@@ -71,6 +71,7 @@
         },
         "internal": {
           "listen": ["127.0.0.1:9080"],
+          "protocols": ["h1", "h2"],
           "automatic_https": { "disable": true },
           "routes": [
             {

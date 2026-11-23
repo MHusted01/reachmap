@@ -2,8 +2,12 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use super::*;
 
+mod edge_cases;
+mod redaction;
+
 const SERVERS: &str = include_str!("../../tests/fixtures/caddy/servers.json");
 const UNCERTAINTIES: &str = include_str!("../../tests/fixtures/caddy/uncertainties.json");
+const SERVERS_MODEL: &str = include_str!("../../tests/fixtures/caddy/servers.model.json");
 const SECRETS: &str = include_str!("../../tests/fixtures/caddy/secrets.json");
 
 fn parse(json: &str) -> CaddyConfig {
@@ -28,6 +32,15 @@ fn subroutes(handler: &Handler) -> &[Route] {
         Handler::Subroute { routes } => routes,
         other => panic!("expected subroute, got {other:?}"),
     }
+}
+
+fn group_label(route: &Route) -> Option<&str> {
+    route.group.as_ref().map(|group| group.label.as_str())
+}
+
+/// A config with one server whose body is `server`.
+fn with_server(server: &str) -> String {
+    format!(r#"{{"apps": {{"http": {{"servers": {{"s": {server}}}}}}}}}"#)
 }
 
 fn listed(config: &CaddyConfig) -> Vec<(UncertaintyKind, &str, &str)> {
@@ -59,6 +72,7 @@ fn parses_servers_listeners_and_tls_policies() {
         PortRange::new(8443, 8445).expect("range")
     );
     assert_eq!(edge.automatic_https, AutomaticHttps::default());
+    assert!(edge.http3, "HTTP/3 is on when protocols is unset");
     assert_eq!(
         edge.tls_policies,
         [
@@ -79,6 +93,7 @@ fn parses_servers_listeners_and_tls_policies() {
     );
     assert!(internal.automatic_https.disabled);
     assert!(!internal.automatic_https.redirects_disabled);
+    assert!(!internal.http3);
 }
 
 #[test]
@@ -104,7 +119,8 @@ fn parses_host_and_path_matchers_through_nested_subroutes() {
 
     let inner = subroutes(&route.handlers[0]);
     assert_eq!(inner.len(), 2);
-    assert_eq!(inner[0].group.as_deref(), Some("group0"));
+    assert_eq!(group_label(&inner[0]), Some("group0"));
+    assert_eq!(inner[0].group, inner[1].group);
     assert_eq!(
         inner[0].matchers[0].paths,
         Some(vec![PathMatcher::Prefix {
@@ -245,7 +261,7 @@ fn names_every_unmodeled_construct_and_its_location() {
         ),
         (
             UnsupportedTransport,
-            "fastcgi",
+            "protocol",
             format!("{handle}[5].transport.protocol"),
         ),
         (
@@ -296,103 +312,6 @@ fn uncertainties_print_kind_construct_and_location() {
 }
 
 #[test]
-fn notes_other_server_and_tls_constructs() {
-    use UncertaintyKind::*;
-    let config = parse(
-        r#"{"apps": {"tls": {}, "pki": {}, "http": {"servers": {"s": {
-            "listen": [":443"],
-            "named_routes": {"shared": {}},
-            "tls_connection_policies": [
-                {"client_authentication": {"mode": "sometimes"}},
-                {"client_authentication": {"trusted_ca_certs": ["AAAA"]}},
-                {"client_authentication": {}}
-            ],
-            "routes": [{"handle": [
-                {"handler": "authentication", "providers": {"jwt": {}}},
-                {"handler": "reverse_proxy"},
-                {"no_handler": true},
-                {"handler": "file_server"},
-                {"handler": "encode"}
-            ]}]
-        }}}}}"#,
-    );
-    let server = r#"apps.http.servers["s"]"#;
-    let handle = format!("{server}.routes[0].handle");
-    let named = format!("{server}.named_routes");
-    let mode = format!("{server}.tls_connection_policies[0].client_authentication.mode");
-    let jwt = format!(r#"{handle}[0].providers["jwt"]"#);
-    let upstreams = format!("{handle}[1].upstreams");
-    let unnamed = format!("{handle}[2]");
-    assert_eq!(
-        listed(&config),
-        [
-            (UnmodeledServerFeature, "named_routes", named.as_str()),
-            (UnknownClientAuthMode, "mode", mode.as_str()),
-            (UnmodeledAuthProvider, "jwt", jwt.as_str()),
-            (Malformed, "upstreams", upstreams.as_str()),
-            (Malformed, "handler", unnamed.as_str()),
-        ]
-    );
-    let policies = &config.servers[0].tls_policies;
-    assert_eq!(policies[0].client_auth, None);
-    assert_eq!(policies[1].client_auth, Some(ClientAuthMode::Implicit));
-    assert_eq!(policies[2].client_auth, None);
-    let handlers = &config.servers[0].routes[0].handlers;
-    assert_eq!(
-        handlers[0],
-        Handler::Authentication {
-            http_basic: false,
-            other_providers: true
-        }
-    );
-    assert_eq!(
-        handlers[3..],
-        [
-            Handler::Respond {
-                responder: Responder::FileServer
-            },
-            Handler::Middleware {
-                middleware: Middleware::Encode
-            }
-        ]
-    );
-}
-
-#[test]
-fn deep_subroutes_stop_at_the_depth_bound() {
-    let levels = MAX_ROUTE_DEPTH + 4;
-    let mut handler = r#"{"handler": "static_response"}"#.to_owned();
-    for _ in 0..levels {
-        handler = format!(r#"{{"handler": "subroute", "routes": [{{"handle": [{handler}]}}]}}"#);
-    }
-    let json = format!(
-        r#"{{"apps": {{"http": {{"servers": {{"s": {{"listen": [":80"], "routes": [{{"handle": [{handler}]}}]}}}}}}}}}}"#
-    );
-    let config = parse(&json);
-    assert_eq!(config.uncertainties.len(), 1);
-    assert_eq!(
-        config.uncertainties[0].kind,
-        UncertaintyKind::NestingTooDeep
-    );
-    assert_eq!(
-        config.uncertainties[0]
-            .location
-            .matches(".routes[0]")
-            .count(),
-        MAX_ROUTE_DEPTH + 1
-    );
-
-    let mut depth = 0;
-    let mut handlers = &config.servers[0].routes[0].handlers;
-    while let Handler::Subroute { routes } = &handlers[0] {
-        depth += 1;
-        handlers = &routes[0].handlers;
-    }
-    assert_eq!(depth, MAX_ROUTE_DEPTH);
-    assert_eq!(handlers[0], Handler::Unmodeled {});
-}
-
-#[test]
 fn empty_config_has_no_servers_and_default_ports() {
     assert_eq!(parse("{}"), CaddyConfig::default());
     assert_eq!(parse(r#"{"apps": {}}"#), CaddyConfig::default());
@@ -433,126 +352,9 @@ fn malformed_and_truncated_input_fails_with_position_only() {
     );
 }
 
-/// Synthetic secrets planted in `secrets.json` in fields the model ignores.
-const PLANTED: [&str; 8] = [
-    "$2a$14$SYNTHETIC",
-    "synthetic-user",
-    "Basic c3ludGhldGljOnNlY3JldA==",
-    "synthetic-dns-token-7f3a",
-    "synthetic-private.key",
-    "synthetic.crt",
-    "synthetic-env-value-91c2",
-    "SYNTHETIC_SECRET",
-];
-
-fn assert_clean(label: &str, text: &str) {
-    for secret in PLANTED {
-        assert!(!text.contains(secret), "{label} leaks {secret:?}: {text}");
-    }
-    for control in ['\u{1b}', '\u{7}'] {
-        assert!(!text.contains(control), "{label} holds {control:?}: {text}");
-    }
-}
-
 #[test]
-fn secrets_never_reach_structs_json_or_formatted_output() {
-    let config = parse(SECRETS);
-    assert_clean("Debug", &format!("{config:?}"));
-    assert_clean("JSON", &serde_json::to_string(&config).expect("serialize"));
-    let printed: Vec<String> = config
-        .uncertainties
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    assert_clean("Display", &printed.join("\n"));
-
-    let server = &config.servers[0];
-    assert_eq!(server.name, r"srv\u{1b}[31mred");
-    assert_eq!(
-        server.tls_policies[0].client_auth,
-        Some(ClientAuthMode::Implicit)
-    );
-    let route = &server.routes[0];
-    assert_eq!(route.group.as_deref(), Some(r"g\u{1b}[2J"));
-    assert_eq!(
-        route.handlers[0],
-        Handler::Authentication {
-            http_basic: true,
-            other_providers: false
-        }
-    );
-    let upstreams = &proxy(&route.handlers[3]).upstreams;
-    assert_eq!(upstreams, &[socket(Ipv4Addr::LOCALHOST, 8080)]);
-    assert!(
-        printed
-            .iter()
-            .any(|line| line.contains(r"evil\u{1b}]0;title\u{7}"))
-    );
-}
-
-#[test]
-fn secrets_never_reach_error_chains() {
-    let truncated = &SECRETS[..SECRETS.find("synthetic-dns-token").expect("planted") + 12];
-    let shape = SECRETS.replace(
-        r#""listen": [":443", "{env.SYNTHETIC_SECRET}:80"]"#,
-        r#""listen": "synthetic-env-value-91c2""#,
-    );
-    assert_ne!(shape, SECRETS);
-    for (input, label) in [
-        (truncated, "truncated"),
-        (shape.as_str(), "shape"),
-        ("{\"apps\": synthetic-env-value-91c2}", "syntax"),
-    ] {
-        let error = parse_caddy_config(input).expect_err(label);
-        let mut chain = vec![error.to_string(), format!("{error:?}")];
-        let mut source = std::error::Error::source(&error);
-        while let Some(cause) = source {
-            chain.push(cause.to_string());
-            source = cause.source();
-        }
-        assert_clean(label, &chain.join("\n"));
-    }
-}
-
-#[test]
-fn maps_every_known_responder_and_middleware() {
-    let names = [
-        "static_response",
-        "file_server",
-        "error",
-        "headers",
-        "encode",
-        "request_body",
-        "vars",
-        "templates",
-        "tracing",
-        "log_append",
-    ];
-    let handle: Vec<String> = names
-        .iter()
-        .map(|name| format!(r#"{{"handler": "{name}"}}"#))
-        .collect();
-    let json = format!(
-        r#"{{"apps": {{"http": {{"servers": {{"s": {{"listen": [":80"], "routes": [{{"handle": [{}]}}]}}}}}}}}}}"#,
-        handle.join(",")
-    );
-    let config = parse(&json);
-    assert!(config.uncertainties.is_empty());
-    let respond = |responder| Handler::Respond { responder };
-    let middleware = |middleware| Handler::Middleware { middleware };
-    assert_eq!(
-        config.servers[0].routes[0].handlers,
-        [
-            respond(Responder::StaticResponse),
-            respond(Responder::FileServer),
-            respond(Responder::Error),
-            middleware(Middleware::Headers),
-            middleware(Middleware::Encode),
-            middleware(Middleware::RequestBody),
-            middleware(Middleware::Vars),
-            middleware(Middleware::Templates),
-            middleware(Middleware::Tracing),
-            middleware(Middleware::LogAppend),
-        ]
-    );
+fn serialized_model_matches_the_pinned_contract() {
+    let pinned: serde_json::Value = serde_json::from_str(SERVERS_MODEL).expect("pinned JSON");
+    let actual = serde_json::to_value(parse(SERVERS)).expect("serialize");
+    assert_eq!(actual, pinned);
 }

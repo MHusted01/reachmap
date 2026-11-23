@@ -1,9 +1,12 @@
 //! The parts of Caddy's JSON that the model reads.
 //!
 //! Fields that can hold secrets (`admin`, `storage`, account lists, headers,
-//! TLS material) are never declared, so serde skips them without copying
-//! their values. Where only presence matters, [`IgnoredAny`] checks that a
-//! field is there and discards it.
+//! TLS material) are not declared in these structs, so they never reach the
+//! model. Where only presence matters, [`IgnoredAny`] checks that a field is
+//! there and discards it. One exception: each route's `handle` list is read
+//! as JSON first (see [`RawRoute::handle`]), so a handler's fields sit in
+//! memory until that handler is projected; nothing is kept from them but
+//! what [`RawHandler`] declares.
 
 use std::collections::BTreeMap;
 
@@ -39,12 +42,21 @@ pub(super) struct RawHttpApp {
 pub(super) struct RawServer {
     pub(super) listen: Option<Vec<String>>,
     #[serde(default)]
+    pub(super) listener_wrappers: Vec<RawListenerWrapper>,
+    pub(super) protocols: Option<Vec<String>>,
+    #[serde(default)]
     pub(super) routes: Vec<RawRoute>,
     pub(super) automatic_https: Option<RawAutomaticHttps>,
     #[serde(default)]
     pub(super) tls_connection_policies: Vec<RawTlsPolicy>,
     pub(super) errors: Option<IgnoredAny>,
     pub(super) named_routes: Option<IgnoredAny>,
+}
+
+/// One `listener_wrappers` item.
+#[derive(Deserialize)]
+pub(super) struct RawListenerWrapper {
+    pub(super) wrapper: Option<String>,
 }
 
 /// `automatic_https`.
@@ -54,6 +66,8 @@ pub(super) struct RawAutomaticHttps {
     pub(super) disable: bool,
     #[serde(default)]
     pub(super) disable_redirects: bool,
+    pub(super) skip: Option<IgnoredAny>,
+    pub(super) skip_certificates: Option<IgnoredAny>,
 }
 
 /// One `tls_connection_policies` item.
@@ -72,15 +86,18 @@ pub(super) struct RawClientAuth {
     pub(super) trusted_ca_certs: Option<IgnoredAny>,
     pub(super) trusted_ca_certs_pem_files: Option<IgnoredAny>,
     pub(super) trusted_leaf_certs: Option<IgnoredAny>,
+    #[serde(default)]
+    pub(super) verifiers: Vec<IgnoredAny>,
 }
 
 impl RawClientAuth {
-    /// Whether certificates to trust are configured.
+    /// Whether certificates to trust or verifiers are configured.
     pub(super) fn has_trust(&self) -> bool {
         self.ca.is_some()
             || self.trusted_ca_certs.is_some()
             || self.trusted_ca_certs_pem_files.is_some()
             || self.trusted_leaf_certs.is_some()
+            || !self.verifiers.is_empty()
     }
 }
 
@@ -118,7 +135,10 @@ pub(super) enum RawHandler {
     Uri {},
     Map {},
     StaticResponse {},
-    FileServer {},
+    FileServer {
+        #[serde(default)]
+        pass_thru: bool,
+    },
     Error {},
     Headers {},
     Encode {},
@@ -139,13 +159,41 @@ pub(super) struct RawReverseProxy {
     pub(super) dynamic_upstreams: Option<IgnoredAny>,
     pub(super) transport: Option<RawTransport>,
     #[serde(default)]
-    pub(super) handle_response: Vec<IgnoredAny>,
+    pub(super) handle_response: Vec<RawResponseHandler>,
+}
+
+impl RawReverseProxy {
+    /// Whether `handle_response` has the shape Caddy's `forward_auth`
+    /// directive adapts to: one handler matching only 2xx status codes.
+    pub(super) fn is_forward_auth(&self) -> bool {
+        match self.handle_response.as_slice() {
+            [only] => only.matcher.as_ref().is_some_and(|matcher| {
+                matcher.headers.is_none() && matcher.status_code.as_deref() == Some(&[2])
+            }),
+            _ => false,
+        }
+    }
 }
 
 /// One static upstream.
 #[derive(Deserialize)]
 pub(super) struct RawUpstream {
     pub(super) dial: Option<String>,
+    pub(super) lookup_srv: Option<IgnoredAny>,
+}
+
+/// One `handle_response` item.
+#[derive(Deserialize)]
+pub(super) struct RawResponseHandler {
+    #[serde(rename = "match")]
+    pub(super) matcher: Option<RawResponseMatch>,
+}
+
+/// The response matcher of a `handle_response` item.
+#[derive(Deserialize)]
+pub(super) struct RawResponseMatch {
+    pub(super) status_code: Option<Vec<u16>>,
+    pub(super) headers: Option<IgnoredAny>,
 }
 
 /// `reverse_proxy.transport`.

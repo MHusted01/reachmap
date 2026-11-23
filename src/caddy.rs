@@ -6,6 +6,14 @@
 //! presence and explicit uncertainties are kept: never password hashes,
 //! header values, TLS material, storage or admin settings, or any field the
 //! model does not name.
+//!
+//! Two limits matter to consumers:
+//! - Listeners are TCP only. HTTP/3 is recorded as [`CaddyServer::http3`];
+//!   the UDP sockets it opens are not listed as [`ListenAddress`]es.
+//! - Values in modeled fields (paths, hosts, upstreams) are kept as written.
+//!   The Caddyfile adapter expands `{$VAR}` before this JSON exists, so an
+//!   expanded value cannot be told apart from a literal one here; whoever
+//!   collects the config knows its source and must judge that.
 
 use std::fmt;
 
@@ -29,7 +37,7 @@ pub use error::{CaddyParseError, MAX_INPUT_BYTES};
 pub use handler::{Handler, Middleware, Responder, ReverseProxy};
 pub use listen::{ListenAddress, ListenHost, ListenNetwork, PortRange};
 pub use matcher::{HostMatcher, PathMatcher};
-pub use project::{MAX_ROUTE_DEPTH, parse_caddy_config};
+pub use project::{MAX_ROUTE_DEPTH, MAX_UNCERTAINTIES, parse_caddy_config};
 
 /// Port Caddy uses for HTTP when the `http` app names none.
 pub const DEFAULT_HTTP_PORT: u16 = 80;
@@ -46,8 +54,11 @@ pub struct CaddyConfig {
     pub https_port: u16,
     /// Servers of the `http` app, ordered by their configuration key.
     pub servers: Vec<CaddyServer>,
-    /// Constructs that could change routing or exposure but are not modeled.
+    /// Constructs that could change routing or exposure but are not modeled,
+    /// at most [`MAX_UNCERTAINTIES`].
     pub uncertainties: Vec<Uncertainty>,
+    /// How many more uncertainties were found beyond the bound.
+    pub uncertainties_omitted: usize,
 }
 
 impl Default for CaddyConfig {
@@ -57,6 +68,7 @@ impl Default for CaddyConfig {
             https_port: DEFAULT_HTTPS_PORT,
             servers: Vec::new(),
             uncertainties: Vec::new(),
+            uncertainties_omitted: 0,
         }
     }
 }
@@ -70,19 +82,24 @@ pub struct CaddyServer {
     pub listen: Vec<ListenAddress>,
     /// Automatic HTTPS switches set on this server.
     pub automatic_https: AutomaticHttps,
+    /// Whether HTTP/3 is enabled (`protocols` unset or holding `h3`). Caddy
+    /// then also listens on UDP on the ports where it serves TLS.
+    pub http3: bool,
     /// One entry per `tls_connection_policies` item.
     pub tls_policies: Vec<TlsPolicy>,
     /// Top-level routes in configuration order.
     pub routes: Vec<Route>,
 }
 
-/// The `automatic_https` switches of a server. Both `false` when unset.
+/// The `automatic_https` switches of a server. All `false` when unset.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AutomaticHttps {
     /// `disable`: no certificates and no redirects for this server.
     pub disabled: bool,
     /// `disable_redirects`: certificates, but no HTTP-to-HTTPS redirect listener.
     pub redirects_disabled: bool,
+    /// `skip` or `skip_certificates`: some hosts are left out of automatic HTTPS.
+    pub hosts_skipped: bool,
 }
 
 /// One TLS connection policy of a server, reduced to access signals.
@@ -106,21 +123,32 @@ pub enum ClientAuthMode {
     VerifyIfGiven,
     /// `require_and_verify`: needs a certificate that verifies.
     RequireAndVerify,
-    /// No `mode`, but trust material is configured; Caddy picks the mode.
+    /// No `mode`, but trusted certificates or verifiers are configured;
+    /// Caddy picks the mode.
     Implicit,
 }
 
 /// One route: matcher sets, then a chain of handlers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Route {
-    /// Sanitized `group` name. Only the first matching route of a group runs.
-    pub group: Option<String>,
+    /// The route's `group`. Only the first matching route of a group runs.
+    pub group: Option<RouteGroup>,
     /// Matcher sets, of which any one must match. Empty matches every request.
     pub matchers: Vec<MatcherSet>,
     /// Handlers in chain order.
     pub handlers: Vec<Handler>,
     /// Whether no later route runs after this one matched.
     pub terminal: bool,
+}
+
+/// A route `group`. Routes are in the same group exactly when their `id`s
+/// are equal; the label is for display and may be cut short.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteGroup {
+    /// Number assigned to the full group name, unique within one config.
+    pub id: usize,
+    /// Sanitized, length-bounded group name.
+    pub label: String,
 }
 
 /// One matcher set: every matcher in it must match.
@@ -177,6 +205,13 @@ pub enum UncertaintyKind {
     UnmodeledAuthProvider,
     /// A client authentication `mode` the model does not know.
     UnknownClientAuthMode,
+    /// Client certificate `verifiers`, whose checks are not modeled.
+    ClientCertificateVerifier,
+    /// A responder that passes the request on when it cannot answer, e.g.
+    /// `file_server` with `pass_thru`.
+    ConditionalFallthrough,
+    /// `handle_response` routes other than the `forward_auth` shape.
+    ResponseHandling,
     /// Subroutes nested deeper than [`MAX_ROUTE_DEPTH`].
     NestingTooDeep,
     /// A value of the wrong shape or an invalid address.
@@ -199,6 +234,9 @@ impl fmt::Display for UncertaintyKind {
             Self::UnmodeledServerFeature => "unmodeled server feature",
             Self::UnmodeledAuthProvider => "unmodeled authentication provider",
             Self::UnknownClientAuthMode => "unknown client authentication mode",
+            Self::ClientCertificateVerifier => "client certificate verifier",
+            Self::ConditionalFallthrough => "conditional fall-through",
+            Self::ResponseHandling => "proxy response handling",
             Self::NestingTooDeep => "subroutes nested too deep",
             Self::Malformed => "malformed value",
         })
