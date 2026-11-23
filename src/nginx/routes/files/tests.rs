@@ -11,6 +11,7 @@ enum Entry {
     Text(String),
     Bytes(Vec<u8>),
     Special,
+    Kernel,
     Fails(ErrorKind),
 }
 
@@ -34,6 +35,7 @@ impl ConfigFiles for FakeFiles {
         let bytes = match self.0.get(path) {
             None => return Ok(FileRead::Missing),
             Some(Entry::Special) => return Ok(FileRead::NotRegular),
+            Some(Entry::Kernel) => return Ok(FileRead::KernelFile),
             Some(Entry::Fails(kind)) => return Err(io::Error::from(*kind)),
             Some(Entry::Text(text)) => text.as_bytes().to_vec(),
             Some(Entry::Bytes(bytes)) => bytes.clone(),
@@ -72,6 +74,11 @@ impl ConfigFiles for FakeFiles {
                 })
                 .collect(),
         ))
+    }
+
+    fn exists(&self, path: &str) -> io::Result<bool> {
+        let prefix = format!("{path}/");
+        Ok(self.0.contains_key(path) || self.0.keys().any(|key| key.starts_with(&prefix)))
     }
 }
 
@@ -211,6 +218,32 @@ fn bracket_classes_expand_like_glob() {
 }
 
 #[test]
+fn posix_classes_and_cross_directory_globs_give_the_right_routes() {
+    let files = FakeFiles::default()
+        .text(
+            MAIN,
+            "http { include conf.d/site[[:digit:]].conf; include snippets/*.conf; }",
+        )
+        .text("/etc/nginx/conf.d/site1.conf", "server { listen 81; }")
+        .text("/etc/nginx/conf.d/siteA.conf", "server { listen 82; }")
+        .text("/etc/nginx/snippets/nested/x.conf", "server { listen 83; }");
+    let dump = read_config(MAIN, &files).unwrap();
+    let config = parse_nginx_config(&dump).unwrap();
+    assert!(
+        config.uncertainties.is_empty(),
+        "{:?}",
+        config.uncertainties
+    );
+    let ports: Vec<u16> = config
+        .servers
+        .iter()
+        .flat_map(|server| &server.listens)
+        .map(|listen| listen.port)
+        .collect();
+    assert_eq!(ports, [81]);
+}
+
+#[test]
 fn expands_wildcards_in_directory_components() {
     let files = FakeFiles::default()
         .text(MAIN, "http { include /srv/vhosts/*/site.conf; }")
@@ -229,6 +262,7 @@ fn expands_wildcards_in_directory_components() {
 fn unsafe_or_unreadable_files_fail_cleanly() {
     let cases = [
         (Entry::Special, "not a regular file"),
+        (Entry::Kernel, "a file on a kernel pseudo-filesystem"),
         (Entry::Bytes(vec![b'#', 0xff]), "not valid UTF-8"),
     ];
     for (entry, reason) in cases {
@@ -328,6 +362,18 @@ fn byte_file_and_depth_limits_are_enforced() {
             .matches("# configuration")
             .count(),
         1
+    );
+
+    // Literal parts after a wildcard are looked up, not listed.
+    let mut literal_tail = FakeFiles::default().text(MAIN, "include /srv/*/conf/routes.conf;");
+    literal_tail = literal_tail.text("/srv/app/conf/routes.conf", "server { listen 81; }");
+    for index in 0..MAX_GLOB_ENTRIES {
+        literal_tail = literal_tail.text(&format!("/srv/app/{index:06}.txt"), "");
+    }
+    assert!(
+        read_config(MAIN, &literal_tail)
+            .unwrap()
+            .contains("/srv/app/conf/routes.conf:")
     );
 
     let mut huge_dir = FakeFiles::default().text(MAIN, "include conf.d/*.conf;");

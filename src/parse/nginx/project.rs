@@ -1,17 +1,14 @@
 //! Secret-minimizing projection from temporary Nginx AST into [`NginxConfig`].
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::nginx::{AuthSignals, NginxConfig, UncertaintyKind, UpstreamGroup};
 use crate::sanitize::sanitize;
 
 use super::directives::{
-    ScopeAclState, ScopeKind, apply_shared_directive, glob_match, is_benign_top_level,
+    ScopeAclState, ScopeKind, apply_shared_directive, is_benign_top_level,
     is_benign_upstream_directive, is_secret_bearing, record_common_uncertainty,
-    resolve_relative_pattern,
 };
-use super::includes::is_glob_component;
 use super::listen::push_uncertainty;
 use super::parser::{Directive, FileAst};
 use super::target::parse_upstream_server;
@@ -167,7 +164,9 @@ impl<'a> Projector<'a> {
                     true,
                 ) {
                     self.consumed[included] = true;
+                    visited.insert(included);
                     self.project_top_level_file(&self.files[included], saw_stream, visited);
+                    visited.remove(&included);
                 }
             }
             _ if is_benign_top_level(name) || is_secret_bearing(name) => {}
@@ -199,11 +198,13 @@ impl<'a> Projector<'a> {
                     ) {
                         self.consumed[included] = true;
                         let inc_file = &self.files[included];
+                        visited.insert(included);
                         self.collect_http_upstreams(
                             &inc_file.directives,
                             inc_file.source_file,
                             visited,
                         );
+                        visited.remove(&included);
                     }
                 }
                 _ => {}
@@ -310,6 +311,7 @@ impl<'a> Projector<'a> {
                     ) {
                         self.consumed[included] = true;
                         let inc_file = &self.files[included];
+                        visited.insert(included);
                         self.project_http_directives(
                             &inc_file.directives,
                             inc_file.source_file,
@@ -317,6 +319,7 @@ impl<'a> Projector<'a> {
                             http_acl,
                             visited,
                         );
+                        visited.remove(&included);
                     }
                 }
                 _ => apply_shared_directive(
@@ -333,67 +336,5 @@ impl<'a> Projector<'a> {
         for directive in server_directives {
             self.project_server(directive, source_file, *http_auth);
         }
-    }
-
-    pub(super) fn resolve_include(
-        &mut self,
-        args: &[Cow<'_, str>],
-        source_file: Option<&'a str>,
-        line: usize,
-        visited: &mut BTreeSet<usize>,
-        report_missing_literal: bool,
-    ) -> Vec<usize> {
-        let Some(pattern) = args.first().filter(|_| args.len() == 1) else {
-            push_uncertainty(
-                &mut self.config.uncertainties,
-                UncertaintyKind::InvalidDirective,
-                "include",
-                source_file,
-                line,
-            );
-            return Vec::new();
-        };
-        let pattern = pattern.as_ref();
-        if pattern.contains('$') {
-            push_uncertainty(
-                &mut self.config.uncertainties,
-                UncertaintyKind::DynamicInclude,
-                "include",
-                source_file,
-                line,
-            );
-            return Vec::new();
-        }
-
-        // Nginx resolves relative includes against the configuration prefix,
-        // the directory of the main file, which comes first in the dump.
-        let main_file = self.files.first().and_then(|file| file.source_file);
-        let resolved_pattern = resolve_relative_pattern(main_file, pattern);
-        let is_glob = is_glob_component(pattern);
-        let mut matched = Vec::new();
-
-        for (index, file) in self.files.iter().enumerate() {
-            let Some(candidate) = file.source_file else {
-                continue;
-            };
-            let matches_pattern = glob_match(pattern, candidate)
-                || resolved_pattern
-                    .as_deref()
-                    .is_some_and(|rel| glob_match(rel, candidate));
-            if matches_pattern && visited.insert(index) {
-                matched.push(index);
-            }
-        }
-
-        if matched.is_empty() && !is_glob && report_missing_literal {
-            push_uncertainty(
-                &mut self.config.uncertainties,
-                UncertaintyKind::UnresolvedInclude,
-                "include",
-                source_file,
-                line,
-            );
-        }
-        matched
     }
 }

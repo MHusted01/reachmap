@@ -555,10 +555,13 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
 - **Which files.** `nginx -V` names the main file (`--conf-path`, relative to
   `--prefix`, or `<prefix>/conf/nginx.conf`). reachmap follows `include` like
   Nginx: relative paths start at the main file's directory, `*`, `?` and
-  `[...]` match within each path component in sorted order and skip hidden
-  files, and each file is read once. Only regular files are opened (symlinks
-  are followed); a directory, FIFO, socket or device fails the scan, and so
-  does a matching file name that is not UTF-8. An include that names a missing
+  `[...]` (including POSIX classes such as `[[:digit:]]`) match within each
+  path component in sorted order and skip hidden files, and each file is read
+  once. Only regular files on disk filesystems are opened (symlinks are
+  followed); a directory, FIFO, socket, device or file on a kernel
+  filesystem such as `/proc` or `/sys` fails the scan, and so does a matching
+  file name that is not UTF-8. An include cycle, which Nginx rejects, is
+  reported as an unresolved include. An include that names a missing
   file or uses a variable is reported as a configuration uncertainty. A quoted
   `--conf-path` in `nginx -V` is not guessed at: the scan fails instead.
 - **Separate layers.** Frontend `listen` listener state, backend target

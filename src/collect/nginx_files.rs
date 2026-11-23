@@ -12,6 +12,10 @@ pub(crate) enum FileRead {
     Missing,
     /// The path is a directory, FIFO, socket or device; it is never read.
     NotRegular,
+    /// A regular file on a kernel pseudo-filesystem such as procfs or sysfs,
+    /// where reading can have side effects (`/proc/kmsg` consumes kernel
+    /// messages); it is never read.
+    KernelFile,
     /// The file is longer than the byte limit it was read with.
     TooLarge,
     /// The whole file.
@@ -46,6 +50,10 @@ pub(crate) trait ConfigFiles {
 
     /// Lists the directory `dir` if it has at most `limit` entries.
     fn list(&self, dir: &str, limit: usize) -> io::Result<DirList>;
+
+    /// Whether anything exists at `path`, without following a final symlink,
+    /// as `glob()` checks the literal parts of a pattern.
+    fn exists(&self, path: &str) -> io::Result<bool>;
 }
 
 /// The real filesystem. A file is first pinned with `O_PATH`, which opens
@@ -63,7 +71,7 @@ impl ConfigFiles for DiskFiles {
         use std::io::Read;
         use std::os::fd::AsRawFd;
 
-        use rustix::fs::{FileType, Mode, OFlags, fstat, open};
+        use rustix::fs::{FileType, Mode, OFlags, fstat, fstatfs, open};
 
         let pinned = match open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
             Ok(fd) => fd,
@@ -78,6 +86,9 @@ impl ConfigFiles for DiskFiles {
         };
         if FileType::from_raw_mode(fstat(&pinned)?.st_mode) != FileType::RegularFile {
             return Ok(FileRead::NotRegular);
+        }
+        if KERNEL_FILESYSTEMS.contains(&i128::from(fstatfs(&pinned)?.f_type)) {
+            return Ok(FileRead::KernelFile);
         }
         let verified = format!("/proc/self/fd/{}", pinned.as_raw_fd());
         let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
@@ -112,7 +123,33 @@ impl ConfigFiles for DiskFiles {
         }
         Ok(DirList::Entries(names))
     }
+
+    fn exists(&self, path: &str) -> io::Result<bool> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(true),
+            Err(error) if is_missing(error.kind()) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
 }
+
+/// `statfs` magic numbers of kernel pseudo-filesystems whose regular files
+/// can change state or block when read: proc, sysfs, debugfs, tracefs,
+/// securityfs, cgroup, cgroup2, bpf, configfs, efivarfs and pstore.
+#[cfg(target_os = "linux")]
+const KERNEL_FILESYSTEMS: [i128; 11] = [
+    0x9fa0,
+    0x6265_6572,
+    0x6462_6720,
+    0x7472_6163,
+    0x7363_6673,
+    0x0027_e0eb,
+    0x6367_7270,
+    0xcafe_4a11,
+    0x6265_6570,
+    0xde5e_81e4,
+    0x6165_676c,
+];
 
 #[cfg(target_os = "linux")]
 fn is_missing(kind: io::ErrorKind) -> bool {
@@ -169,6 +206,30 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn never_reads_regular_files_on_kernel_filesystems() {
+        for path in ["/proc/self/status", "/sys/kernel/uevent_seqnum"] {
+            if std::path::Path::new(path).is_file() {
+                assert_eq!(
+                    DiskFiles.read(path, 1024).unwrap(),
+                    FileRead::KernelFile,
+                    "{path}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exists_does_not_follow_a_final_symlink() {
+        let dir = TempDir::new("nginx-files-exists");
+        dir.file("conf.d/a.conf", "");
+        symlink(dir.path().join("missing"), dir.path().join("dangling")).unwrap();
+        assert!(DiskFiles.exists(&text(&dir, "conf.d/a.conf")).unwrap());
+        assert!(DiskFiles.exists(&text(&dir, "dangling")).unwrap());
+        assert!(!DiskFiles.exists(&text(&dir, "missing")).unwrap());
+        assert!(!DiskFiles.exists(&text(&dir, "conf.d/a.conf/x")).unwrap());
     }
 
     #[test]

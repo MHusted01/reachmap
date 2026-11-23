@@ -571,3 +571,79 @@ fn top_level_include_cycles_end_as_unresolved_includes() {
             .any(|u| u.kind == UncertaintyKind::UnresolvedInclude)
     );
 }
+
+#[test]
+fn repeated_and_diamond_includes_are_not_cycles() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { include a.conf; include b.conf; }
+        # configuration file /etc/nginx/a.conf:
+        server {
+            listen 81;
+            location /one { include shared.conf; }
+            location /two { include shared.conf; }
+        }
+        # configuration file /etc/nginx/b.conf:
+        server { listen 82; location / { include shared.conf; } }
+        # configuration file /etc/nginx/shared.conf:
+        proxy_pass http://127.0.0.1:8080;
+        ",
+    )
+    .expect("valid repeated includes");
+
+    assert!(
+        config.uncertainties.is_empty(),
+        "{:?}",
+        config.uncertainties
+    );
+    let targets = config
+        .servers
+        .iter()
+        .flat_map(|server| &server.locations)
+        .filter(|location| matches!(location.target, Some(ProxyTarget::StaticHttp { .. })))
+        .count();
+    assert_eq!(targets, 3);
+}
+
+#[test]
+fn wildcard_include_cycles_are_reported() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { include cycle*.conf; }
+        # configuration file /etc/nginx/cycle1.conf:
+        include cycle*.conf;
+        server { listen 80; }
+        ",
+    )
+    .expect("a wildcard cycle is parsed");
+
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::UnresolvedInclude),
+        "{:?}",
+        config.uncertainties
+    );
+}
+
+#[test]
+fn include_globs_do_not_cross_directories() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http {
+            server { listen 81; location / { include snippets/[a-z]*.conf; } }
+            server { listen 82; location / { include snippets/nested/backend.conf; } }
+        }
+        # configuration file /etc/nginx/snippets/nested/backend.conf:
+        proxy_pass http://127.0.0.1:9000;
+        ",
+    )
+    .expect("valid nested snippet");
+
+    assert_eq!(config.servers[0].locations[0].target, None);
+    assert!(matches!(
+        config.servers[1].locations[0].target,
+        Some(ProxyTarget::StaticHttp { .. })
+    ));
+}

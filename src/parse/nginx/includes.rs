@@ -2,9 +2,16 @@
 //! running Nginx: the `include` patterns of one file, and the main
 //! configuration path from `nginx -V` build information.
 
-use super::directives::glob_match;
+use std::borrow::Cow;
+use std::collections::BTreeSet;
+
+use super::directives::resolve_relative_pattern;
+use super::glob::glob_match;
+use super::listen::push_uncertainty;
 use super::parser::Directive;
+use super::project::Projector;
 use super::{NginxParseError, lexer, parser};
+use crate::nginx::UncertaintyKind;
 
 /// Nginx's compiled-in prefix when `configure` was run without `--prefix`.
 const DEFAULT_PREFIX: &str = "/usr/local/nginx";
@@ -66,10 +73,12 @@ pub fn conf_path_from_build_info(build_info: &str) -> Option<String> {
     };
     let prefix = value("--prefix=").unwrap_or(DEFAULT_PREFIX);
     let conf = value("--conf-path=").unwrap_or(DEFAULT_CONF_PATH);
-    if [prefix, conf]
+    // An explicit empty `--prefix=` makes Nginx resolve a relative path from
+    // its startup directory, which reachmap cannot know.
+    let quoted = [prefix, conf]
         .iter()
-        .any(|value| value.starts_with(['\'', '"']))
-    {
+        .any(|value| value.starts_with(['\'', '"']));
+    if quoted || (prefix.is_empty() && !conf.starts_with('/')) {
         return None;
     }
     let path = if conf.starts_with('/') {
@@ -86,10 +95,102 @@ pub fn is_glob_component(component: &str) -> bool {
     component.contains(['*', '?', '['])
 }
 
+/// Whether `path` is named by the `include` pattern `pattern`, both absolute.
+/// Matching is per path component, as in `glob()`, so `*` never crosses `/`.
+pub fn include_path_matches(pattern: &str, path: &str) -> bool {
+    let mut pattern = pattern.split('/');
+    let mut path = path.split('/');
+    loop {
+        match (pattern.next(), path.next()) {
+            (None, None) => return true,
+            (Some(want), Some(have)) if is_glob_component(want) => {
+                if !matches_glob_component(want, have) {
+                    return false;
+                }
+            }
+            (Some(want), Some(have)) if want == have => {}
+            _ => return false,
+        }
+    }
+}
+
 /// Whether a directory entry matches one glob component. Like `glob()`, a
 /// leading `.` must be matched explicitly.
 pub fn matches_glob_component(component: &str, name: &str) -> bool {
     (!name.starts_with('.') || component.starts_with('.')) && glob_match(component, name)
+}
+
+impl<'a> Projector<'a> {
+    /// Returns the files an `include` directive names that are not already on
+    /// the current include chain (`visited`). A missing literal include, or a
+    /// match that would close a cycle, is reported as unresolved when
+    /// `report_missing_literal` is set.
+    pub(super) fn resolve_include(
+        &mut self,
+        args: &[Cow<'_, str>],
+        source_file: Option<&'a str>,
+        line: usize,
+        visited: &mut BTreeSet<usize>,
+        report_missing_literal: bool,
+    ) -> Vec<usize> {
+        let Some(pattern) = args.first().filter(|_| args.len() == 1) else {
+            push_uncertainty(
+                &mut self.config.uncertainties,
+                UncertaintyKind::InvalidDirective,
+                "include",
+                source_file,
+                line,
+            );
+            return Vec::new();
+        };
+        let pattern = pattern.as_ref();
+        if pattern.contains('$') {
+            push_uncertainty(
+                &mut self.config.uncertainties,
+                UncertaintyKind::DynamicInclude,
+                "include",
+                source_file,
+                line,
+            );
+            return Vec::new();
+        }
+
+        // Nginx resolves relative includes against the configuration prefix,
+        // the directory of the main file, which comes first in the dump.
+        let main_file = self.files.first().and_then(|file| file.source_file);
+        let full_pattern = resolve_relative_pattern(main_file, pattern);
+        let full_pattern = full_pattern.as_deref().unwrap_or(pattern);
+        let is_glob = is_glob_component(pattern);
+        let mut matched = Vec::new();
+        let mut cycle = false;
+
+        for (index, file) in self.files.iter().enumerate() {
+            let Some(candidate) = file.source_file else {
+                continue;
+            };
+            if !include_path_matches(full_pattern, candidate) {
+                continue;
+            }
+            // `visited` holds the files on the current include chain: matching
+            // one of them again is a cycle, which Nginx rejects.
+            if visited.contains(&index) {
+                cycle = true;
+            } else {
+                matched.push(index);
+            }
+        }
+
+        if report_missing_literal && (cycle || (matched.is_empty() && !is_glob)) {
+            push_uncertainty(
+                &mut self.config.uncertainties,
+                UncertaintyKind::UnresolvedInclude,
+                "include",
+                source_file,
+                line,
+            );
+        }
+        matched
+    }
 }
 
 #[cfg(test)]
@@ -163,6 +264,31 @@ mod tests {
         assert_eq!(conf_path_from_build_info(relative_prefix), None);
         let quoted = "configure arguments: --conf-path='/etc/my nginx/nginx.conf'";
         assert_eq!(conf_path_from_build_info(quoted), None);
+        let empty_prefix = "configure arguments: --prefix= --conf-path=conf/nginx.conf";
+        assert_eq!(conf_path_from_build_info(empty_prefix), None);
+        let empty_prefix_absolute =
+            "configure arguments: --prefix= --conf-path=/etc/nginx/nginx.conf";
+        assert_eq!(
+            conf_path_from_build_info(empty_prefix_absolute).as_deref(),
+            Some("/etc/nginx/nginx.conf")
+        );
+    }
+
+    #[test]
+    fn include_paths_match_per_component() {
+        let matches = include_path_matches;
+        assert!(matches(
+            "/etc/nginx/snippets/*.conf",
+            "/etc/nginx/snippets/a.conf"
+        ));
+        assert!(!matches(
+            "/etc/nginx/snippets/[a-z]*.conf",
+            "/etc/nginx/snippets/nested/backend.conf"
+        ));
+        assert!(matches("/srv/*/site.conf", "/srv/alpha/site.conf"));
+        assert!(!matches("/srv/*/site.conf", "/srv/site.conf"));
+        assert!(!matches("/etc/nginx/*", "/etc/nginx/.hidden"));
+        assert!(matches("/etc/nginx/a.conf", "/etc/nginx/a.conf"));
     }
 
     #[test]
@@ -188,5 +314,14 @@ mod tests {
             matches_glob_component("[x", "[x"),
             "an unclosed `[` is literal"
         );
+        assert!(matches_glob_component("site[[:digit:]].conf", "site1.conf"));
+        assert!(!matches_glob_component(
+            "site[[:digit:]].conf",
+            "siteA.conf"
+        ));
+        assert!(matches_glob_component("[[:alpha:]_]*", "_x"));
+        assert!(matches_glob_component("[![:space:]]", "a"));
+        assert!(!matches_glob_component("[[:bogus:]]", "b"));
+        assert!(matches_glob_component("[[.a.]]", "a"));
     }
 }

@@ -13,10 +13,12 @@ use thiserror::Error;
 use crate::nginx::NginxConfig;
 
 pub use includes::{
-    conf_path_from_build_info, include_patterns, is_glob_component, matches_glob_component,
+    conf_path_from_build_info, include_path_matches, include_patterns, is_glob_component,
+    matches_glob_component,
 };
 
 mod directives;
+mod glob;
 mod includes;
 mod lexer;
 mod listen;

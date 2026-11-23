@@ -99,6 +99,9 @@ impl<F: ConfigFiles> Walk<'_, F> {
         let bytes = match self.files.read(path, limit) {
             Ok(FileRead::Missing) => return Ok(None),
             Ok(FileRead::NotRegular) => return Err(unreadable(path, "not a regular file")),
+            Ok(FileRead::KernelFile) => {
+                return Err(unreadable(path, "a file on a kernel pseudo-filesystem"));
+            }
             Ok(FileRead::TooLarge) => return Err(too_large()),
             Ok(FileRead::Bytes(bytes)) => bytes,
             Err(error) => return Err(read_error(path, &error)),
@@ -124,13 +127,15 @@ impl<F: ConfigFiles> Walk<'_, F> {
         // literal components are looked up in their directory too.
         let mut expanding = false;
         for component in full.split('/').skip(1) {
-            expanding |= is_glob_component(component);
+            let glob = is_glob_component(component);
+            expanding |= glob;
             let mut next = Vec::new();
             for base in &paths {
-                if expanding {
+                let path = format!("{base}/{component}");
+                if glob {
                     self.extend_matches(base, component, &mut budget, &mut next)?;
-                } else {
-                    next.push(format!("{base}/{component}"));
+                } else if !expanding || self.exists(&path)? {
+                    next.push(path);
                 }
             }
             paths = next;
@@ -140,6 +145,12 @@ impl<F: ConfigFiles> Walk<'_, F> {
         }
         paths.sort_unstable();
         Ok(paths)
+    }
+
+    fn exists(&self, path: &str) -> Result<bool, NginxScanError> {
+        self.files
+            .exists(path)
+            .map_err(|error| read_error(path, &error))
     }
 
     /// Adds the entries of directory `base` that match `component`, scanning
