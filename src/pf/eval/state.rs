@@ -60,11 +60,22 @@ pub(super) enum Outcome {
     Unknown(Uncertain),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Stop {
+    None,
+    /// A `quick` anchor call matched at the end of its enclosing anchor;
+    /// cleared if unwinding through a non-quick outer anchor.
+    Anchor,
+    /// A `quick` filter rule, `set skip`, `unknown`, or a `quick` anchor
+    /// with following sibling rules ended the entire walk.
+    Full,
+}
+
 /// One state the packet could be in after the rules read so far.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct Path {
-    /// A `quick` rule (or `set skip`) ended the walk on this path.
-    pub(super) done: bool,
+    /// Whether evaluation stopped on this path, and how far it unwinds.
+    pub(super) stop: Stop,
     /// Whether any rule inside the current evaluation scope matched on this path.
     pub(super) matched: bool,
     pub(super) outcome: Outcome,
@@ -78,6 +89,10 @@ pub(super) struct Path {
 pub(super) type Paths = BTreeSet<Path>;
 
 impl Path {
+    pub(super) fn is_done(&self) -> bool {
+        self.stop != Stop::None
+    }
+
     pub(super) fn tagged(mut self, uncertain: Option<&Uncertain>) -> Self {
         if self.uncertain.is_none() {
             self.uncertain = uncertain.cloned();
@@ -95,7 +110,7 @@ impl Path {
 
 pub(super) fn unknown(construct: Construct, origin: &Origin) -> Paths {
     Paths::from([Path {
-        done: true,
+        stop: Stop::Full,
         matched: false,
         outcome: Outcome::Unknown(Uncertain {
             construct,

@@ -36,7 +36,8 @@ mod tests;
 /// The rules of anchors, keyed by anchor path.
 ///
 /// Nested relative anchors use slash-separated paths (such as `site/rules`),
-/// leading `/` resolves from the root, and `..` moves up one segment. For a
+/// leading `/` resolves from the root, and leading `../` segments move up one
+/// level. For a
 /// wildcard anchor such as `com.apple/*`, supply its direct children under
 /// keys like `com.apple/250.ApplicationFirewall` and include the wildcard key
 /// (`com.apple/*`) as a completeness marker; its own rules are not evaluated,

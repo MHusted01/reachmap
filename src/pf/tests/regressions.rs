@@ -9,6 +9,7 @@ const SCOPED_ANCHORS: &str = include_str!("../../../tests/fixtures/pf/scoped_anc
 const RDR_TARGET: &str = include_str!("../../../tests/fixtures/pf/rdr_target.txt");
 const BLOCK_RETURN_OPTIONS: &str =
     include_str!("../../../tests/fixtures/pf/block_return_options.txt");
+const SCRUB_FRAGMENTS: &str = include_str!("../../../tests/fixtures/pf/scrub_fragments.txt");
 
 #[test]
 fn quick_anchor_stops_after_a_matching_child_rule() {
@@ -592,5 +593,165 @@ fn earliest_ecn_sensitive_rule_is_named_in_reason() {
             22
         ),
         unknown("tcp flags (ECN) in rule at line 2")
+    );
+}
+
+#[test]
+fn nested_quick_anchor_unwinds_through_non_quick_outer_anchor() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let non_quick_outer = anchors(&[
+        ("outer", "anchor \"inner\" quick all"),
+        ("outer/inner", "block drop in all"),
+    ]);
+    assert_eq!(
+        check(
+            "anchor \"outer\" all\npass in all",
+            &non_quick_outer,
+            &packet
+        ),
+        pass_at(2)
+    );
+
+    let outer_with_more = anchors(&[
+        ("outer", "anchor \"inner\" quick all\npass in proto udp all"),
+        ("outer/inner", "block drop in all"),
+    ]);
+    assert_eq!(
+        check(
+            "anchor \"outer\" all\npass in all",
+            &outer_with_more,
+            &packet
+        ),
+        Verdict::Block {
+            reason: "matched block rule at line 1 of anchor \"outer/inner\"".to_string()
+        }
+    );
+
+    assert_eq!(
+        check(
+            "anchor \"outer\" quick all\npass in all",
+            &non_quick_outer,
+            &packet
+        ),
+        Verdict::Block {
+            reason: "matched block rule at line 1 of anchor \"outer/inner\"".to_string()
+        }
+    );
+
+    let inner_quick_rule = anchors(&[
+        ("outer", "anchor \"inner\" all"),
+        ("outer/inner", "block drop in quick all"),
+    ]);
+    assert_eq!(
+        check(
+            "anchor \"outer\" all\npass in all",
+            &inner_quick_rule,
+            &packet
+        ),
+        Verdict::Block {
+            reason: "matched block rule at line 1 of anchor \"outer/inner\"".to_string()
+        }
+    );
+}
+
+#[test]
+fn embedded_dot_dot_segments_in_anchor_paths_are_preserved() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let both = anchors(&[
+        ("rules", "block drop in all"),
+        (
+            "site/../rules",
+            "pass in proto tcp from any to any port = 22",
+        ),
+    ]);
+    assert_eq!(
+        check("anchor \"site/../rules\" all", &both, &packet),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"site/../rules\"".to_string()
+        }
+    );
+
+    let only_root = anchors(&[("rules", "block drop in all")]);
+    assert_eq!(
+        check("anchor \"site/../rules\" all", &only_root, &packet),
+        unknown("missing anchor ruleset in rule at line 1")
+    );
+}
+
+#[test]
+fn scrub_rules_that_can_change_filtering_yield_unknown() {
+    let udp_en0 = traffic("en0", Protocol::Udp, HOST, 5353);
+    assert_eq!(
+        check(SCRUB_FRAGMENTS, &Default::default(), &udp_en0),
+        unknown("normalization rule in rule at line 1")
+    );
+    assert_eq!(tcp(SCRUB_FRAGMENTS, "en0", 5353), block_at(2));
+    assert_eq!(
+        check(
+            SCRUB_FRAGMENTS,
+            &Default::default(),
+            &traffic("en1", Protocol::Udp, HOST, 5353)
+        ),
+        block_at(2)
+    );
+
+    let benign = "scrub in all fragment reassemble\nblock drop in all\npass in on en0 proto udp from any to any port = 5353";
+    assert_eq!(check(benign, &Default::default(), &udp_en0), pass_at(3));
+
+    let skipped = "set skip on lo0\nscrub in on lo0 all fragment crop\nblock drop in all";
+    assert_eq!(
+        tcp_to(skipped, "lo0", "127.0.0.1", 5353),
+        Verdict::Pass {
+            reason: "the interface is excluded by set skip".to_string()
+        }
+    );
+
+    let anchored = anchors(&[
+        ("com.apple/*", ""),
+        (
+            "com.apple/frag",
+            "scrub in on en0 proto udp all fragment drop-ovl",
+        ),
+    ]);
+    assert_eq!(
+        check(
+            "scrub-anchor \"com.apple/*\" all fragment reassemble\nanchor \"com.apple/*\" all",
+            &anchored,
+            &udp_en0
+        ),
+        unknown("normalization rule in rule at line 1 of anchor \"com.apple/frag\"")
+    );
+}
+
+#[test]
+fn duplicate_family_direction_and_protocol_clauses_are_rejected() {
+    let families = "block drop in quick inet inet6 all";
+    assert_eq!(
+        tcp(families, "en0", 22),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    assert_eq!(
+        tcp_to(families, "en0", "2001:db8::1", 22),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    assert_eq!(
+        tcp("block drop in out all", "en0", 22),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    assert_eq!(
+        tcp("block drop in proto tcp proto udp all", "en0", 22),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+}
+
+#[test]
+fn tos_condition_yields_named_unknown_with_line_number() {
+    assert_eq!(
+        check(
+            "block drop in quick inet proto udp all tos 0x10",
+            &Default::default(),
+            &traffic("en0", Protocol::Udp, HOST, 5353)
+        ),
+        unknown("tos condition in rule at line 1")
     );
 }

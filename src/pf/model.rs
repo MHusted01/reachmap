@@ -16,6 +16,7 @@ pub(super) enum Construct {
     Group,
     OsFingerprint,
     Translation,
+    Normalization,
     RouteTo,
     ReplyTo,
     Tagged,
@@ -26,6 +27,7 @@ pub(super) enum Construct {
     Probability,
     StateLimit,
     TcpEcnFlags,
+    Tos,
     UnrecognizedSyntax,
     UnparseableRule,
     MissingAnchor,
@@ -42,6 +44,7 @@ impl fmt::Display for Construct {
             Self::Group => "group condition",
             Self::OsFingerprint => "os fingerprint",
             Self::Translation => "translation rule",
+            Self::Normalization => "normalization rule",
             Self::RouteTo => "route-to option",
             Self::ReplyTo => "reply-to option",
             Self::Tagged => "tagged condition",
@@ -52,6 +55,7 @@ impl fmt::Display for Construct {
             Self::Probability => "probability",
             Self::StateLimit => "state limit",
             Self::TcpEcnFlags => "tcp flags (ECN)",
+            Self::Tos => "tos condition",
             Self::UnrecognizedSyntax => "unrecognized syntax",
             Self::UnparseableRule => "unparseable text",
             Self::MissingAnchor => "missing anchor ruleset",
@@ -132,29 +136,37 @@ impl AnchorName {
     }
 
     pub(super) fn resolve(&self, parent: Option<&Self>) -> Option<Self> {
-        let mut parts = Vec::new();
-        let relative = match self.lookup.strip_prefix('/') {
-            Some(absolute) => absolute,
-            None => {
-                if let Some(parent) = parent {
-                    let base = parent.lookup.strip_suffix("/*").unwrap_or(&parent.lookup);
-                    if base != "*" {
-                        parts.extend(base.split('/').filter(|part| !part.is_empty()));
-                    }
-                }
-                &self.lookup
-            }
-        };
-        for segment in relative.split('/') {
-            match segment {
-                "" | "." => {}
-                ".." => {
-                    parts.pop()?;
-                }
-                _ => parts.push(segment),
-            }
+        if let Some(absolute) = self.lookup.strip_prefix('/') {
+            let trimmed = absolute.trim_start_matches('/');
+            return (!trimmed.is_empty()).then(|| Self::new(trimmed));
         }
-        (!parts.is_empty()).then(|| Self::new(&parts.join("/")))
+        if self.lookup.is_empty() {
+            return None;
+        }
+        let mut base: Vec<&str> = match parent {
+            Some(parent) => {
+                let prefix = parent.lookup.strip_suffix("/*").unwrap_or(&parent.lookup);
+                if prefix == "*" {
+                    Vec::new()
+                } else {
+                    prefix.split('/').filter(|part| !part.is_empty()).collect()
+                }
+            }
+            None => Vec::new(),
+        };
+        let mut rest = self.lookup.as_str();
+        while let Some(next) = rest.strip_prefix("../") {
+            base.pop()?;
+            rest = next;
+        }
+        if rest.is_empty() {
+            return None;
+        }
+        if base.is_empty() {
+            Some(Self::new(rest))
+        } else {
+            Some(Self::new(&format!("{}/{rest}", base.join("/"))))
+        }
     }
 
     pub(super) fn is_wildcard(&self) -> bool {
@@ -226,6 +238,13 @@ pub(super) enum Kind {
     Translation {
         criteria: Criteria,
         target: TranslationTarget,
+    },
+    Scrub {
+        criteria: Criteria,
+    },
+    ScrubAnchor {
+        name: AnchorName,
+        criteria: Criteria,
     },
     Unparseable,
 }
