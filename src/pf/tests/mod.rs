@@ -6,10 +6,12 @@ use crate::socket::Protocol;
 
 use super::{AnchorRulesets, Ruleset, Traffic, Verdict};
 
-const DEFAULT_MACOS: &str = include_str!("../../tests/fixtures/pf/default_macos.txt");
-const DEFAULT_BLOCK: &str = include_str!("../../tests/fixtures/pf/default_block.txt");
-const QUICK_ORDER: &str = include_str!("../../tests/fixtures/pf/quick_order.txt");
-const CONDITIONS: &str = include_str!("../../tests/fixtures/pf/conditions.txt");
+mod regressions;
+
+const DEFAULT_MACOS: &str = include_str!("../../../tests/fixtures/pf/default_macos.txt");
+const DEFAULT_BLOCK: &str = include_str!("../../../tests/fixtures/pf/default_block.txt");
+const QUICK_ORDER: &str = include_str!("../../../tests/fixtures/pf/quick_order.txt");
+const CONDITIONS: &str = include_str!("../../../tests/fixtures/pf/conditions.txt");
 
 const HOST: &str = "192.0.2.10";
 
@@ -520,16 +522,16 @@ fn supplied_anchor_rules_are_evaluated_in_place_of_the_anchor_line() {
 fn anchors_nest_and_nesting_is_bounded() {
     let nested = anchors(&[
         ("a", "anchor \"b\" all"),
-        ("b", "pass in proto tcp from any to any port = 22"),
+        ("a/b", "pass in proto tcp from any to any port = 22"),
     ]);
     let traffic = traffic("en0", Protocol::Tcp, HOST, 22);
     assert_eq!(
         check("block drop in all\nanchor \"a\" all", &nested, &traffic),
         Verdict::Pass {
-            reason: "matched pass rule at line 1 of anchor \"b\"".to_string()
+            reason: "matched pass rule at line 1 of anchor \"a/b\"".to_string()
         }
     );
-    let looping = anchors(&[("loop", "anchor \"loop\" all")]);
+    let looping = anchors(&[("loop", "anchor \"/loop\" all")]);
     assert_eq!(
         check("anchor \"loop\" all", &looping, &traffic),
         unknown("anchor nesting too deep in rule at line 1 of anchor \"loop\"")

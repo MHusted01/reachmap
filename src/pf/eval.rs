@@ -7,10 +7,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use crate::sanitize::sanitize;
-
 use super::matching::Match;
-use super::model::{Action, Construct, Kind, Ruleset, is_group_name};
+use super::model::{Action, AnchorName, Construct, Kind, Ruleset, is_group_name};
 use super::{AnchorRulesets, Traffic, Verdict};
 
 /// Anchors may contain anchors. Deeper than this the walk gives up.
@@ -24,10 +22,10 @@ struct Origin {
 }
 
 impl Origin {
-    fn new(line: usize, anchor: Option<&str>) -> Self {
+    fn new(line: usize, anchor: Option<&AnchorName>) -> Self {
         Self {
             line,
-            anchor: anchor.map(sanitize),
+            anchor: anchor.map(|name| name.display().to_string()),
         }
     }
 }
@@ -75,6 +73,8 @@ enum Outcome {
 struct Path {
     /// A `quick` rule (or `set skip`) ended the walk on this path.
     done: bool,
+    /// Whether any rule inside the current evaluation scope matched on this path.
+    matched: bool,
     outcome: Outcome,
     /// The most recent rule that only *might* have put the path here.
     uncertain: Option<Uncertain>,
@@ -97,12 +97,18 @@ pub(super) fn evaluate(
     traffic: &Traffic<'_>,
 ) -> Verdict {
     let walker = Walker { anchors, traffic };
-    if let Some(translation) = walker.translation(rules, None, 0) {
-        return Verdict::Unknown {
-            reason: translation.to_string(),
-        };
-    }
     let start = walker.skipped(rules);
+    if start.iter().all(|path| path.done) {
+        return verdict(&start);
+    }
+    if let Some(translation) = walker.translation(rules, None, 0) {
+        let (finished, _): (Paths, Paths) = start.into_iter().partition(|path| path.done);
+        let paths = finished
+            .into_iter()
+            .chain(unknown(translation.construct, &translation.origin))
+            .collect();
+        return verdict(&paths);
+    }
     verdict(&walker.run(rules, None, 0, start))
 }
 
@@ -117,21 +123,24 @@ impl Walker<'_> {
     fn translation(
         &self,
         rules: &Ruleset,
-        anchor: Option<&str>,
+        anchor: Option<&AnchorName>,
         depth: usize,
     ) -> Option<Uncertain> {
         rules.entries.iter().find_map(|entry| match &entry.kind {
-            Kind::Translation { criteria } if criteria.matches(self.traffic) != Match::No => {
+            Kind::Translation { criteria, target }
+                if criteria.matches_translation(target, self.traffic) != Match::No =>
+            {
                 Some(Uncertain {
-                    construct: Construct::Translation,
                     origin: Origin::new(entry.line, anchor),
+                    construct: Construct::Translation,
                 })
             }
             Kind::Anchor { name, criteria }
                 if depth < MAX_ANCHOR_DEPTH && criteria.matches(self.traffic) != Match::No =>
             {
-                let body = self.anchors.get(name)?;
-                self.translation(body, Some(name), depth + 1)
+                let resolved = name.resolve(anchor);
+                let body = self.anchors.get(resolved.lookup())?;
+                self.translation(body, Some(&resolved), depth + 1)
             }
             _ => None,
         })
@@ -141,6 +150,7 @@ impl Walker<'_> {
     fn skipped(&self, rules: &Ruleset) -> Paths {
         let mut paths = Paths::from([Path {
             done: false,
+            matched: false,
             outcome: Outcome::Pass(Cause::Default),
             uncertain: None,
         }]);
@@ -155,6 +165,7 @@ impl Walker<'_> {
                 live.iter()
                     .map(|_| Path {
                         done: true,
+                        matched: false,
                         outcome: Outcome::Pass(Cause::Skip),
                         uncertain: uncertain.cloned(),
                     })
@@ -164,15 +175,28 @@ impl Walker<'_> {
         paths
     }
 
-    fn run(&self, rules: &Ruleset, anchor: Option<&str>, depth: usize, start: Paths) -> Paths {
+    fn run(
+        &self,
+        rules: &Ruleset,
+        anchor: Option<&AnchorName>,
+        depth: usize,
+        start: Paths,
+    ) -> Paths {
         rules.entries.iter().fold(start, |paths, entry| {
             let origin = Origin::new(entry.line, anchor);
             match &entry.kind {
                 Kind::Filter { action, criteria } => {
-                    let cause = Cause::Rule(origin.clone());
-                    let outcome = match action {
-                        Action::Pass => Outcome::Pass(cause),
-                        Action::Block => Outcome::Block(cause),
+                    let outcome = if let Some(construct) = criteria.effect_construct() {
+                        Outcome::Unknown(Uncertain {
+                            origin: origin.clone(),
+                            construct,
+                        })
+                    } else {
+                        let cause = Cause::Rule(origin.clone());
+                        match action {
+                            Action::Pass => Outcome::Pass(cause),
+                            Action::Block => Outcome::Block(cause),
+                        }
                     };
                     branch(
                         paths,
@@ -182,6 +206,7 @@ impl Walker<'_> {
                             live.iter()
                                 .map(|_| Path {
                                     done: criteria.quick,
+                                    matched: true,
                                     outcome: outcome.clone(),
                                     uncertain: uncertain.cloned(),
                                 })
@@ -194,7 +219,7 @@ impl Walker<'_> {
                     criteria.matches(self.traffic),
                     &origin,
                     |live, uncertain| {
-                        self.enter(name, &origin, depth, live)
+                        self.enter(name, anchor, criteria.quick, &origin, depth, live)
                             .into_iter()
                             .map(|path| path.tagged(uncertain))
                             .collect()
@@ -214,20 +239,52 @@ impl Walker<'_> {
     /// Runs the supplied rules of an anchor in place of its `anchor` line.
     /// Without them nothing can be said, and a `quick` rule inside could have
     /// ended the walk, so the path stops there as unknown.
-    fn enter(&self, name: &str, origin: &Origin, depth: usize, live: Paths) -> Paths {
-        let Some(body) = self.anchors.get(name) else {
+    fn enter(
+        &self,
+        name: &AnchorName,
+        parent: Option<&AnchorName>,
+        anchor_quick: bool,
+        origin: &Origin,
+        depth: usize,
+        live: Paths,
+    ) -> Paths {
+        let resolved = name.resolve(parent);
+        let Some(body) = self.anchors.get(resolved.lookup()) else {
             return unknown(Construct::MissingAnchor, origin);
         };
         if depth >= MAX_ANCHOR_DEPTH {
             return unknown(Construct::AnchorTooDeep, origin);
         }
-        self.run(body, Some(name), depth + 1, live)
+        let (prev_matched, prev_unmatched): (Paths, Paths) =
+            live.into_iter().partition(|path| path.matched);
+        let mut out = Paths::new();
+        for (was_matched, bucket) in [(false, prev_unmatched), (true, prev_matched)] {
+            if bucket.is_empty() {
+                continue;
+            }
+            let reset: Paths = bucket
+                .into_iter()
+                .map(|mut path| {
+                    path.matched = false;
+                    path
+                })
+                .collect();
+            for mut path in self.run(body, Some(&resolved), depth + 1, reset) {
+                if anchor_quick && path.matched {
+                    path.done = true;
+                }
+                path.matched = path.matched || was_matched;
+                out.insert(path);
+            }
+        }
+        out
     }
 }
 
 fn unknown(construct: Construct, origin: &Origin) -> Paths {
     Paths::from([Path {
         done: true,
+        matched: false,
         outcome: Outcome::Unknown(Uncertain {
             construct,
             origin: origin.clone(),

@@ -33,8 +33,10 @@ pub use model::Ruleset;
 #[cfg(test)]
 mod tests;
 
-/// The rules of anchors, by the name the `anchor` line uses (a wildcard such
-/// as `com.apple/*` is looked up as written).
+/// The rules of anchors, keyed by anchor path (a wildcard such as
+/// `com.apple/*` is looked up as written; nested relative anchors use
+/// slash-separated paths such as `site/rules`, while names starting with `/`
+/// resolve from the root).
 pub type AnchorRulesets = BTreeMap<String, Ruleset>;
 
 /// A new inbound TCP connection or UDP datagram to a local address.
@@ -44,7 +46,9 @@ pub struct Traffic<'a> {
     pub interface: &'a str,
     /// Transport protocol of the listening socket.
     pub protocol: Protocol,
-    /// The local address the packet is sent to.
+    /// The local address the packet is sent to. For a dual-stack socket
+    /// receiving IPv4 traffic, pass the IPv4 address rather than an
+    /// IPv4-mapped IPv6 address.
     pub destination: IpAddr,
     /// The local port the packet is sent to.
     pub port: u16,

@@ -1,0 +1,2 @@
+rdr pass on en0 inet proto tcp from any to any port = 80 -> 192.0.2.10 port 8080
+block drop in all

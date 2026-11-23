@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use crate::sanitize::sanitize;
 use crate::socket::AddressFamily;
 
 use super::fields::{Cidr, PortMatch, TcpFlags};
@@ -23,6 +24,7 @@ pub(super) enum Construct {
     DynamicAddress,
     List,
     Probability,
+    StateLimit,
     UnrecognizedSyntax,
     UnparseableRule,
     MissingAnchor,
@@ -47,6 +49,7 @@ impl fmt::Display for Construct {
             Self::DynamicAddress => "dynamic address",
             Self::List => "list",
             Self::Probability => "probability",
+            Self::StateLimit => "state limit",
             Self::UnrecognizedSyntax => "unrecognized syntax",
             Self::UnparseableRule => "unparseable text",
             Self::MissingAnchor => "missing anchor ruleset",
@@ -101,6 +104,77 @@ pub(super) struct Endpoint {
     pub port: Option<PortMatch>,
 }
 
+/// An anchor reference: keeps the raw key for [`super::AnchorRulesets`] lookup
+/// and a sanitized display string so diagnostics and `Debug` never emit raw
+/// control characters.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct AnchorName {
+    lookup: String,
+    display: String,
+}
+
+impl AnchorName {
+    pub(super) fn new(raw: &str) -> Self {
+        Self {
+            lookup: raw.to_string(),
+            display: sanitize(raw),
+        }
+    }
+
+    pub(super) fn lookup(&self) -> &str {
+        &self.lookup
+    }
+
+    pub(super) fn display(&self) -> &str {
+        &self.display
+    }
+
+    pub(super) fn resolve(&self, parent: Option<&Self>) -> Self {
+        if let Some(absolute) = self.lookup.strip_prefix('/') {
+            return Self::new(absolute);
+        }
+        let Some(parent) = parent else {
+            return self.clone();
+        };
+        let base = parent
+            .lookup
+            .strip_suffix("/*")
+            .unwrap_or(&parent.lookup)
+            .trim_end_matches('/');
+        if base.is_empty() || base == "*" {
+            self.clone()
+        } else {
+            Self::new(&format!("{base}/{}", self.lookup))
+        }
+    }
+}
+
+impl fmt::Debug for AnchorName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.display, f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TargetPort {
+    Inherit,
+    Match(PortMatch),
+    Any,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct TargetEndpoint {
+    pub address: Option<Address>,
+    pub port: TargetPort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TranslationTarget {
+    None,
+    Any,
+    Endpoint(TargetEndpoint),
+}
+
 /// Every condition of a rule that the evaluator understands, plus the first
 /// construct it does not. Parsing stops at that construct, so the conditions
 /// after it are not recorded: the rule then matches at least as often as in pf.
@@ -115,13 +189,23 @@ pub(super) struct Criteria {
     pub destination: Endpoint,
     pub flags: Option<TcpFlags>,
     pub unsupported: Option<Construct>,
+    pub effect_unsupported: Option<Construct>,
 }
 
 #[derive(Debug)]
 pub(super) enum Kind {
-    Filter { action: Action, criteria: Criteria },
-    Anchor { name: String, criteria: Criteria },
-    Translation { criteria: Criteria },
+    Filter {
+        action: Action,
+        criteria: Criteria,
+    },
+    Anchor {
+        name: AnchorName,
+        criteria: Criteria,
+    },
+    Translation {
+        criteria: Criteria,
+        target: TranslationTarget,
+    },
     Unparseable,
 }
 

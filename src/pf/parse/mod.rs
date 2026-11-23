@@ -6,14 +6,19 @@
 use std::iter::Peekable;
 use std::vec::IntoIter;
 
+use crate::sanitize::sanitize;
 use crate::socket::AddressFamily;
 
-use super::fields::{Cidr, Operator, PortMatch, RangeKind, TcpFlags, port_number};
+use super::fields::{Operator, PortMatch, TcpFlags};
 use super::lex::{Token, tokenize};
 use super::model::{
-    Action, Address, Construct, Criteria, Direction, Endpoint, Entry, InterfaceMatch, Kind,
-    RuleProtocol, Ruleset, Skip, is_group_name,
+    Action, AnchorName, Construct, Criteria, Direction, Entry, Kind, RuleProtocol, Ruleset, Skip,
+    TargetEndpoint, TargetPort, TranslationTarget,
 };
+
+mod endpoints;
+
+use endpoints::{address, endpoint, interface, next_word, port, protocol};
 
 type Cursor<'a> = Peekable<IntoIter<Token<'a>>>;
 
@@ -76,7 +81,7 @@ fn parse_line(line: &str) -> Parsed {
 fn filter(action: Action, cursor: &mut Cursor<'_>) -> Parsed {
     Parsed::Entry(Kind::Filter {
         action,
-        criteria: criteria(cursor),
+        criteria: criteria(cursor, false).0,
     })
 }
 
@@ -85,8 +90,8 @@ fn anchor(cursor: &mut Cursor<'_>) -> Parsed {
         return Parsed::Entry(Kind::Unparseable);
     };
     Parsed::Entry(Kind::Anchor {
-        name: name.to_string(),
-        criteria: criteria(cursor),
+        name: AnchorName::new(name),
+        criteria: criteria(cursor, false).0,
     })
 }
 
@@ -102,9 +107,39 @@ fn translation(first: &str, cursor: &mut Cursor<'_>) -> Parsed {
         return Parsed::Entry(Kind::Unparseable);
     }
     cursor.next_if(|token| *token == Token::Word("pass"));
-    Parsed::Entry(Kind::Translation {
-        criteria: criteria(cursor),
-    })
+    let (criteria, saw_arrow) = criteria(cursor, true);
+    let target = match first {
+        "no" | "nat" => TranslationTarget::None,
+        "rdr-anchor" | "nat-anchor" | "binat-anchor" => TranslationTarget::Any,
+        _ if criteria.protocol == Some(RuleProtocol::Other) => TranslationTarget::None,
+        _ if criteria.unsupported.is_some() => TranslationTarget::Any,
+        _ if !saw_arrow => return Parsed::Entry(Kind::Unparseable),
+        _ => parse_translation_target(cursor, &criteria),
+    };
+    Parsed::Entry(Kind::Translation { criteria, target })
+}
+
+fn parse_translation_target(cursor: &mut Cursor<'_>, criteria: &Criteria) -> TranslationTarget {
+    if matches!(cursor.peek(), None | Some(Token::Open)) {
+        return TranslationTarget::Any;
+    }
+    let address = address(cursor).ok();
+    let port = if cursor
+        .next_if(|token| *token == Token::Word("port"))
+        .is_some()
+    {
+        let exact_src = matches!(
+            criteria.destination.port,
+            None | Some(PortMatch::Compare(Operator::Eq, _))
+        );
+        match port(cursor) {
+            Ok(parsed) if exact_src => TargetPort::Match(parsed),
+            _ => TargetPort::Any,
+        }
+    } else {
+        TargetPort::Inherit
+    };
+    TranslationTarget::Endpoint(TargetEndpoint { address, port })
 }
 
 /// `set skip on ...` is the only `set` statement that changes which packets
@@ -124,15 +159,15 @@ fn set_option(cursor: &mut Cursor<'_>) -> Parsed {
 
 fn skip_names(cursor: &mut Cursor<'_>) -> Option<Vec<String>> {
     match cursor.next()? {
-        Token::Word(name) => Some(vec![name.to_string()]),
+        Token::Word(name) if sanitize(name) == name => Some(vec![name.to_string()]),
         Token::Open => {
             let mut names = Vec::new();
             loop {
                 match cursor.next()? {
-                    Token::Word(name) => names.push(name.to_string()),
+                    Token::Word(name) if sanitize(name) == name => names.push(name.to_string()),
                     Token::Comma => {}
                     Token::Close => return Some(names),
-                    Token::Quoted(_) | Token::Open => return None,
+                    _ => return None,
                 }
             }
         }
@@ -140,13 +175,17 @@ fn skip_names(cursor: &mut Cursor<'_>) -> Option<Vec<String>> {
     }
 }
 
-/// Reads conditions until the line ends, a translation target (`->`) starts,
-/// or something the evaluator does not model appears.
-fn criteria(cursor: &mut Cursor<'_>) -> Criteria {
+/// Reads conditions until the line ends, a translation target (`->`) starts
+/// when `allow_arrow` is set, or something the evaluator does not model appears.
+fn criteria(cursor: &mut Cursor<'_>, allow_arrow: bool) -> (Criteria, bool) {
     let mut criteria = Criteria::default();
+    let mut saw_arrow = false;
     while let Some(token) = cursor.next() {
         let outcome = match token {
-            Token::Word("->") => break,
+            Token::Word("->") if allow_arrow => {
+                saw_arrow = true;
+                break;
+            }
             Token::Word(word) => apply(&mut criteria, cursor, word),
             Token::Open | Token::Close | Token::Comma => Err(Construct::List),
             Token::Quoted(_) => Err(Construct::UnrecognizedSyntax),
@@ -160,7 +199,7 @@ fn criteria(cursor: &mut Cursor<'_>) -> Criteria {
             break;
         }
     }
-    criteria
+    (criteria, saw_arrow)
 }
 
 fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result<(), Construct> {
@@ -178,26 +217,43 @@ fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result
             criteria.flags =
                 Some(TcpFlags::parse(next_word(cursor)?).ok_or(Construct::UnrecognizedSyntax)?);
         }
-        // Options that do not change which packets the rule matches.
         "all" | "drop" | "return" | "return-rst" | "return-icmp" | "return-icmp6"
         | "allow-opts" => {}
-        "log" => skip_group(cursor),
-        "keep" | "modulate" | "synproxy" | "no" => {
+        "log" => {
+            skip_group(cursor);
+        }
+        "keep" | "modulate" | "synproxy" => {
             if next_word(cursor)? != "state" {
                 return Err(Construct::UnrecognizedSyntax);
             }
-            skip_group(cursor);
+            check_state_options(cursor, criteria);
+        }
+        "no" => {
+            if next_word(cursor)? != "state" {
+                return Err(Construct::UnrecognizedSyntax);
+            }
         }
         "label" | "tag" => match cursor.next() {
             Some(Token::Quoted(_) | Token::Word(_)) => {}
             _ => return Err(Construct::UnrecognizedSyntax),
         },
+        "fastroute" => {
+            criteria
+                .effect_unsupported
+                .get_or_insert(Construct::RouteTo);
+        }
+        "route-to" | "dup-to" => mark_effect(criteria, cursor, Construct::RouteTo)?,
+        "reply-to" => mark_effect(criteria, cursor, Construct::ReplyTo)?,
+        "!" => {
+            if next_word(cursor)? == "tagged" {
+                return Err(Construct::Tagged);
+            }
+            return Err(Construct::UnrecognizedSyntax);
+        }
+        "tagged" | "!tagged" => return Err(Construct::Tagged),
         "user" => return Err(Construct::User),
         "group" => return Err(Construct::Group),
         "os" => return Err(Construct::OsFingerprint),
-        "route-to" | "dup-to" | "fastroute" => return Err(Construct::RouteTo),
-        "reply-to" => return Err(Construct::ReplyTo),
-        "tagged" => return Err(Construct::Tagged),
         "received-on" => return Err(Construct::ReceivedOn),
         "probability" => return Err(Construct::Probability),
         _ => return Err(Construct::UnrecognizedSyntax),
@@ -205,109 +261,48 @@ fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result
     Ok(())
 }
 
-/// Consumes an optional `(...)` option group.
-fn skip_group(cursor: &mut Cursor<'_>) {
-    cursor.next_if(|token| matches!(token, Token::Word(word) if word.starts_with('(')));
-}
-
-fn next_word<'a>(cursor: &mut Cursor<'a>) -> Result<&'a str, Construct> {
-    match cursor.next() {
-        Some(Token::Word(word)) => Ok(word),
-        Some(Token::Open | Token::Close | Token::Comma) => Err(Construct::List),
-        Some(Token::Quoted(_)) | None => Err(Construct::UnrecognizedSyntax),
-    }
-}
-
-fn interface(cursor: &mut Cursor<'_>) -> Result<InterfaceMatch, Construct> {
-    let (negated, name) = negated_word(cursor)?;
-    if name.starts_with('(') {
-        return Err(Construct::DynamicAddress);
-    }
-    if is_group_name(name) {
-        return Err(Construct::InterfaceGroup);
-    }
-    Ok(InterfaceMatch {
-        name: name.to_string(),
-        negated,
-    })
-}
-
-/// Reads a word with an optional leading `!`, written either attached
-/// (`!en0`) or apart (`! en0`).
-fn negated_word<'a>(cursor: &mut Cursor<'a>) -> Result<(bool, &'a str), Construct> {
-    let word = next_word(cursor)?;
-    match word.strip_prefix('!') {
-        Some("") => Ok((true, next_word(cursor)?)),
-        Some(rest) => Ok((true, rest)),
-        None => Ok((false, word)),
-    }
-}
-
-fn protocol(word: &str) -> Result<RuleProtocol, Construct> {
-    match word {
-        "tcp" | "6" => Ok(RuleProtocol::Tcp),
-        "udp" | "17" => Ok(RuleProtocol::Udp),
-        "icmp" | "icmp6" | "esp" | "ah" | "gre" | "igmp" => Ok(RuleProtocol::Other),
-        _ if word.parse::<u8>().is_ok() => Ok(RuleProtocol::Other),
-        _ => Err(Construct::UnrecognizedSyntax),
-    }
-}
-
-fn endpoint(cursor: &mut Cursor<'_>) -> Result<Endpoint, Construct> {
-    let address = address(cursor)?;
-    let port = if cursor
-        .next_if(|token| *token == Token::Word("port"))
-        .is_some()
+fn mark_effect(
+    criteria: &mut Criteria,
+    cursor: &mut Cursor<'_>,
+    construct: Construct,
+) -> Result<(), Construct> {
+    criteria.effect_unsupported.get_or_insert(construct);
+    if cursor
+        .next_if(|token| matches!(token, Token::Word(_)))
+        .is_none()
     {
-        Some(port(cursor)?)
-    } else {
-        None
+        return Err(construct);
+    }
+    Ok(())
+}
+
+fn check_state_options(cursor: &mut Cursor<'_>, criteria: &mut Criteria) {
+    let Some(group) = skip_group(cursor) else {
+        return;
     };
-    Ok(Endpoint { address, port })
-}
-
-fn address(cursor: &mut Cursor<'_>) -> Result<Address, Construct> {
-    let (negated, word) = negated_word(cursor)?;
-    match word {
-        "any" | "self" if negated => Err(Construct::UnrecognizedSyntax),
-        "any" => Ok(Address::Any),
-        "self" => Ok(Address::SelfHost),
-        _ if word.starts_with('<') => Err(Construct::Table),
-        _ if word.starts_with('(') => Err(Construct::DynamicAddress),
-        _ => Cidr::parse(word)
-            .map(|net| Address::Net { net, negated })
-            .ok_or(Construct::UnrecognizedSyntax),
-    }
-}
-
-fn port(cursor: &mut Cursor<'_>) -> Result<PortMatch, Construct> {
-    let first = next_word(cursor)?;
-    if let Some(operator) = Operator::parse(first) {
-        return Ok(PortMatch::Compare(operator, number(next_word(cursor)?)?));
-    }
-    if let Some((low, high)) = first.split_once(':') {
-        return Ok(PortMatch::Range {
-            kind: RangeKind::Inclusive,
-            low: number(low)?,
-            high: number(high)?,
+    let inner = group
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+        .unwrap_or("");
+    let mut items = inner.split(',').map(str::trim).peekable();
+    let known = items.peek().is_some()
+        && items.all(|item| {
+            matches!(
+                item,
+                "if-bound" | "floating" | "sloppy" | "no-sync" | "pflow"
+            )
         });
+    if !known {
+        criteria
+            .effect_unsupported
+            .get_or_insert(Construct::StateLimit);
     }
-    let low = number(first)?;
-    let kind = match cursor.peek() {
-        Some(Token::Word(word)) => RangeKind::parse(word),
-        _ => None,
-    };
-    let Some(kind) = kind else {
-        return Ok(PortMatch::Compare(Operator::Eq, low));
-    };
-    cursor.next();
-    Ok(PortMatch::Range {
-        kind,
-        low,
-        high: number(next_word(cursor)?)?,
-    })
 }
 
-fn number(word: &str) -> Result<u16, Construct> {
-    port_number(word).ok_or(Construct::UnrecognizedSyntax)
+/// Consumes an optional `(...)` option group.
+fn skip_group<'a>(cursor: &mut Cursor<'a>) -> Option<&'a str> {
+    match cursor.next_if(|token| matches!(token, Token::Word(word) if word.starts_with('('))) {
+        Some(Token::Word(group)) => Some(group),
+        _ => None,
+    }
 }
