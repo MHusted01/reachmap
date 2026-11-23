@@ -1,0 +1,3 @@
+scrub in on en0 proto udp all fragment crop
+block drop in all
+pass in on en0 proto udp from any to any port = 5353

@@ -1,0 +1,282 @@
+//! Does one rule match one packet? Yes, no, or "it depends on something the
+//! evaluator does not know".
+
+use std::net::IpAddr;
+
+use crate::socket::{AddressFamily, Protocol};
+
+use super::Traffic;
+use super::fields::{PortMatch, TcpFlags};
+use super::model::{
+    Address, BinatTarget, Construct, Criteria, Direction, Endpoint, RuleProtocol, TargetPort,
+    TranslationTarget,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Match {
+    No,
+    Yes,
+    Maybe(Construct),
+}
+
+impl Match {
+    /// Every condition must hold. A condition that is certainly false decides
+    /// the answer even when another one is unknown.
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::No, _) | (_, Self::No) => Self::No,
+            (Self::Maybe(construct), _) | (_, Self::Maybe(construct)) => Self::Maybe(construct),
+            (Self::Yes, Self::Yes) => Self::Yes,
+        }
+    }
+
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Yes, _) | (_, Self::Yes) => Self::Yes,
+            (Self::Maybe(construct), _) | (_, Self::Maybe(construct)) => Self::Maybe(construct),
+            (Self::No, Self::No) => Self::No,
+        }
+    }
+
+    pub(super) fn of(holds: bool) -> Self {
+        if holds { Self::Yes } else { Self::No }
+    }
+}
+
+fn family(ip: IpAddr) -> AddressFamily {
+    match ip {
+        IpAddr::V4(_) => AddressFamily::Ipv4,
+        IpAddr::V6(_) => AddressFamily::Ipv6,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ProtoMode {
+    Exact,
+    Ignore,
+    Ipv6Fragment,
+}
+
+impl Criteria {
+    /// Whether evaluating this rule requires parsing transport-layer headers
+    /// beyond the first IP fragment.
+    pub(super) fn skipped_by_fragment(&self, protocol: Protocol) -> bool {
+        self.source.as_ref().is_some_and(|ep| ep.port.is_some())
+            || self
+                .destination
+                .as_ref()
+                .is_some_and(|ep| ep.port.is_some())
+            || (protocol == Protocol::Tcp && self.flags.is_some_and(TcpFlags::is_constrained))
+    }
+
+    /// Matches one new inbound connection, datagram, or non-initial fragment.
+    pub(super) fn matches(
+        &self,
+        traffic: &Traffic<'_>,
+        opening_flags: u8,
+        fragment: bool,
+    ) -> Match {
+        if fragment && self.skipped_by_fragment(traffic.protocol) {
+            return Match::No;
+        }
+        let proto_mode = if fragment && traffic.destination.is_ipv6() {
+            ProtoMode::Ipv6Fragment
+        } else {
+            ProtoMode::Exact
+        };
+        let src = self
+            .source
+            .as_ref()
+            .map_or(Match::Yes, |ep| source(ep, traffic));
+        self.matches_header_with_proto(traffic, opening_flags, proto_mode)
+            .and(src)
+            .and(opt_destination(self.destination.as_ref(), traffic))
+    }
+
+    /// Matches one IPv4 or IPv6 packet against a `scrub` / `no scrub` rule.
+    /// Apple PF ignores the `proto` predicate during IPv6 normalization.
+    pub(super) fn matches_scrub(&self, traffic: &Traffic<'_>) -> Match {
+        let proto_mode = if traffic.destination.is_ipv6() {
+            ProtoMode::Ignore
+        } else {
+            ProtoMode::Exact
+        };
+        let src = self
+            .source
+            .as_ref()
+            .map_or(Match::Yes, |ep| source(ep, traffic));
+        self.matches_header_with_proto(traffic, super::fields::SYN, proto_mode)
+            .and(src)
+            .and(opt_destination(self.destination.as_ref(), traffic))
+    }
+
+    /// Matches either the original packet or the redirected target of a
+    /// translation rule, so redirects targeting a local listener are caught.
+    /// For `binat`, inbound traffic arrives for the external target and maps to
+    /// the rule's internal `from` address.
+    pub(super) fn matches_translation(
+        &self,
+        target: &TranslationTarget,
+        traffic: &Traffic<'_>,
+        opening_flags: u8,
+    ) -> Match {
+        let orig = opt_destination(self.destination.as_ref(), traffic);
+        let redirected = match target {
+            TranslationTarget::None => Match::No,
+            TranslationTarget::Any => Match::Maybe(Construct::Translation),
+            TranslationTarget::Endpoint(endpoint) => {
+                let address = endpoint
+                    .address
+                    .as_ref()
+                    .map_or(Match::Maybe(Construct::Translation), |address| {
+                        dest_address(address, traffic)
+                    });
+                let port = match endpoint.port {
+                    TargetPort::Inherit => dest_port(
+                        self.destination.as_ref().and_then(|ep| ep.port),
+                        traffic.port,
+                    ),
+                    TargetPort::Match(wanted) => Match::of(wanted.contains(traffic.port)),
+                    TargetPort::Any => Match::Maybe(Construct::Translation),
+                };
+                address.and(port)
+            }
+            TranslationTarget::Binat(binat_target) => {
+                return self.matches_binat(binat_target, traffic, opening_flags);
+            }
+        };
+        self.matches_common(traffic, opening_flags)
+            .and(orig.or(redirected))
+    }
+
+    fn matches_binat(
+        &self,
+        binat_target: &BinatTarget,
+        traffic: &Traffic<'_>,
+        opening_flags: u8,
+    ) -> Match {
+        let peer = self
+            .destination
+            .as_ref()
+            .map_or(Match::Yes, |ep| source(ep, traffic));
+        let internal = self
+            .source
+            .as_ref()
+            .map_or(Match::Yes, |ep| dest_address(&ep.address, traffic));
+        let external = match binat_target {
+            BinatTarget::None => Match::No,
+            BinatTarget::Any => Match::Maybe(Construct::Translation),
+            BinatTarget::Address(address) => dest_address(address, traffic),
+        };
+        self.matches_header(traffic, opening_flags)
+            .and(peer)
+            .and(internal.or(external))
+    }
+
+    pub(super) fn effect_construct(&self) -> Option<Construct> {
+        self.effect_unsupported.or_else(|| {
+            (self.unsupported == Some(Construct::UnrecognizedSyntax))
+                .then_some(Construct::UnrecognizedSyntax)
+        })
+    }
+
+    fn matches_common(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
+        let src = self
+            .source
+            .as_ref()
+            .map_or(Match::Yes, |ep| source(ep, traffic));
+        self.matches_header(traffic, opening_flags).and(src)
+    }
+
+    fn matches_header(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
+        self.matches_header_with_proto(traffic, opening_flags, ProtoMode::Exact)
+    }
+
+    fn matches_header_with_proto(
+        &self,
+        traffic: &Traffic<'_>,
+        opening_flags: u8,
+        proto_mode: ProtoMode,
+    ) -> Match {
+        let protocol_match = match proto_mode {
+            ProtoMode::Ignore => Match::Yes,
+            ProtoMode::Exact => self.protocol.map_or(Match::Yes, |wanted| {
+                Match::of(matches!(
+                    (wanted, traffic.protocol),
+                    (RuleProtocol::Tcp, Protocol::Tcp) | (RuleProtocol::Udp, Protocol::Udp)
+                ))
+            }),
+            ProtoMode::Ipv6Fragment => {
+                self.protocol
+                    .map_or(Match::Yes, |wanted| match (wanted, traffic.protocol) {
+                        (RuleProtocol::Tcp, Protocol::Tcp)
+                        | (RuleProtocol::Udp, Protocol::Udp)
+                        | (RuleProtocol::Ipv6PostFrag, _) => {
+                            Match::Maybe(Construct::UnreassembledFragment)
+                        }
+                        (RuleProtocol::Tcp | RuleProtocol::Udp | RuleProtocol::Other, _) => {
+                            Match::No
+                        }
+                    })
+            }
+        };
+        [
+            Match::of(self.direction != Some(Direction::Out)),
+            self.interface.as_ref().map_or(Match::Yes, |interface| {
+                Match::of((interface.name == traffic.interface) != interface.negated)
+            }),
+            self.family.map_or(Match::Yes, |wanted| {
+                Match::of(wanted == family(traffic.destination))
+            }),
+            protocol_match,
+            self.flags.map_or(Match::Yes, |flags| {
+                Match::of(traffic.protocol != Protocol::Tcp || flags.matches(opening_flags))
+            }),
+            self.unsupported.map_or(Match::Yes, Match::Maybe),
+        ]
+        .into_iter()
+        .fold(Match::Yes, Match::and)
+    }
+}
+
+/// The peer is not known for a listening socket, so a restriction on it is
+/// unknown unless the caller named a source.
+fn source(endpoint: &Endpoint, traffic: &Traffic<'_>) -> Match {
+    let port = endpoint
+        .port
+        .map_or(Match::Yes, |_| Match::Maybe(Construct::SourcePort));
+    let address = match (&endpoint.address, traffic.source) {
+        (Address::Any, _) => Match::Yes,
+        (Address::SelfHost, _) | (Address::Net { .. }, None) => {
+            Match::Maybe(Construct::SourceAddress)
+        }
+        (Address::Net { net, negated }, Some(ip)) => net_match(*net, *negated, ip),
+    };
+    address.and(port)
+}
+
+fn opt_destination(endpoint: Option<&Endpoint>, traffic: &Traffic<'_>) -> Match {
+    endpoint.map_or(Match::Yes, |ep| {
+        dest_address(&ep.address, traffic).and(dest_port(ep.port, traffic.port))
+    })
+}
+
+fn dest_address(address: &Address, traffic: &Traffic<'_>) -> Match {
+    match address {
+        Address::Any | Address::SelfHost => Match::Yes,
+        Address::Net { net, negated } => net_match(*net, *negated, traffic.destination),
+    }
+}
+
+fn dest_port(port: Option<PortMatch>, target_port: u16) -> Match {
+    port.map_or(Match::Yes, |wanted| Match::of(wanted.contains(target_port)))
+}
+
+/// A network of the other family never matches, not even when negated: pf
+/// gives the rule that family.
+fn net_match(net: super::fields::Cidr, negated: bool, ip: IpAddr) -> Match {
+    if net.is_ipv4() != ip.is_ipv4() {
+        return Match::No;
+    }
+    Match::of(net.contains(ip) != negated)
+}

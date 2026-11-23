@@ -30,6 +30,7 @@ pub mod network;
 pub mod nftables;
 pub mod nginx;
 pub mod parse;
+pub mod pf;
 pub mod probe;
 pub mod reach;
 pub mod sanitize;

@@ -1,0 +1,3 @@
+scrub in all fragment reassemble
+block drop in all
+anchor "site" all
