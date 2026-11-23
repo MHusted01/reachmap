@@ -54,7 +54,7 @@ impl Criteria {
     /// Matches one new inbound connection or datagram.
     pub(super) fn matches(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
         self.matches_common(traffic, opening_flags)
-            .and(destination(&self.destination, traffic))
+            .and(opt_destination(self.destination.as_ref(), traffic))
     }
 
     /// Matches either the original packet or the redirected target of a
@@ -67,20 +67,7 @@ impl Criteria {
         traffic: &Traffic<'_>,
         opening_flags: u8,
     ) -> Match {
-        if let TranslationTarget::Binat(binat_target) = target {
-            let peer = source(&self.destination, traffic);
-            let internal = dest_address(&self.source.address, traffic);
-            let external = match binat_target {
-                BinatTarget::None => Match::No,
-                BinatTarget::Any => Match::Maybe(Construct::Translation),
-                BinatTarget::Address(address) => dest_address(address, traffic),
-            };
-            return self
-                .matches_header(traffic, opening_flags)
-                .and(peer)
-                .and(internal.or(external));
-        }
-        let orig = destination(&self.destination, traffic);
+        let orig = opt_destination(self.destination.as_ref(), traffic);
         let redirected = match target {
             TranslationTarget::None => Match::No,
             TranslationTarget::Any => Match::Maybe(Construct::Translation),
@@ -92,16 +79,45 @@ impl Criteria {
                         dest_address(address, traffic)
                     });
                 let port = match endpoint.port {
-                    TargetPort::Inherit => dest_port(self.destination.port, traffic.port),
+                    TargetPort::Inherit => dest_port(
+                        self.destination.as_ref().and_then(|ep| ep.port),
+                        traffic.port,
+                    ),
                     TargetPort::Match(wanted) => Match::of(wanted.contains(traffic.port)),
                     TargetPort::Any => Match::Maybe(Construct::Translation),
                 };
                 address.and(port)
             }
-            TranslationTarget::Binat(_) => unreachable!(),
+            TranslationTarget::Binat(binat_target) => {
+                return self.matches_binat(binat_target, traffic, opening_flags);
+            }
         };
         self.matches_common(traffic, opening_flags)
             .and(orig.or(redirected))
+    }
+
+    fn matches_binat(
+        &self,
+        binat_target: &BinatTarget,
+        traffic: &Traffic<'_>,
+        opening_flags: u8,
+    ) -> Match {
+        let peer = self
+            .destination
+            .as_ref()
+            .map_or(Match::Yes, |ep| source(ep, traffic));
+        let internal = self
+            .source
+            .as_ref()
+            .map_or(Match::Yes, |ep| dest_address(&ep.address, traffic));
+        let external = match binat_target {
+            BinatTarget::None => Match::No,
+            BinatTarget::Any => Match::Maybe(Construct::Translation),
+            BinatTarget::Address(address) => dest_address(address, traffic),
+        };
+        self.matches_header(traffic, opening_flags)
+            .and(peer)
+            .and(internal.or(external))
     }
 
     pub(super) fn effect_construct(&self) -> Option<Construct> {
@@ -112,8 +128,11 @@ impl Criteria {
     }
 
     fn matches_common(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
-        self.matches_header(traffic, opening_flags)
-            .and(source(&self.source, traffic))
+        let src = self
+            .source
+            .as_ref()
+            .map_or(Match::Yes, |ep| source(ep, traffic));
+        self.matches_header(traffic, opening_flags).and(src)
     }
 
     fn matches_header(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
@@ -157,8 +176,10 @@ fn source(endpoint: &Endpoint, traffic: &Traffic<'_>) -> Match {
     address.and(port)
 }
 
-fn destination(endpoint: &Endpoint, traffic: &Traffic<'_>) -> Match {
-    dest_address(&endpoint.address, traffic).and(dest_port(endpoint.port, traffic.port))
+fn opt_destination(endpoint: Option<&Endpoint>, traffic: &Traffic<'_>) -> Match {
+    endpoint.map_or(Match::Yes, |ep| {
+        dest_address(&ep.address, traffic).and(dest_port(ep.port, traffic.port))
+    })
 }
 
 fn dest_address(address: &Address, traffic: &Traffic<'_>) -> Match {

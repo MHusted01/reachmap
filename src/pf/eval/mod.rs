@@ -97,11 +97,6 @@ impl Walker<'_> {
             {
                 let resolved = name.resolve(anchor)?;
                 if resolved.is_wildcard() {
-                    if let Some(body) = self.anchors.get(resolved.lookup())
-                        && let Some(found) = self.translation(body, Some(&resolved), depth + 1)
-                    {
-                        return Some(found);
-                    }
                     direct_children(self.anchors, resolved.lookup())
                         .into_iter()
                         .find_map(|(key, body)| {
@@ -185,7 +180,7 @@ impl Walker<'_> {
                                     matched: true,
                                     outcome: outcome.clone(),
                                     uncertain: uncertain.cloned(),
-                                    ecn_origin: ecn_origin.clone().or(prev.ecn_origin),
+                                    ecn_origin: prev.ecn_origin.or_else(|| ecn_origin.clone()),
                                 })
                                 .collect()
                         },
@@ -235,23 +230,16 @@ impl Walker<'_> {
             return unknown(Construct::MissingAnchor, origin);
         };
         if resolved.is_wildcard() {
-            let exact = self.anchors.get(resolved.lookup());
+            let complete = self.anchors.contains_key(resolved.lookup());
             let children = direct_children(self.anchors, resolved.lookup());
-            if exact.is_none() && children.is_empty() {
+            if !complete && children.is_empty() {
                 return unknown(Construct::MissingAnchor, origin);
             }
             if depth >= MAX_ANCHOR_DEPTH {
                 return unknown(Construct::AnchorTooDeep, origin);
             }
-            let mut bodies = Vec::new();
-            if let Some(body) = exact
-                && !body.entries.is_empty()
-            {
-                bodies.push((resolved.lookup(), body));
-            }
-            bodies.extend(children);
-            let mut out = self.run_bodies(&bodies, anchor_quick, depth, live);
-            if exact.is_none() {
+            let mut out = self.run_bodies(&children, anchor_quick, depth, live);
+            if !complete {
                 out.extend(unknown(Construct::MissingAnchor, origin));
             }
             return out;

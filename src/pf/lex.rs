@@ -31,7 +31,7 @@ pub(super) fn tokenize(line: &str) -> Option<Vec<Token<'_>>> {
             }
             _ => {
                 let end = rest
-                    .find(|c: char| c.is_whitespace() || matches!(c, '{' | '}' | ',' | '"'))
+                    .find(|c: char| c.is_whitespace() || matches!(c, '{' | '}' | ',' | '"' | '('))
                     .unwrap_or(rest.len());
                 (Token::Word(&rest[..end]), end)
             }

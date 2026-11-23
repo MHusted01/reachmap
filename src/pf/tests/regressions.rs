@@ -7,6 +7,8 @@ use super::{
 
 const SCOPED_ANCHORS: &str = include_str!("../../../tests/fixtures/pf/scoped_anchors.txt");
 const RDR_TARGET: &str = include_str!("../../../tests/fixtures/pf/rdr_target.txt");
+const BLOCK_RETURN_OPTIONS: &str =
+    include_str!("../../../tests/fixtures/pf/block_return_options.txt");
 
 #[test]
 fn quick_anchor_stops_after_a_matching_child_rule() {
@@ -486,5 +488,109 @@ fn set_skip_rejects_trailing_tokens() {
             22
         ),
         unknown("unparseable text in rule at line 1")
+    );
+}
+
+#[test]
+fn verdict_changing_options_after_unsupported_conditions_are_preserved() {
+    assert_eq!(
+        tcp(
+            "pass in quick proto tcp from any to <services> flags S/SA keep state (max 1)",
+            "en0",
+            22
+        ),
+        unknown("state limit in rule at line 1")
+    );
+    assert_eq!(
+        tcp(
+            "pass in proto tcp from any to <services> route-to (en1 192.0.2.1)",
+            "en0",
+            22
+        ),
+        unknown("route-to option in rule at line 1")
+    );
+}
+
+#[test]
+fn wildcard_marker_contents_are_ignored_in_both_walks() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let marker_block = anchors(&[
+        ("site/*", "block drop in quick all"),
+        ("site/web", "pass in proto tcp from any to any port = 22"),
+    ]);
+    assert_eq!(
+        check("anchor \"site/*\" all", &marker_block, &packet),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"site/web\"".to_string()
+        }
+    );
+
+    let marker_rdr = anchors(&[
+        (
+            "site/*",
+            "rdr on en0 inet proto tcp from any to any port = 22 -> 192.0.2.10 port 8080",
+        ),
+        ("site/web", "pass in proto tcp from any to any port = 22"),
+    ]);
+    assert_eq!(
+        check("anchor \"site/*\" all", &marker_rdr, &packet),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"site/web\"".to_string()
+        }
+    );
+}
+
+#[test]
+fn duplicate_endpoint_clauses_are_rejected_as_unknown() {
+    let dup_to = "block drop in quick proto tcp from any to any port = 22 to any";
+    assert_eq!(
+        tcp(dup_to, "en0", 80),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    assert_eq!(
+        tcp(dup_to, "en0", 22),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    assert_eq!(
+        tcp(
+            "block drop in quick proto tcp from 192.0.2.1 from 198.51.100.1 to any",
+            "en0",
+            22
+        ),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+}
+
+#[test]
+fn block_return_options_with_parentheses_are_accepted() {
+    assert_eq!(tcp(BLOCK_RETURN_OPTIONS, "en0", 23), block_at(1));
+    assert_eq!(
+        check(
+            BLOCK_RETURN_OPTIONS,
+            &Default::default(),
+            &traffic("en0", Protocol::Udp, HOST, 161)
+        ),
+        block_at(2)
+    );
+    assert_eq!(
+        check(
+            BLOCK_RETURN_OPTIONS,
+            &Default::default(),
+            &traffic("en0", Protocol::Udp, "2001:db8::1", 161)
+        ),
+        block_at(3)
+    );
+    assert_eq!(tcp(BLOCK_RETURN_OPTIONS, "en0", 22), default_pass());
+}
+
+#[test]
+fn earliest_ecn_sensitive_rule_is_named_in_reason() {
+    assert_eq!(
+        tcp(
+            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW",
+            "en0",
+            22
+        ),
+        unknown("tcp flags (ECN) in rule at line 2")
     );
 }

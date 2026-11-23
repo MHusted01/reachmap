@@ -160,7 +160,7 @@ fn parse_translation_target(cursor: &mut Cursor<'_>, criteria: &Criteria) -> Tra
         .is_some()
     {
         let exact_src = matches!(
-            criteria.destination.port,
+            criteria.destination.as_ref().and_then(|ep| ep.port),
             None | Some(PortMatch::Compare(Operator::Eq, _))
         );
         match port(cursor) {
@@ -224,6 +224,7 @@ fn criteria(cursor: &mut Cursor<'_>, allow_arrow: bool) -> (Criteria, bool) {
         };
         if let Err(construct) = outcome {
             criteria.unsupported = Some(construct);
+            saw_arrow = scan_remaining_effects(cursor, &mut criteria, allow_arrow);
             break;
         }
         if criteria.protocol == Some(RuleProtocol::Other) {
@@ -232,6 +233,44 @@ fn criteria(cursor: &mut Cursor<'_>, allow_arrow: bool) -> (Criteria, bool) {
         }
     }
     (criteria, saw_arrow)
+}
+
+fn scan_remaining_effects(
+    cursor: &mut Cursor<'_>,
+    criteria: &mut Criteria,
+    allow_arrow: bool,
+) -> bool {
+    while let Some(token) = cursor.next() {
+        match token {
+            Token::Word("->") if allow_arrow => return true,
+            Token::Word("->") => {
+                criteria
+                    .effect_unsupported
+                    .get_or_insert(Construct::UnrecognizedSyntax);
+            }
+            Token::Word("quick") => criteria.quick = true,
+            Token::Word("keep" | "modulate" | "synproxy")
+                if cursor.next_if(|t| *t == Token::Word("state")).is_some() =>
+            {
+                check_state_options(cursor, criteria);
+            }
+            Token::Word("fastroute" | "route-to" | "dup-to") => {
+                criteria
+                    .effect_unsupported
+                    .get_or_insert(Construct::RouteTo);
+            }
+            Token::Word("reply-to") => {
+                criteria
+                    .effect_unsupported
+                    .get_or_insert(Construct::ReplyTo);
+            }
+            Token::Word("label" | "tag") => {
+                cursor.next();
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result<(), Construct> {
@@ -243,15 +282,26 @@ fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result
         "inet6" => criteria.family = Some(AddressFamily::Ipv6),
         "on" => criteria.interface = Some(interface(cursor)?),
         "proto" => criteria.protocol = Some(protocol(next_word(cursor)?)?),
-        "from" => criteria.source = endpoint(cursor)?,
-        "to" => criteria.destination = endpoint(cursor)?,
+        "from" => {
+            if criteria.source.is_some() {
+                criteria.source = None;
+                return Err(Construct::UnrecognizedSyntax);
+            }
+            criteria.source = Some(endpoint(cursor)?);
+        }
+        "to" => {
+            if criteria.destination.is_some() {
+                criteria.destination = None;
+                return Err(Construct::UnrecognizedSyntax);
+            }
+            criteria.destination = Some(endpoint(cursor)?);
+        }
         "flags" => {
             criteria.flags =
                 Some(TcpFlags::parse(next_word(cursor)?).ok_or(Construct::UnrecognizedSyntax)?);
         }
-        "all" | "drop" | "return" | "return-rst" | "return-icmp" | "return-icmp6"
-        | "allow-opts" => {}
-        "log" => {
+        "all" | "drop" | "return" | "allow-opts" => {}
+        "log" | "return-rst" | "return-icmp" | "return-icmp6" => {
             skip_group(cursor);
         }
         "keep" | "modulate" | "synproxy" => {

@@ -39,8 +39,9 @@ mod tests;
 /// leading `/` resolves from the root, and `..` moves up one segment. For a
 /// wildcard anchor such as `com.apple/*`, supply its direct children under
 /// keys like `com.apple/250.ApplicationFirewall` and include the wildcard key
-/// (`com.apple/*`, usually empty) to mark the child list as complete; omitting
-/// the wildcard key leaves the child list incomplete and yields `unknown`.
+/// (`com.apple/*`) as a completeness marker; its own rules are not evaluated,
+/// and omitting the wildcard key leaves the child list incomplete and yields
+/// `unknown`.
 pub type AnchorRulesets = BTreeMap<String, Ruleset>;
 
 /// A new inbound TCP connection or UDP datagram to a local address.
