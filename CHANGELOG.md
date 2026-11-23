@@ -13,8 +13,8 @@ is released; see "Releases" in [CONTRIBUTING.md](CONTRIBUTING.md).
 ## [0.6.0] - 2026-11-23
 
 `reachmap scan --nginx-routes` explains configured Nginx reverse proxy routes
-on Linux: frontend listeners, server names, locations, backend targets and the
-local TCP listeners they reach, with proxy-layer auth indicators reported
+on Linux: frontend listeners, server names, locations, backend targets and
+matching local TCP listeners, with proxy-layer auth indicators reported
 separately. Collection stays read-only: reachmap reads the configuration files
 at the path Nginx was built with and runs only `nginx -V`, never the `nginx -T`
 configuration test. Reports therefore describe the configuration on disk, which
