@@ -31,8 +31,9 @@ impl fmt::Display for Note {
 
 /// Convert a collector error into a secret-safe [`NginxScanError`].
 ///
-/// Raw `stderr` from `nginx -T` is never embedded in error messages so that
-/// failing config lines containing tokens, credentials, or file paths cannot leak.
+/// Raw `stderr` from `nginx -V` is never embedded in error messages, so no
+/// unexpected output can leak into reports.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) fn classify_nginx_error(error: CollectError) -> NginxScanError {
     match error {
         CollectError::UnsupportedOs { os } => NginxScanError::UnsupportedOs { os },

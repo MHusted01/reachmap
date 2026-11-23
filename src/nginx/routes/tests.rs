@@ -3,9 +3,15 @@ use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::process::ExitStatus;
 
+use crate::collect::CollectError;
 use crate::host_input_snapshot::render_document;
 use crate::socket::{ListeningSocket, Protocol, SocketOptions};
 use crate::socket_options::{OptionsReport, SocketOptionsError};
+
+/// A collector failure as the scan reports it.
+fn failed(error: CollectError) -> Result<String, NginxScanError> {
+    Err(diagnostic::classify_nginx_error(error))
+}
 
 const MULTI_FILE: &str = include_str!("../../../tests/fixtures/nginx/multi_file.conf");
 const SECRETS: &str = include_str!("../../../tests/fixtures/nginx/secrets.conf");
@@ -103,8 +109,10 @@ http {
     );
     let text = rep.to_string();
 
-    assert!(text.contains("on-disk nginx -T config and local TCP sockets only"));
-    assert!(text.contains("running master reload state"));
+    assert!(
+        text.contains("config files on disk at Nginx's built-in path and local TCP sockets only")
+    );
+    assert!(text.contains("whether a running Nginx loaded this configuration"));
     assert!(text.contains("application authentication are unverified"));
     assert!(text.contains("listen: 0.0.0.0:80 [default_server] (TCP listener 0.0.0.0:80)"));
     assert!(text.contains("listen: [::]:80 [ipv6only=on] (TCP listener [::]:80)"));
@@ -256,8 +264,8 @@ fn ipv6only_on_listen_distinguishes_matching_and_mismatched_sockets() {
 #[test]
 fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     let missing = collect_with(
-        Err(CollectError::Run {
-            command: "nginx -T".into(),
+        failed(CollectError::Run {
+            command: "nginx -V".into(),
             source: std::io::Error::from(ErrorKind::NotFound),
         }),
         || panic!("should not read sockets"),
@@ -267,8 +275,8 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     assert!(missing.to_string().contains("not found"));
 
     let denied_exec = collect_with(
-        Err(CollectError::Run {
-            command: "nginx -T".into(),
+        failed(CollectError::Run {
+            command: "nginx -V".into(),
             source: std::io::Error::from(ErrorKind::PermissionDenied),
         }),
         || panic!("should not read sockets"),
@@ -277,8 +285,8 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     assert!(matches!(denied_exec, NginxScanError::PermissionDenied));
 
     let denied_stderr = collect_with(
-        Err(CollectError::CommandFailed {
-            command: "nginx -T".into(),
+        failed(CollectError::CommandFailed {
+            command: "nginx -V".into(),
             status: ExitStatus::default(),
             stderr: "nginx: [emerg] open() \"/etc/nginx/ssl.key\" failed (13: Permission denied)"
                 .into(),
@@ -290,8 +298,8 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     assert!(!denied_stderr.to_string().contains("ssl.key"));
 
     let secret_stderr = collect_with(
-        Err(CollectError::CommandFailed {
-            command: "nginx -T".into(),
+        failed(CollectError::CommandFailed {
+            command: "nginx -V".into(),
             status: ExitStatus::default(),
             stderr: "nginx: [emerg] unknown directive \"Bearer TOP_SECRET_TOKEN_VALUE\" in /etc/nginx/conf.d/app.conf:12".into(),
         }),
@@ -306,8 +314,8 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     assert!(!secret_stderr.to_string().contains("app.conf"));
 
     let timed_out = collect_with(
-        Err(CollectError::TimedOut {
-            command: "nginx -T".into(),
+        failed(CollectError::TimedOut {
+            command: "nginx -V".into(),
             timeout: Duration::from_secs(5),
         }),
         || panic!("should not read sockets"),
@@ -316,8 +324,8 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     assert!(matches!(timed_out, NginxScanError::TimedOut { .. }));
 
     let oversized_stdout = collect_with(
-        Err(CollectError::OutputTooLarge {
-            command: "nginx -T".into(),
+        failed(CollectError::OutputTooLarge {
+            command: "nginx -V".into(),
             stream: "stdout",
             limit_bytes: 8 * 1024 * 1024,
         }),
@@ -338,8 +346,8 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     );
 
     let oversized_stderr = collect_with(
-        Err(CollectError::OutputTooLarge {
-            command: "nginx -T".into(),
+        failed(CollectError::OutputTooLarge {
+            command: "nginx -V".into(),
             stream: "stderr",
             limit_bytes: 64 * 1024,
         }),
@@ -360,8 +368,8 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     );
 
     let not_utf8 = collect_with(
-        Err(CollectError::NotUtf8 {
-            command: "nginx -T".into(),
+        failed(CollectError::NotUtf8 {
+            command: "nginx -V".into(),
             source: String::from_utf8(vec![0xff]).unwrap_err(),
         }),
         || panic!("should not read sockets"),
@@ -369,7 +377,7 @@ fn collector_failures_degrade_cleanly_and_never_echo_secrets() {
     .unwrap_err();
     assert!(matches!(not_utf8, NginxScanError::NotUtf8));
 
-    let unsupported = collect_with(Err(CollectError::UnsupportedOs { os: "macos" }), || {
+    let unsupported = collect_with(failed(CollectError::UnsupportedOs { os: "macos" }), || {
         panic!("should not read sockets")
     })
     .unwrap_err();

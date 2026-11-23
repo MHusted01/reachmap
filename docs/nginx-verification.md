@@ -3,8 +3,9 @@
 Use a fresh, disposable Linux host or container with real Nginx, local
 loopback backends, and an isolated client network namespace. The lab exercises
 `reachmap scan --nginx-routes`, `--snapshot`, and offline `reachmap replay`
-against real `nginx -T` output while checking that synthetic secrets never
-appear in snapshots or reports.
+against real Nginx configuration files while checking that synthetic secrets
+never appear in snapshots or reports, and that a scan creates none of the
+configured log files or temp directories.
 
 ## Five-layer evidence model
 
@@ -12,7 +13,7 @@ The pure offline correlation core (`reachmap::nginx::audit`) keeps five
 layers independent so HTTP errors or failed probes never collapse into
 unsupported firewall or safety claims:
 
-1. **Configured Nginx route.** Matches on-disk `nginx -T` `server` and
+1. **Configured Nginx route.** Matches on-disk configuration `server` and
    `location` blocks and local frontend `listen` TCP sockets. Whether the
    running Nginx master has reloaded the on-disk configuration remains
    unverified.
@@ -64,12 +65,14 @@ containers on exit.
 | Stopped/missing loopback backend | `502` from Nginx frontend | Frontend listener matched; backend `127.0.0.1:18081` reports `no matching TCP listener` | `0` | Empty-netns replay matches live stdout; no synthetic secrets |
 | Proxy-auth-protected route (`auth_basic`) | `401` unauthenticated; `200` with Basic credentials | `proxy auth: auth_basic=on; application auth: unverified` | `0` | Empty-netns replay matches live stdout; realm and htpasswd path omitted |
 | Dynamic route directives (`if` and `rewrite`) | Not assumed static | `Configuration uncertainties` lists `dynamic control flow` (`if`) and `dynamic routing` (`rewrite`) | `1` | Empty-netns replay matches live stdout; uncertainties preserved in JSON |
+| Read-only collection (Nginx stopped, `access_log` and `client_body_temp_path` pointing at missing paths) | N/A | Frontend reports `no matching TCP listener`; neither path exists after the root scan, while a control `nginx -t` creates both | `0` | Empty-netns replay matches live stdout; no synthetic secrets |
 | Unprivileged collector (`chmod 600` route file) | N/A | Clean `permission denied` diagnostic on stderr, empty stdout | `1` | Raw config lines and synthetic secrets do not leak into stderr |
 
 ## Scope and evidence limits
 
-- `nginx -T` inspects the on-disk configuration rather than the running Nginx
-  master's active worker state.
+- reachmap reads the on-disk configuration files rather than the running Nginx
+  master's active worker state, and runs only `nginx -V`, never Nginx's
+  configuration test.
 - Non-loopback static targets cannot be proven reachable locally and remain
   separate from remote connectivity checks.
 - Failed HTTP requests (`000` / no response) or `502`/`503`/`504` responses

@@ -545,11 +545,26 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
     target: http://127.0.0.1:8080/v1 (TCP listener 127.0.0.1:8080)
 ```
 
-- **Evidence boundary (disk vs. running master).** `reachmap` runs `nginx -T`
-  and reads `/proc/net/tcp*` plus `sock_diag`. The output reflects configuration
-  on disk, which can differ from a running Nginx master process if configuration
-  was edited without reloading. It does not verify TCP connectivity, HTTP
+- **Evidence boundary (disk vs. running master).** `reachmap` reads the
+  configuration files on disk and `/proc/net/tcp*` plus `sock_diag`. The output
+  can differ from a running Nginx master process if configuration was edited
+  without reloading, or if Nginx was started with `-c` or `-p`. Nginx itself
+  does not validate the files first, so a file it would reject is reported by
+  reachmap's parser or not at all. It does not verify TCP connectivity, HTTP
   responses, upstream policy, or application-level authentication.
+- **Which files.** `nginx -V` names the main file (`--conf-path`, relative to
+  `--prefix`, or `<prefix>/conf/nginx.conf`). reachmap follows `include` like
+  Nginx: relative paths start at the main file's directory, `*`, `?` and
+  `[...]` (including POSIX classes such as `[[:digit:]]`) match bytes within
+  each path component, as `glob()` does in the C locale, `\` makes the next
+  character literal, matches apply in sorted order, hidden files are skipped,
+  and each file is read once. Only regular files on disk filesystems are opened (symlinks are
+  followed); a directory, FIFO, socket, device or file on a kernel
+  filesystem such as `/proc` or `/sys` fails the scan, and so does a matching
+  file name that is not UTF-8. An include cycle, which Nginx rejects, is
+  reported as an unresolved include. An include that names a missing
+  file or uses a variable is reported as a configuration uncertainty. A quoted
+  `--conf-path` in `nginx -V` is not guessed at: the scan fails instead.
 - **Separate layers.** Frontend `listen` listener state, backend target
   listener state, configured proxy-layer auth indicators (`auth_basic`,
   `auth_request`, `ssl_verify_client`, `allow`/`deny`), and unverified
@@ -557,18 +572,21 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
   only match an exact local bind so wildcard listeners cannot mask remote
   hosts; hostnames other than `localhost` are reported as unresolved without
   making DNS queries.
-- **Privileges and binary lookup.** `reachmap` tries `/usr/sbin/nginx`,
-  `/sbin/nginx`, `/usr/bin/nginx` and `/bin/nginx` before falling back to
-  absolute, root-owned, non-group/world-writable `PATH` directories and
-  binaries (otherwise `nginx` is reported missing), with an isolated environment
-  (`LC_ALL=C`), timeout, and bounded output limits. Reading `/etc/nginx/` and
-  included files often requires `sudo`. While `reachmap` itself never writes
-  files or reloads Nginx, `nginx -T` runs Nginx's own configuration test before
-  dumping, so Nginx may open configured log files or create configured temp/PID
-  parent directories during the check; `--nginx-routes` is therefore opt-in.
-  Missing `nginx`, permission errors, non-zero exits, timeouts, and oversized
-  output fail cleanly with exit 1 without echoing raw `nginx -T` lines or stderr
-  secrets.
+- **Privileges and binary lookup.** `reachmap` runs only `nginx -V`, which
+  prints build information and exits before loading any configuration, from
+  `/usr/sbin/nginx`, `/sbin/nginx`, `/usr/bin/nginx` or `/bin/nginx` before
+  falling back to absolute, root-owned, non-group/world-writable `PATH`
+  directories and binaries (otherwise `nginx` is reported missing), with an
+  isolated environment (`LC_ALL=C`), timeout, and bounded output limits. It
+  never runs `nginx -T` or `nginx -t`, whose configuration test can create log
+  files and temp directories. Reading `/etc/nginx/` and included files often
+  requires `sudo`. Missing `nginx` or configuration files, permission errors,
+  `nginx -V` failures, timeouts, and configurations over 8 MiB, 1024 files,
+  65536 directory entries scanned per pattern or 500000 directives projected
+  through includes fail cleanly with exit 1 without echoing configuration
+  lines. Reading also stops when newly found files are nested more than 32
+  includes deep; a file is read once, so a shared file first found at a
+  shallow depth is not counted again where it is included deeper.
 - **Exit status.** Returns exit 0 only when collection is complete and no
   configuration uncertainties (`if`, `rewrite`, `auth_request`, `allow`/`deny`,
   regex locations, etc.) were found; returns exit 1 for partial collection,
@@ -584,7 +602,7 @@ reachmap replay nginx.json
 
 The versioned JSON (`snapshot_version: 1`, `scope: "nginx_routes"`) records the
 host label, capture time, minimized route structure, relevant local TCP
-listeners, and collection diagnostics. Raw `nginx -T` text, comments, headers,
+listeners, and collection diagnostics. Raw configuration text, comments, headers,
 credentials, key/password paths, query strings, fragments, static bodies, and
 unrelated listeners are discarded in memory and never written to the snapshot.
 Because server names, paths, ports, and config file paths remain, keep the
@@ -684,9 +702,10 @@ when you share the port on purpose. Serve alone is no warning.
   `/usr/bin/tailscale`, `/usr/local/bin/tailscale`, `/bin/tailscale` and
   `/snap/bin/tailscale` that exists, and looks `tailscale` up through `PATH` only
   if none does.
-- **Nginx routes need `nginx`.** `reachmap scan --nginx-routes` runs `nginx -T`
+- **Nginx routes need `nginx`.** `reachmap scan --nginx-routes` runs `nginx -V`
   from `/usr/sbin/nginx`, `/sbin/nginx`, `/usr/bin/nginx` or `/bin/nginx` (or
-  `PATH` fallback) and often needs `sudo` to read `/etc/nginx/` files.
+  `PATH` fallback) to find the main configuration file, and often needs `sudo`
+  to read `/etc/nginx/` files.
 - **TCP and UDP only.** Other protocols, such as a port Docker publishes as
   `sctp`, are not listed.
 - When IPv6 is disabled in the kernel, `/proc/net/tcp6` and `/proc/net/udp6` do

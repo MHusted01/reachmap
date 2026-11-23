@@ -101,6 +101,7 @@ impl<'a> Projector<'a> {
                     ) {
                         self.consumed[included] = true;
                         let inc_file = &self.files[included];
+                        visited.insert(included);
                         self.collect_server_items(
                             &inc_file.directives,
                             inc_file.source_file,
@@ -109,6 +110,7 @@ impl<'a> Projector<'a> {
                             pending_locations,
                             visited,
                         );
+                        visited.remove(&included);
                     }
                 }
                 _ => apply_shared_directive(
@@ -233,6 +235,7 @@ impl<'a> Projector<'a> {
                     ) {
                         self.consumed[included] = true;
                         let inc_file = &self.files[included];
+                        visited.insert(included);
                         self.collect_location_items(
                             &inc_file.directives,
                             inc_file.source_file,
@@ -240,6 +243,7 @@ impl<'a> Projector<'a> {
                             acl,
                             visited,
                         );
+                        visited.remove(&included);
                     }
                 }
                 _ => apply_shared_directive(

@@ -1,24 +1,42 @@
 //! Secret-minimizing projection from temporary Nginx AST into [`NginxConfig`].
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::nginx::{AuthSignals, NginxConfig, UncertaintyKind, UpstreamGroup};
 use crate::sanitize::sanitize;
 
+use super::NginxParseError;
 use super::directives::{
-    ScopeAclState, ScopeKind, apply_shared_directive, glob_match, is_benign_top_level,
+    ScopeAclState, ScopeKind, apply_shared_directive, is_benign_top_level,
     is_benign_upstream_directive, is_secret_bearing, record_common_uncertainty,
-    resolve_relative_pattern,
 };
 use super::listen::push_uncertainty;
 use super::parser::{Directive, FileAst};
 use super::target::parse_upstream_server;
 
-pub(super) fn project(files: &[FileAst<'_>]) -> NginxConfig {
+/// Most directives projected through `include`s in one parse. Each include is
+/// projected where it appears, so repeating a large snippet, or a file that
+/// includes the next one twice, thirty files deep, would otherwise mean
+/// millions of model entries or a billion projections.
+pub(super) const MAX_INCLUDE_WORK: usize = 500_000;
+
+pub(super) fn project(files: &[FileAst<'_>]) -> Result<NginxConfig, NginxParseError> {
     let mut projector = Projector::new(files);
     projector.run();
-    projector.config
+    if projector.include_work > MAX_INCLUDE_WORK {
+        return Err(NginxParseError::IncludeExpansionTooLarge {
+            limit: MAX_INCLUDE_WORK,
+        });
+    }
+    Ok(projector.config)
+}
+
+/// Directives in a block, nested blocks included.
+fn directive_count(directives: &[Directive<'_>]) -> usize {
+    directives
+        .iter()
+        .map(|directive| 1 + directive.block.as_deref().map_or(0, directive_count))
+        .sum()
 }
 
 pub(super) struct Projector<'a> {
@@ -26,6 +44,11 @@ pub(super) struct Projector<'a> {
     pub(super) consumed: Vec<bool>,
     pub(super) upstreams: BTreeMap<String, UpstreamGroup>,
     pub(super) config: NginxConfig,
+    /// Directives in each file, nested blocks included.
+    pub(super) file_sizes: Vec<usize>,
+    /// Directives projected through includes so far; past
+    /// [`MAX_INCLUDE_WORK`] no further include is followed and the parse fails.
+    pub(super) include_work: usize,
 }
 
 impl<'a> Projector<'a> {
@@ -35,6 +58,11 @@ impl<'a> Projector<'a> {
             consumed: vec![false; files.len()],
             upstreams: BTreeMap::new(),
             config: NginxConfig::default(),
+            file_sizes: files
+                .iter()
+                .map(|file| directive_count(&file.directives))
+                .collect(),
+            include_work: 0,
         }
     }
 
@@ -77,13 +105,14 @@ impl<'a> Projector<'a> {
                     http_dir.line,
                 );
             }
+            let mut visited = BTreeSet::from([index]);
             for directive in &self.files[index].directives {
                 if directive.name != "http" {
                     self.project_top_level_directive(
                         directive,
                         self.files[index].source_file,
-                        index,
                         saw_stream,
+                        &mut visited,
                     );
                 }
             }
@@ -92,27 +121,30 @@ impl<'a> Projector<'a> {
         for index in 0..self.files.len() {
             if !self.consumed[index] {
                 self.consumed[index] = true;
-                self.project_top_level_file(&self.files[index], index, saw_stream);
+                let mut visited = BTreeSet::from([index]);
+                self.project_top_level_file(&self.files[index], saw_stream, &mut visited);
             }
         }
 
         self.config.upstreams = self.upstreams.values().cloned().collect();
     }
 
+    /// Projects a file outside `http`. `visited` holds the files already on
+    /// this include chain, so an include cycle ends instead of recursing.
     fn project_top_level_file(
         &mut self,
         file: &'a FileAst<'a>,
-        file_index: usize,
         saw_stream: bool,
+        visited: &mut BTreeSet<usize>,
     ) {
         let has_http_children = file
             .directives
             .iter()
             .any(|d| matches!(d.name.as_ref(), "server" | "upstream"));
         if has_http_children && !saw_stream {
-            let mut visited = BTreeSet::from([file_index]);
-            self.collect_http_upstreams(&file.directives, file.source_file, &mut visited);
-            let mut visited = BTreeSet::from([file_index]);
+            let mut upstream_visited = visited.clone();
+            self.collect_http_upstreams(&file.directives, file.source_file, &mut upstream_visited);
+            let mut visited = visited.clone();
             let mut auth = AuthSignals::default();
             let mut acl = ScopeAclState::default();
             self.project_http_directives(
@@ -126,7 +158,7 @@ impl<'a> Projector<'a> {
         }
 
         for directive in &file.directives {
-            self.project_top_level_directive(directive, file.source_file, file_index, saw_stream);
+            self.project_top_level_directive(directive, file.source_file, saw_stream, visited);
         }
     }
 
@@ -134,8 +166,8 @@ impl<'a> Projector<'a> {
         &mut self,
         directive: &'a Directive<'a>,
         source_file: Option<&'a str>,
-        file_index: usize,
         saw_stream: bool,
+        visited: &mut BTreeSet<usize>,
     ) {
         let name = directive.name.as_ref();
         match name {
@@ -154,16 +186,17 @@ impl<'a> Projector<'a> {
                 directive.line,
             ),
             "include" => {
-                let mut visited = BTreeSet::from([file_index]);
                 for included in self.resolve_include(
                     &directive.args,
                     source_file,
                     directive.line,
-                    &mut visited,
+                    visited,
                     true,
                 ) {
                     self.consumed[included] = true;
-                    self.project_top_level_file(&self.files[included], included, saw_stream);
+                    visited.insert(included);
+                    self.project_top_level_file(&self.files[included], saw_stream, visited);
+                    visited.remove(&included);
                 }
             }
             _ if is_benign_top_level(name) || is_secret_bearing(name) => {}
@@ -195,11 +228,13 @@ impl<'a> Projector<'a> {
                     ) {
                         self.consumed[included] = true;
                         let inc_file = &self.files[included];
+                        visited.insert(included);
                         self.collect_http_upstreams(
                             &inc_file.directives,
                             inc_file.source_file,
                             visited,
                         );
+                        visited.remove(&included);
                     }
                 }
                 _ => {}
@@ -306,6 +341,7 @@ impl<'a> Projector<'a> {
                     ) {
                         self.consumed[included] = true;
                         let inc_file = &self.files[included];
+                        visited.insert(included);
                         self.project_http_directives(
                             &inc_file.directives,
                             inc_file.source_file,
@@ -313,6 +349,7 @@ impl<'a> Projector<'a> {
                             http_acl,
                             visited,
                         );
+                        visited.remove(&included);
                     }
                 }
                 _ => apply_shared_directive(
@@ -329,64 +366,5 @@ impl<'a> Projector<'a> {
         for directive in server_directives {
             self.project_server(directive, source_file, *http_auth);
         }
-    }
-
-    pub(super) fn resolve_include(
-        &mut self,
-        args: &[Cow<'_, str>],
-        source_file: Option<&'a str>,
-        line: usize,
-        visited: &mut BTreeSet<usize>,
-        report_missing_literal: bool,
-    ) -> Vec<usize> {
-        let Some(pattern) = args.first().filter(|_| args.len() == 1) else {
-            push_uncertainty(
-                &mut self.config.uncertainties,
-                UncertaintyKind::InvalidDirective,
-                "include",
-                source_file,
-                line,
-            );
-            return Vec::new();
-        };
-        let pattern = pattern.as_ref();
-        if pattern.contains('$') {
-            push_uncertainty(
-                &mut self.config.uncertainties,
-                UncertaintyKind::DynamicInclude,
-                "include",
-                source_file,
-                line,
-            );
-            return Vec::new();
-        }
-
-        let resolved_pattern = resolve_relative_pattern(source_file, pattern);
-        let is_glob = pattern.contains('*') || pattern.contains('?');
-        let mut matched = Vec::new();
-
-        for (index, file) in self.files.iter().enumerate() {
-            let Some(candidate) = file.source_file else {
-                continue;
-            };
-            let matches_pattern = glob_match(pattern, candidate)
-                || resolved_pattern
-                    .as_deref()
-                    .is_some_and(|rel| glob_match(rel, candidate));
-            if matches_pattern && visited.insert(index) {
-                matched.push(index);
-            }
-        }
-
-        if matched.is_empty() && !is_glob && report_missing_literal {
-            push_uncertainty(
-                &mut self.config.uncertainties,
-                UncertaintyKind::UnresolvedInclude,
-                "include",
-                source_file,
-                line,
-            );
-        }
-        matched
     }
 }

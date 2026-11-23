@@ -523,3 +523,187 @@ fn handles_braced_variables_acl_overrides_http_includes_and_duplicate_upstreams(
             .any(|u| u.kind == UncertaintyKind::UnmodeledDirective && u.directive == "set")
     );
 }
+
+#[test]
+fn relative_includes_resolve_against_the_main_configuration_directory() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { include conf.d/*.conf; }
+        # configuration file /etc/nginx/conf.d/app.conf:
+        server {
+            listen 80;
+            location / { include snippets/proxy.conf; }
+        }
+        # configuration file /etc/nginx/snippets/proxy.conf:
+        proxy_pass http://127.0.0.1:8080;
+        ",
+    )
+    .expect("valid prefix-relative includes");
+
+    assert!(
+        config.uncertainties.is_empty(),
+        "unexpected uncertainties: {:?}",
+        config.uncertainties
+    );
+    assert!(matches!(
+        config.servers[0].locations[0].target,
+        Some(ProxyTarget::StaticHttp { .. })
+    ));
+}
+
+#[test]
+fn top_level_include_cycles_end_as_unresolved_includes() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        include a.conf;
+        # configuration file /etc/nginx/a.conf:
+        include b.conf;
+        # configuration file /etc/nginx/b.conf:
+        include a.conf;
+        ",
+    )
+    .expect("a cycle is parsed, not followed forever");
+
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::UnresolvedInclude)
+    );
+}
+
+#[test]
+fn repeated_and_diamond_includes_are_not_cycles() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { include a.conf; include b.conf; }
+        # configuration file /etc/nginx/a.conf:
+        server {
+            listen 81;
+            location /one { include shared.conf; }
+            location /two { include shared.conf; }
+        }
+        # configuration file /etc/nginx/b.conf:
+        server { listen 82; location / { include shared.conf; } }
+        # configuration file /etc/nginx/shared.conf:
+        proxy_pass http://127.0.0.1:8080;
+        ",
+    )
+    .expect("valid repeated includes");
+
+    assert!(
+        config.uncertainties.is_empty(),
+        "{:?}",
+        config.uncertainties
+    );
+    let targets = config
+        .servers
+        .iter()
+        .flat_map(|server| &server.locations)
+        .filter(|location| matches!(location.target, Some(ProxyTarget::StaticHttp { .. })))
+        .count();
+    assert_eq!(targets, 3);
+}
+
+#[test]
+fn wildcard_include_cycles_are_reported() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { include cycle*.conf; }
+        # configuration file /etc/nginx/cycle1.conf:
+        include cycle*.conf;
+        server { listen 80; }
+        ",
+    )
+    .expect("a wildcard cycle is parsed");
+
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::UnresolvedInclude),
+        "{:?}",
+        config.uncertainties
+    );
+}
+
+#[test]
+fn include_globs_do_not_cross_directories() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http {
+            server { listen 81; location / { include snippets/[a-z]*.conf; } }
+            server { listen 82; location / { include snippets/nested/backend.conf; } }
+        }
+        # configuration file /etc/nginx/snippets/nested/backend.conf:
+        proxy_pass http://127.0.0.1:9000;
+        ",
+    )
+    .expect("valid nested snippet");
+
+    assert_eq!(config.servers[0].locations[0].target, None);
+    assert!(matches!(
+        config.servers[1].locations[0].target,
+        Some(ProxyTarget::StaticHttp { .. })
+    ));
+}
+
+#[test]
+fn include_expansion_is_bounded_by_directives_projected() {
+    // Exponential fan-out: each file includes the next twice, thirty deep.
+    let filler = "worker_processes 1;\n".repeat(50);
+    let mut dump = String::from("# configuration file /etc/nginx/nginx.conf:\ninclude 0.conf;\n");
+    for index in 0..30 {
+        let next = index + 1;
+        dump.push_str(&format!(
+            "# configuration file /etc/nginx/{index}.conf:\ninclude {next}.conf;\ninclude {next}.conf;\n{filler}"
+        ));
+    }
+    dump.push_str("# configuration file /etc/nginx/30.conf:\nworker_processes 1;\n");
+    let budget_error = Err(NginxParseError::IncludeExpansionTooLarge { limit: 500_000 });
+    assert_eq!(parse_nginx_config(&dump), budget_error);
+
+    // A large snippet repeated a few hundred times, far below any file limit.
+    let snippet = "proxy_set_header X-Lab 1;\n".repeat(5_000);
+    let includes = "include big.conf;\n".repeat(200);
+    let repeated_snippet = format!(
+        "# configuration file /etc/nginx/nginx.conf:\nhttp {{ server {{ listen 80; location / {{\n{includes}}} }} }}\n# configuration file /etc/nginx/big.conf:\n{snippet}"
+    );
+    assert_eq!(parse_nginx_config(&repeated_snippet), budget_error);
+
+    let repeated = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { server { listen 80; location / { include p.conf; include p.conf; } } }
+        # configuration file /etc/nginx/p.conf:
+        proxy_set_header X-Lab 1;
+        ",
+    )
+    .expect("a small same-scope repeat completes");
+    assert!(
+        repeated.uncertainties.is_empty(),
+        "{:?}",
+        repeated.uncertainties
+    );
+}
+
+#[test]
+fn wildcard_matches_apply_in_sorted_order() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http {
+            server { listen 81; location / { include acl/z.conf; } }
+            server { listen 82; location / { include acl/*.conf; } }
+        }
+        # configuration file /etc/nginx/acl/z.conf:
+        deny all;
+        # configuration file /etc/nginx/acl/a.conf:
+        allow all;
+        ",
+    )
+    .expect("valid ACL snippets");
+
+    // Nginx applies a.conf (`allow all`) before z.conf, so the first rule
+    // admits everyone and the later server has no effective access control.
+    assert!(config.servers[0].locations[0].auth.access_control);
+    assert!(!config.servers[1].locations[0].auth.access_control);
+}

@@ -204,44 +204,18 @@ pub(super) fn record_common_uncertainty(
     push_uncertainty(uncertainties, kind, name, source_file, line);
 }
 
-pub(super) fn resolve_relative_pattern(source_file: Option<&str>, pattern: &str) -> Option<String> {
+/// Joins a relative `include` pattern to the directory of the main
+/// configuration file, Nginx's configuration prefix.
+pub(super) fn resolve_relative_pattern(main_file: Option<&str>, pattern: &str) -> Option<String> {
     if pattern.starts_with('/') {
         return None;
     }
-    let dir = source_file?.rsplit_once('/')?.0;
+    let dir = main_file?.rsplit_once('/')?.0;
     if dir.is_empty() {
         Some(format!("/{pattern}"))
     } else {
         Some(format!("{dir}/{pattern}"))
     }
-}
-
-pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let (mut star_p, mut star_t) = (None, 0usize);
-
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star_p = Some(pi);
-            pi += 1;
-            star_t = ti;
-        } else if let Some(sp) = star_p {
-            pi = sp + 1;
-            star_t += 1;
-            ti = star_t;
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
 }
 
 pub(super) fn is_secret_bearing(name: &str) -> bool {

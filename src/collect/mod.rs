@@ -9,6 +9,7 @@ pub(crate) mod inbound_path;
 mod linux;
 #[cfg(target_os = "macos")]
 pub(crate) mod macos;
+pub(crate) mod nginx_files;
 mod processes;
 #[cfg(target_os = "linux")]
 mod sock_diag;
@@ -281,34 +282,32 @@ pub(crate) fn read_nftables_rules() -> Result<String, CollectError> {
     })
 }
 
-/// Dumps the expanded Nginx configuration on disk via `nginx -T` using fixed
-/// root-owned candidate paths (with a trusted absolute root-owned `PATH`
-/// fallback), an isolated environment, explicit timeout, and bounded
-/// stdout/stderr limits.
+/// Runs `nginx -V` and returns its build information (printed on stderr),
+/// using fixed root-owned candidate paths (with a trusted absolute root-owned
+/// `PATH` fallback), an isolated environment, a timeout and bounded output.
 #[cfg(target_os = "linux")]
-pub fn read_nginx_config() -> Result<String, CollectError> {
+pub fn read_nginx_build_info() -> Result<String, CollectError> {
     let Some(program) = command::locate_with_path(linux::NGINX_PATHS, linux::NGINX_PROGRAM) else {
         return Err(CollectError::Run {
             command: format!(
                 "{} {}",
                 linux::NGINX_PROGRAM,
-                linux::NGINX_DUMP_ARGS.join(" ")
+                linux::NGINX_BUILD_INFO_ARGS.join(" ")
             ),
             source: io::Error::from(ErrorKind::NotFound),
         });
     };
-    command::run_bounded(
+    command::run_bounded_stderr(
         &program,
-        linux::NGINX_DUMP_ARGS,
+        linux::NGINX_BUILD_INFO_ARGS,
         linux::COMMAND_TIMEOUT,
-        (linux::MAX_NGINX_STDOUT, linux::MAX_NGINX_STDERR),
-        |_| {},
+        linux::MAX_NGINX_BUILD_INFO,
     )
 }
 
-/// Dumps the expanded Nginx configuration. Only Linux is supported for now.
+/// Runs `nginx -V`. Only Linux is supported for now.
 #[cfg(not(target_os = "linux"))]
-pub fn read_nginx_config() -> Result<String, CollectError> {
+pub fn read_nginx_build_info() -> Result<String, CollectError> {
     Err(CollectError::UnsupportedOs {
         os: std::env::consts::OS,
     })

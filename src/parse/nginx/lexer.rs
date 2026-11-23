@@ -1,4 +1,5 @@
-//! Bounded, zero-copy-by-default lexer for `nginx -T` output.
+//! Bounded, zero-copy-by-default lexer for Nginx configuration in the
+//! `nginx -T` format.
 
 use std::borrow::Cow;
 
@@ -131,6 +132,22 @@ fn push_token<'a>(tokens: &mut Vec<Token<'a>>, token: Token<'a>) -> Result<(), N
     Ok(())
 }
 
+/// Decodes one backslash escape as Nginx copies a token: `\"`, `\'` and `\\`
+/// drop the backslash, `\t`, `\r` and `\n` become control characters, and
+/// any other escape keeps its backslash (so `include` globs see `\?`).
+fn push_escape(buf: &mut String, next: char) {
+    match next {
+        '"' | '\'' | '\\' => buf.push(next),
+        't' => buf.push('\t'),
+        'r' => buf.push('\r'),
+        'n' => buf.push('\n'),
+        other => {
+            buf.push('\\');
+            buf.push(other);
+        }
+    }
+}
+
 fn find_line_end(bytes: &[u8], mut pos: usize) -> usize {
     while pos < bytes.len() && bytes[pos] != b'\n' {
         pos += 1;
@@ -192,19 +209,7 @@ fn lex_quoted<'a>(
             if next_char == '\n' {
                 *line += 1;
             }
-            if quote == b'"' {
-                match next_char {
-                    'n' => buf.push('\n'),
-                    'r' => buf.push('\r'),
-                    't' => buf.push('\t'),
-                    other => buf.push(other),
-                }
-            } else if next_char == '\'' || next_char == '\\' {
-                buf.push(next_char);
-            } else {
-                buf.push('\\');
-                buf.push(next_char);
-            }
+            push_escape(buf, next_char);
             pos += 1 + next_char.len_utf8();
             chunk_start = pos;
             continue;
@@ -268,7 +273,7 @@ fn lex_unquoted<'a>(
             if next_char == '\n' {
                 *line += 1;
             }
-            buf.push(next_char);
+            push_escape(buf, next_char);
             pos += 1 + next_char.len_utf8();
             chunk_start = pos;
             prev_unescaped_dollar = false;

@@ -149,6 +149,22 @@ pub(crate) fn run_bounded(
     checked_output(program, args, output)
 }
 
+/// Like [`run_bounded`], but returns standard error, for programs such as
+/// `nginx -V` that print their report there.
+#[cfg(any(target_os = "linux", test))]
+pub(super) fn run_bounded_stderr(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+    limit: u64,
+) -> Result<String, CollectError> {
+    let output = capture(program, args, timeout, Some((limit, limit)), |_| {})?;
+    if !output.status.success() {
+        return Err(failed_status(program, args, &output));
+    }
+    decode_stdout(program, args, output.stderr)
+}
+
 fn checked_output(program: &str, args: &[&str], output: Output) -> Result<String, CollectError> {
     if !output.status.success() {
         return Err(failed_status(program, args, &output));
@@ -424,6 +440,27 @@ mod tests {
             }
         ));
         assert!(render_chain(&error).contains("stderr output exceeded its 32-byte size limit"));
+    }
+
+    #[test]
+    fn stderr_reports_are_returned_and_failures_still_fail() {
+        let script = "printf 'ignored'; printf 'configure arguments: --prefix=/opt' >&2";
+        assert_eq!(
+            run_bounded_stderr("/bin/sh", &["-c", script], LONG, 1024).unwrap(),
+            "configure arguments: --prefix=/opt"
+        );
+        let failed = run_bounded_stderr("/bin/sh", &["-c", "exit 2"], LONG, 1024).unwrap_err();
+        assert!(matches!(failed, CollectError::CommandFailed { .. }));
+        let oversized =
+            run_bounded_stderr("/bin/sh", &["-c", "head -c 64 /dev/zero >&2"], LONG, 32)
+                .unwrap_err();
+        assert!(matches!(
+            oversized,
+            CollectError::OutputTooLarge {
+                stream: "stderr",
+                ..
+            }
+        ));
     }
 
     fn assert_times_out(script: &str) {
