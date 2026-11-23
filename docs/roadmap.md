@@ -16,10 +16,12 @@ evidence behind each result and identify where the evidence runs out.
 
 ## Current capabilities
 
-v0.5.0 includes the
+v0.6.0 includes the
+[Nginx reverse proxy paths](https://github.com/MHusted01/reachmap/milestone/8)
+milestone on top of v0.5.0's
 [Tailscale proxy and tunnel paths](https://github.com/MHusted01/reachmap/milestone/6)
 and [Verified Linux TCP audits](https://github.com/MHusted01/reachmap/milestone/7)
-milestones on top of v0.4.0's
+milestones and v0.4.0's
 [Linux packet paths](https://github.com/MHusted01/reachmap/milestone/4) and
 [Docker bridge coverage](https://github.com/MHusted01/reachmap/milestone/5) work.
 The [changelog](../CHANGELOG.md) lists the changes by release.
@@ -32,10 +34,12 @@ The [changelog](../CHANGELOG.md) lists the changes by release.
 | v0.3.0 | macOS TCP and UDP socket inventory and global application firewall state. Linux Docker egress checks compare the host and workload using named observers. | macOS reports visible process ownership and the global firewall setting. Egress observations cover the selected observers and workload network namespace. |
 | v0.4.0 | `scan --snapshot` and `replay` capture and reevaluate Linux host-input evidence. `path predict`, `path capture` and `path replay` explain IPv4 and IPv6 inbound TCP to local Linux listeners and IPv4 TCP publishes on `docker0` or one user-defined bridge. | The prediction follows a new inbound SYN through supported stages up to listener lookup. Docker requires native nftables and kernel DNAT with the userland proxy disabled. Missing or unsupported evidence can yield `unknown`. Return traffic and handshake completion are outside scope. |
 | v0.5.0 | `scan --tailscale-routes` and `--snapshot` explain and replay configured Tailscale Serve and Funnel routes and local loopback TCP listener links. `reachmap audit` collects one Linux inbound TCP prediction over authenticated SSH and compares it with a client TCP handshake from Linux or macOS. | Tailscale route reports describe configuration and local socket evidence; upstream policy, DNS, TLS and application authentication remain separate observations. `audit` covers one explicit numeric TCP endpoint using an installed remote collector; disagreements and evidence gaps stay visible, and failed handshakes do not establish firewall verdicts. See [Tailscale verification](tailscale-verification.md) and [audit verification](audit-verification.md). |
+| v0.6.0 | `scan --nginx-routes` and `--snapshot` explain and replay configured Nginx `http` reverse proxy routes: frontend listeners, server names, locations, backend targets and their local TCP listeners, and proxy-layer auth indicators. | Collection is read-only: reachmap reads the on-disk configuration at Nginx's built-in path and runs only `nginx -V`. Reports describe that on-disk configuration, which can differ from what a running Nginx has loaded. TCP connectivity, HTTP responses, upstream policy and application authentication remain separate observations; unsupported directives such as `if`, `rewrite` and regex locations are reported as uncertainties. Snapshots keep a secret-minimized route model. See [Nginx verification](nginx-verification.md). |
 
 See the current command and output contracts in [scan](scan.md), [probe](probe.md),
 [diff](diff.md), [JSON](json.md), [egress](egress.md), [Docker and UFW](docker-and-ufw.md),
-[Linux inbound TCP paths](scan.md#linux-inbound-tcp-paths) and [SSH audit](audit.md).
+[Linux inbound TCP paths](scan.md#linux-inbound-tcp-paths), [Nginx routes](scan.md#nginx)
+and [SSH audit](audit.md).
 
 ## Platform targets
 
@@ -162,6 +166,12 @@ configured routes, observed reachability and application authentication.
 how to handle includes and dynamic provider state, and which external tunnel
 or identity policies a local collector can see. Avoid collecting secrets by
 default. Test each adapter before claiming support for its path.
+
+**Delivered so far.** Tailscale Serve and Funnel routes shipped in v0.5.0 and
+[Nginx reverse proxy paths](https://github.com/MHusted01/reachmap/milestone/8)
+in v0.6.0, each with configured-route reports, local listener links, offline
+replay and a disposable verification lab. Caddy is next; Traefik and
+Cloudflare Tunnel remain planned.
 
 ### Integrated remote auditing
 
