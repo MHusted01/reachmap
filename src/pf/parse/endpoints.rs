@@ -74,6 +74,8 @@ pub(super) fn address(cursor: &mut Cursor<'_>) -> Result<Address, Construct> {
         "any" | "self" if negated => Err(Construct::UnrecognizedSyntax),
         "any" => Ok(Address::Any),
         "self" => Ok(Address::SelfHost),
+        "urpf-failed" => Err(Construct::UrpfFailed),
+        "no-route" => Err(Construct::NoRoute),
         _ if word.starts_with('<') => Err(Construct::Table),
         _ if word.starts_with('(') => Err(Construct::DynamicAddress),
         _ => Cidr::parse(word)

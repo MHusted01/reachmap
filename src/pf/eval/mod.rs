@@ -16,7 +16,7 @@ mod state;
 
 use scrub::{Reassembly, evaluate_scrub};
 use state::{
-    Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, combine_fragment_verdicts,
+    Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, branch, combine_fragment_verdicts,
     combine_tcp_verdicts, direct_children, has_filter_entries, promote_anchor_stops, unknown,
     verdict,
 };
@@ -57,6 +57,8 @@ pub(super) fn evaluate(
         Reassembly::Reassembled => true,
         Reassembly::MaybeUnreassembled => false,
     };
+    // A TCP opening SYN carries no payload and orphan fragments cannot establish
+    // a handshake, whereas UDP datagrams can arrive as fragments over IPv4/IPv6.
     if traffic.protocol == Protocol::Tcp {
         let plain = base.evaluate_after_skip(rules, skipped.clone());
         let ecn = Walker {
@@ -65,7 +67,7 @@ pub(super) fn evaluate(
         }
         .evaluate_after_skip(rules, skipped);
         combine_tcp_verdicts(&plain, &ecn)
-    } else if traffic.destination.is_ipv4() && !reassembled {
+    } else if !reassembled {
         let full = base.evaluate_after_skip(rules, skipped.clone());
         let frag = Walker {
             fragment: true,
@@ -323,7 +325,27 @@ impl Walker<'_> {
             .collect();
         for (body_idx, &(key, body)) in bodies.iter().enumerate() {
             let scope = AnchorName::new(key);
-            current = self.run(body, Some(&scope), depth + 1, current);
+            if body_idx == 0 {
+                current = self.run(body, Some(&scope), depth + 1, current);
+            } else {
+                let (matched, unmatched): (Paths, Paths) =
+                    current.into_iter().partition(|path| path.matched);
+                let mut next = Paths::new();
+                if !unmatched.is_empty() {
+                    next.extend(self.run(body, Some(&scope), depth + 1, unmatched));
+                }
+                if !matched.is_empty() {
+                    next.extend(
+                        self.run(body, Some(&scope), depth + 1, matched)
+                            .into_iter()
+                            .map(|mut path| {
+                                path.matched = true;
+                                path
+                            }),
+                    );
+                }
+                current = next;
+            }
             let more_children = bodies[body_idx + 1..]
                 .iter()
                 .any(|(_, child)| has_filter_entries(&child.entries));
@@ -352,32 +374,4 @@ impl Walker<'_> {
             })
             .collect()
     }
-}
-
-/// Applies one rule to the paths that are still running. `taken` builds the
-/// paths where the rule matched; a rule that only might match keeps the old
-/// paths too.
-fn branch(
-    paths: Paths,
-    matched: Match,
-    origin: &Origin,
-    taken: impl FnOnce(Paths, Option<&Uncertain>) -> Paths,
-) -> Paths {
-    let (finished, live): (Paths, Paths) = paths.into_iter().partition(Path::is_done);
-    if live.is_empty() {
-        return finished;
-    }
-    let next = match matched {
-        Match::No => live,
-        Match::Yes => taken(live, None),
-        Match::Maybe(construct) => {
-            let uncertain = Uncertain {
-                construct,
-                origin: origin.clone(),
-            };
-            let moved = taken(live.clone(), Some(&uncertain));
-            live.into_iter().chain(moved).collect()
-        }
-    };
-    finished.into_iter().chain(next).collect()
 }

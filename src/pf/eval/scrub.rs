@@ -75,7 +75,7 @@ fn walk_scrub(
                 branch_scrub(paths, criteria.matches(traffic, SYN, false), |live| {
                     live.into_iter()
                         .map(|_| ScrubPath {
-                            done: criteria.quick,
+                            done: true,
                             state: ScrubState::Reassembled,
                         })
                         .collect()

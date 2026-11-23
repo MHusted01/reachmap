@@ -37,12 +37,12 @@ fn nested_anchor_entry_clears_previous_match_flag() {
 }
 
 #[test]
-fn ipv4_udp_port_rules_require_reassembly_or_yield_unknown() {
+fn udp_port_rules_require_reassembly_and_follow_first_match_scrub() {
     let udp_v4 = traffic("en0", Protocol::Udp, HOST, 5353);
     let lone_block = "block drop in on en0 inet proto udp from any to any port = 5353";
     assert_eq!(
         check(lone_block, &Default::default(), &udp_v4),
-        unknown("unreassembled IPv4 fragment in rule at line 1")
+        unknown("unreassembled UDP fragment in rule at line 1")
     );
 
     let reassembled = "scrub in all fragment reassemble\nblock drop in on en0 inet proto udp from any to any port = 5353";
@@ -51,10 +51,16 @@ fn ipv4_udp_port_rules_require_reassembly_or_yield_unknown() {
         block_at(2)
     );
 
-    let exempted = "scrub in all fragment reassemble\nno scrub in on en0 proto udp all\nblock drop in on en0 inet proto udp from any to any port = 5353";
+    let scrub_before_no_scrub = "scrub in all fragment reassemble\nno scrub in on en0 proto udp all\nblock drop in on en0 inet proto udp from any to any port = 5353";
     assert_eq!(
-        check(exempted, &Default::default(), &udp_v4),
-        unknown("unreassembled IPv4 fragment in rule at line 3")
+        check(scrub_before_no_scrub, &Default::default(), &udp_v4),
+        block_at(3)
+    );
+
+    let no_scrub_before_scrub = "no scrub in on en0 proto udp all\nscrub in all fragment reassemble\nblock drop in on en0 inet proto udp from any to any port = 5353";
+    assert_eq!(
+        check(no_scrub_before_scrub, &Default::default(), &udp_v4),
+        unknown("unreassembled UDP fragment in rule at line 3")
     );
 
     let no_port_with_no_scrub = "no scrub in on en0 all\nblock drop in all";
@@ -67,7 +73,13 @@ fn ipv4_udp_port_rules_require_reassembly_or_yield_unknown() {
     let lone_v6_block = "block drop in on en0 inet6 proto udp from any to any port = 5353";
     assert_eq!(
         check(lone_v6_block, &Default::default(), &udp_v6),
-        block_at(1)
+        unknown("unreassembled UDP fragment in rule at line 1")
+    );
+
+    let v6_reassembled = "scrub in all fragment reassemble\nblock drop in on en0 inet6 proto udp from any to any port = 5353";
+    assert_eq!(
+        check(v6_reassembled, &Default::default(), &udp_v6),
+        block_at(2)
     );
 }
 
@@ -164,5 +176,63 @@ fn wildcard_multi_child_promotes_trailing_quick_anchor_stop() {
         Verdict::Block {
             reason: "matched block rule at line 1 of anchor \"outer/100/inner\"".to_string()
         }
+    );
+}
+
+#[test]
+fn wildcard_preserves_earlier_child_match_across_later_empty_anchor() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let tree = anchors(&[
+        ("site/*", ""),
+        ("site/100", "pass in proto tcp from any to any port = 22"),
+        ("site/200", "anchor \"empty\" all"),
+        ("site/200/empty", ""),
+    ]);
+    assert_eq!(
+        check(
+            "anchor \"site/*\" quick all\nblock drop in all",
+            &tree,
+            &packet
+        ),
+        Verdict::Pass {
+            reason: "matched pass rule at line 1 of anchor \"site/100\"".to_string()
+        }
+    );
+}
+
+#[test]
+fn urpf_failed_and_no_route_yield_named_unknowns() {
+    assert_eq!(
+        tcp("block drop in quick from urpf-failed to any", "en0", 22),
+        unknown("urpf-failed condition in rule at line 1")
+    );
+    assert_eq!(
+        tcp(
+            "pass in all\nblock drop in quick from no-route to any",
+            "en0",
+            22
+        ),
+        unknown("no-route condition in rule at line 2")
+    );
+}
+
+#[test]
+fn all_is_mutually_exclusive_with_explicit_host_clauses() {
+    assert_eq!(
+        tcp("block drop in quick all from any to any", "en0", 22),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    let trailing_all = "block drop in quick from any to any port = 22 all";
+    assert_eq!(
+        tcp(trailing_all, "en0", 22),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    assert_eq!(
+        tcp(trailing_all, "en0", 80),
+        unknown("unrecognized syntax in rule at line 1")
+    );
+    assert_eq!(
+        tcp("block drop in quick all all", "en0", 22),
+        unknown("unrecognized syntax in rule at line 1")
     );
 }

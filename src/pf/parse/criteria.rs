@@ -146,13 +146,31 @@ fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result
         "inet6" => set_once(&mut criteria.family, AddressFamily::Ipv6)?,
         "on" => set_once_with(&mut criteria.interface, || interface(cursor))?,
         "proto" => set_once_with(&mut criteria.protocol, || protocol(next_word(cursor)?))?,
-        "from" => set_once_with(&mut criteria.source, || endpoint(cursor))?,
-        "to" => set_once_with(&mut criteria.destination, || endpoint(cursor))?,
+        "from" => {
+            if criteria.saw_all {
+                return Err(Construct::UnrecognizedSyntax);
+            }
+            set_once_with(&mut criteria.source, || endpoint(cursor))?;
+        }
+        "to" => {
+            if criteria.saw_all {
+                return Err(Construct::UnrecognizedSyntax);
+            }
+            set_once_with(&mut criteria.destination, || endpoint(cursor))?;
+        }
         "flags" => {
             criteria.flags =
                 Some(TcpFlags::parse(next_word(cursor)?).ok_or(Construct::UnrecognizedSyntax)?);
         }
-        "all" | "drop" | "return" | "allow-opts" => {}
+        "all" => {
+            if criteria.saw_all || criteria.source.is_some() || criteria.destination.is_some() {
+                criteria.source = None;
+                criteria.destination = None;
+                return Err(Construct::UnrecognizedSyntax);
+            }
+            criteria.saw_all = true;
+        }
+        "drop" | "return" | "allow-opts" => {}
         "icmp-type" | "icmp6-type" => {
             next_word(cursor)?;
             if cursor

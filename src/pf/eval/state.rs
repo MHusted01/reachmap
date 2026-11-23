@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use super::super::matching::Match;
 use super::super::model::{AnchorName, Construct, Entry, Kind};
 use super::super::{AnchorRulesets, Ruleset, Verdict};
 
@@ -210,7 +211,7 @@ pub(super) fn combine_fragment_verdicts(full: &Paths, frag: &Paths) -> Verdict {
                 .filter_map(|path| path.port_origin.as_ref())
                 .min()
                 .map_or_else(
-                    || "unreassembled IPv4 fragment changed verdict".to_string(),
+                    || "unreassembled UDP fragment changed verdict".to_string(),
                     |origin| {
                         Uncertain {
                             origin: origin.clone(),
@@ -269,6 +270,34 @@ pub(super) fn promote_anchor_stops(paths: Paths) -> Paths {
             path
         })
         .collect()
+}
+
+/// Applies one rule to the paths that are still running. `taken` builds the
+/// paths where the rule matched; a rule that only might match keeps the old
+/// paths too.
+pub(super) fn branch(
+    paths: Paths,
+    matched: Match,
+    origin: &Origin,
+    taken: impl FnOnce(Paths, Option<&Uncertain>) -> Paths,
+) -> Paths {
+    let (finished, live): (Paths, Paths) = paths.into_iter().partition(Path::is_done);
+    if live.is_empty() {
+        return finished;
+    }
+    let next = match matched {
+        Match::No => live,
+        Match::Yes => taken(live, None),
+        Match::Maybe(construct) => {
+            let uncertain = Uncertain {
+                construct,
+                origin: origin.clone(),
+            };
+            let moved = taken(live.clone(), Some(&uncertain));
+            live.into_iter().chain(moved).collect()
+        }
+    };
+    finished.into_iter().chain(next).collect()
 }
 
 fn describe(action: &str, cause: &Cause) -> String {
