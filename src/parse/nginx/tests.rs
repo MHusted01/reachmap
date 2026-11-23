@@ -647,3 +647,55 @@ fn include_globs_do_not_cross_directories() {
         Some(ProxyTarget::StaticHttp { .. })
     ));
 }
+
+#[test]
+fn exponential_include_fan_out_fails_with_a_budget_error() {
+    let mut dump = String::from("# configuration file /etc/nginx/nginx.conf:\ninclude 0.conf;\n");
+    for index in 0..30 {
+        let next = index + 1;
+        dump.push_str(&format!(
+            "# configuration file /etc/nginx/{index}.conf:\ninclude {next}.conf;\ninclude {next}.conf;\n"
+        ));
+    }
+    dump.push_str("# configuration file /etc/nginx/30.conf:\nworker_processes 1;\n");
+    assert!(matches!(
+        parse_nginx_config(&dump),
+        Err(NginxParseError::TooManyIncludeProjections { limit: 100_000 })
+    ));
+
+    let repeated = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { server { listen 80; location / { include p.conf; include p.conf; } } }
+        # configuration file /etc/nginx/p.conf:
+        proxy_set_header X-Lab 1;
+        ",
+    )
+    .expect("a small same-scope repeat completes");
+    assert!(
+        repeated.uncertainties.is_empty(),
+        "{:?}",
+        repeated.uncertainties
+    );
+}
+
+#[test]
+fn wildcard_matches_apply_in_sorted_order() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http {
+            server { listen 81; location / { include acl/z.conf; } }
+            server { listen 82; location / { include acl/*.conf; } }
+        }
+        # configuration file /etc/nginx/acl/z.conf:
+        deny all;
+        # configuration file /etc/nginx/acl/a.conf:
+        allow all;
+        ",
+    )
+    .expect("valid ACL snippets");
+
+    // Nginx applies a.conf (`allow all`) before z.conf, so the first rule
+    // admits everyone and the later server has no effective access control.
+    assert!(config.servers[0].locations[0].auth.access_control);
+    assert!(!config.servers[1].locations[0].auth.access_control);
+}

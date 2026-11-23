@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::nginx::{AuthSignals, NginxConfig, UncertaintyKind, UpstreamGroup};
 use crate::sanitize::sanitize;
 
+use super::NginxParseError;
 use super::directives::{
     ScopeAclState, ScopeKind, apply_shared_directive, is_benign_top_level,
     is_benign_upstream_directive, is_secret_bearing, record_common_uncertainty,
@@ -13,10 +14,20 @@ use super::listen::push_uncertainty;
 use super::parser::{Directive, FileAst};
 use super::target::parse_upstream_server;
 
-pub(super) fn project(files: &[FileAst<'_>]) -> NginxConfig {
+/// Most included files projected in one parse. Each `include` is projected
+/// where it appears, so a file that includes the next one twice, thirty files
+/// deep, would otherwise mean over a billion projections.
+pub(super) const MAX_INCLUDE_PROJECTIONS: usize = 100_000;
+
+pub(super) fn project(files: &[FileAst<'_>]) -> Result<NginxConfig, NginxParseError> {
     let mut projector = Projector::new(files);
     projector.run();
-    projector.config
+    if projector.include_projections > MAX_INCLUDE_PROJECTIONS {
+        return Err(NginxParseError::TooManyIncludeProjections {
+            limit: MAX_INCLUDE_PROJECTIONS,
+        });
+    }
+    Ok(projector.config)
 }
 
 pub(super) struct Projector<'a> {
@@ -24,6 +35,9 @@ pub(super) struct Projector<'a> {
     pub(super) consumed: Vec<bool>,
     pub(super) upstreams: BTreeMap<String, UpstreamGroup>,
     pub(super) config: NginxConfig,
+    /// Included files projected so far; past [`MAX_INCLUDE_PROJECTIONS`] no
+    /// further include is followed and the parse fails.
+    pub(super) include_projections: usize,
 }
 
 impl<'a> Projector<'a> {
@@ -33,6 +47,7 @@ impl<'a> Projector<'a> {
             consumed: vec![false; files.len()],
             upstreams: BTreeMap::new(),
             config: NginxConfig::default(),
+            include_projections: 0,
         }
     }
 

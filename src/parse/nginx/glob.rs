@@ -1,29 +1,29 @@
 //! `glob()`-style matching of one path component, as Nginx uses for `include`.
+//! Matching is on bytes, as `glob()` does in the C locale.
 
-/// Matches `text` against a `glob()` pattern: `*` matches any run of
-/// characters, `?` one character, and `[...]` one character from a class with
-/// ranges (`a-z`), negation (`!` or `^`) and POSIX classes such as
-/// `[:digit:]` (ASCII, as in the C locale). A `[` without a closing `]` is a
-/// literal. Backslash escapes are not supported.
+/// Matches `text` against a `glob()` pattern: `*` matches any run of bytes,
+/// `?` one byte, `\` makes the next byte literal, and `[...]` matches one byte
+/// from a class with ranges (`a-z`), negation (`!` or `^`) and POSIX classes
+/// such as `[:digit:]`. A `[` without a closing `]` is a literal.
 pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
-    let pattern: Vec<char> = pattern.chars().collect();
-    let text: Vec<char> = text.chars().collect();
+    let (pattern, text) = (pattern.as_bytes(), text.as_bytes());
     let (mut p, mut t) = (0usize, 0usize);
     // After a `*`: the pattern index behind it and the text index it covers up to.
     let mut star: Option<(usize, usize)> = None;
 
     while t < text.len() {
         let step = match pattern.get(p) {
-            Some('*') => {
+            Some(b'*') => {
                 star = Some((p + 1, t));
                 p += 1;
                 continue;
             }
-            Some('?') => Some(p + 1),
-            Some('[') => match match_class(&pattern, p, text[t]) {
+            Some(b'?') => Some(p + 1),
+            Some(b'\\') if p + 1 < pattern.len() => (pattern[p + 1] == text[t]).then_some(p + 2),
+            Some(b'[') => match match_class(pattern, p, text[t]) {
                 Some((true, next)) => Some(next),
                 Some((false, _)) => None,
-                None => (text[t] == '[').then_some(p + 1),
+                None => (text[t] == b'[').then_some(p + 1),
             },
             Some(&literal) => (literal == text[t]).then_some(p + 1),
             None => None,
@@ -41,74 +41,106 @@ pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
             (None, None) => return false,
         }
     }
-    pattern[p..].iter().all(|&c| c == '*')
+    pattern[p..].iter().all(|&b| b == b'*')
 }
 
-/// Matches `c` against the class starting at `pattern[open] == '['`. Returns
-/// whether it matched and the index after the closing `]`, or `None` when the
-/// class is not closed.
-fn match_class(pattern: &[char], open: usize, c: char) -> Option<(bool, usize)> {
+/// Matches `byte` against the class starting at `pattern[open] == b'['`.
+/// Returns whether it matched and the index after the closing `]`, or `None`
+/// when the class is not closed.
+fn match_class(pattern: &[u8], open: usize, byte: u8) -> Option<(bool, usize)> {
     let mut i = open + 1;
-    let negated = matches!(pattern.get(i), Some('!' | '^'));
+    let negated = matches!(pattern.get(i), Some(b'!' | b'^'));
     if negated {
         i += 1;
     }
     let first = i;
     let mut matched = false;
-    while let Some(&low) = pattern.get(i) {
-        if low == ']' && i > first {
+    while let Some(&current) = pattern.get(i) {
+        if current == b']' && i > first {
             return Some((matched != negated, i + 1));
         }
-        if low == '['
-            && let Some(&kind @ (':' | '.' | '=')) = pattern.get(i + 1)
+        if current == b'['
+            && let Some(&kind @ (b':' | b'.' | b'=')) = pattern.get(i + 1)
             && let Some((name, end)) = bracket_expression(pattern, i + 2, kind)
         {
-            matched |= if kind == ':' {
-                named_class(&name, c)
+            matched |= if kind == b':' {
+                named_class(name, byte)
             } else {
-                name.chars().eq(std::iter::once(c))
+                name == [byte]
             };
             i = end;
             continue;
         }
-        match (pattern.get(i + 1), pattern.get(i + 2)) {
-            (Some('-'), Some(&high)) if high != ']' => {
-                matched |= (low..=high).contains(&c);
-                i += 3;
+        let (low, after_low) = class_byte(pattern, i)?;
+        match (pattern.get(after_low), pattern.get(after_low + 1)) {
+            (Some(b'-'), Some(&next)) if next != b']' => {
+                let (high, after_high) = class_byte(pattern, after_low + 1)?;
+                matched |= (low..=high).contains(&byte);
+                i = after_high;
             }
             _ => {
-                matched |= low == c;
-                i += 1;
+                matched |= low == byte;
+                i = after_low;
             }
         }
     }
     None
 }
 
-/// Reads a `[:name:]`, `[.c.]` or `[=c=]` body from `start` up to the closing
-/// `kind` and `]`. Returns the body and the index after the closing `]`.
-fn bracket_expression(pattern: &[char], start: usize, kind: char) -> Option<(String, usize)> {
-    (start..pattern.len().saturating_sub(1))
-        .find(|&end| pattern[end] == kind && pattern[end + 1] == ']')
-        .map(|end| (pattern[start..end].iter().collect(), end + 2))
+/// The class member at `i`, where `\` makes the next byte literal, and the
+/// index after it.
+fn class_byte(pattern: &[u8], i: usize) -> Option<(u8, usize)> {
+    match pattern.get(i)? {
+        b'\\' => pattern.get(i + 1).map(|&escaped| (escaped, i + 2)),
+        &plain => Some((plain, i + 1)),
+    }
 }
 
-/// Whether `c` is in the POSIX class `name` in the C locale. An unknown class
-/// matches nothing, as with `fnmatch()`.
-fn named_class(name: &str, c: char) -> bool {
+/// Reads a `[:name:]`, `[.c.]` or `[=c=]` body from `start` up to the closing
+/// `kind` and `]`. Returns the body and the index after the closing `]`.
+fn bracket_expression(pattern: &[u8], start: usize, kind: u8) -> Option<(&[u8], usize)> {
+    (start..pattern.len().saturating_sub(1))
+        .find(|&end| pattern[end] == kind && pattern[end + 1] == b']')
+        .map(|end| (&pattern[start..end], end + 2))
+}
+
+/// Whether `byte` is in the POSIX class `name` in the C locale. An unknown
+/// class matches nothing, as with `fnmatch()`.
+fn named_class(name: &[u8], byte: u8) -> bool {
     match name {
-        "alnum" => c.is_ascii_alphanumeric(),
-        "alpha" => c.is_ascii_alphabetic(),
-        "blank" => matches!(c, ' ' | '\t'),
-        "cntrl" => c.is_ascii_control(),
-        "digit" => c.is_ascii_digit(),
-        "graph" => c.is_ascii_graphic(),
-        "lower" => c.is_ascii_lowercase(),
-        "print" => c.is_ascii_graphic() || c == ' ',
-        "punct" => c.is_ascii_punctuation(),
-        "space" => c.is_ascii_whitespace() || c == '\u{b}',
-        "upper" => c.is_ascii_uppercase(),
-        "xdigit" => c.is_ascii_hexdigit(),
+        b"alnum" => byte.is_ascii_alphanumeric(),
+        b"alpha" => byte.is_ascii_alphabetic(),
+        b"blank" => matches!(byte, b' ' | b'\t'),
+        b"cntrl" => byte.is_ascii_control(),
+        b"digit" => byte.is_ascii_digit(),
+        b"graph" => byte.is_ascii_graphic(),
+        b"lower" => byte.is_ascii_lowercase(),
+        b"print" => byte.is_ascii_graphic() || byte == b' ',
+        b"punct" => byte.is_ascii_punctuation(),
+        b"space" => byte.is_ascii_whitespace() || byte == 0x0b,
+        b"upper" => byte.is_ascii_uppercase(),
+        b"xdigit" => byte.is_ascii_hexdigit(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::glob_match;
+
+    #[test]
+    fn backslash_escapes_match_literally() {
+        assert!(glob_match("site\\?.conf", "site?.conf"));
+        assert!(!glob_match("site\\?.conf", "site1.conf"));
+        assert!(glob_match("a\\*", "a*"));
+        assert!(!glob_match("a\\*", "ab"));
+        assert!(glob_match("[\\]]", "]"));
+    }
+
+    #[test]
+    fn matching_counts_bytes_like_the_c_locale() {
+        assert!(glob_match("??.conf", "é.conf"), "é is two bytes");
+        assert!(!glob_match("?.conf", "é.conf"));
+        assert!(glob_match("*.conf", "é.conf"));
     }
 }

@@ -244,6 +244,32 @@ fn posix_classes_and_cross_directory_globs_give_the_right_routes() {
 }
 
 #[test]
+fn escaped_and_non_ascii_includes_load_their_routes() {
+    let files = FakeFiles::default()
+        .text(
+            MAIN,
+            "http { include 'conf.d/site\\?.conf'; include extra/??.conf; }",
+        )
+        .text("/etc/nginx/conf.d/site?.conf", "server { listen 81; }")
+        .text("/etc/nginx/conf.d/site1.conf", "server { listen 82; }")
+        .text("/etc/nginx/extra/é.conf", "server { listen 83; }");
+    let dump = read_config(MAIN, &files).unwrap();
+    let config = parse_nginx_config(&dump).unwrap();
+    assert!(
+        config.uncertainties.is_empty(),
+        "{:?}",
+        config.uncertainties
+    );
+    let ports: Vec<u16> = config
+        .servers
+        .iter()
+        .flat_map(|server| &server.listens)
+        .map(|listen| listen.port)
+        .collect();
+    assert_eq!(ports, [81, 83]);
+}
+
+#[test]
 fn expands_wildcards_in_directory_components() {
     let files = FakeFiles::default()
         .text(MAIN, "http { include /srv/vhosts/*/site.conf; }")

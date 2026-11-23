@@ -555,9 +555,10 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
 - **Which files.** `nginx -V` names the main file (`--conf-path`, relative to
   `--prefix`, or `<prefix>/conf/nginx.conf`). reachmap follows `include` like
   Nginx: relative paths start at the main file's directory, `*`, `?` and
-  `[...]` (including POSIX classes such as `[[:digit:]]`) match within each
-  path component in sorted order and skip hidden files, and each file is read
-  once. Only regular files on disk filesystems are opened (symlinks are
+  `[...]` (including POSIX classes such as `[[:digit:]]`) match bytes within
+  each path component, as `glob()` does in the C locale, `\` makes the next
+  character literal, matches apply in sorted order, hidden files are skipped,
+  and each file is read once. Only regular files on disk filesystems are opened (symlinks are
   followed); a directory, FIFO, socket, device or file on a kernel
   filesystem such as `/proc` or `/sys` fails the scan, and so does a matching
   file name that is not UTF-8. An include cycle, which Nginx rejects, is
@@ -581,7 +582,8 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
   files and temp directories. Reading `/etc/nginx/` and included files often
   requires `sudo`. Missing `nginx` or configuration files, permission errors,
   `nginx -V` failures, timeouts, and configurations over 8 MiB, 1024 files,
-  32 nested includes or 65536 directory entries scanned per pattern fail cleanly with exit 1 without echoing configuration
+  32 nested includes, 65536 directory entries scanned per pattern or 100000
+  included-file projections fail cleanly with exit 1 without echoing configuration
   lines.
 - **Exit status.** Returns exit 0 only when collection is complete and no
   configuration uncertainties (`if`, `rewrite`, `auth_request`, `allow`/`deny`,

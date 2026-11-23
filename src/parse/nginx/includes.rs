@@ -9,7 +9,7 @@ use super::directives::resolve_relative_pattern;
 use super::glob::glob_match;
 use super::listen::push_uncertainty;
 use super::parser::Directive;
-use super::project::Projector;
+use super::project::{MAX_INCLUDE_PROJECTIONS, Projector};
 use super::{NginxParseError, lexer, parser};
 use crate::nginx::UncertaintyKind;
 
@@ -133,6 +133,9 @@ impl<'a> Projector<'a> {
         visited: &mut BTreeSet<usize>,
         report_missing_literal: bool,
     ) -> Vec<usize> {
+        if self.include_projections > MAX_INCLUDE_PROJECTIONS {
+            return Vec::new();
+        }
         let Some(pattern) = args.first().filter(|_| args.len() == 1) else {
             push_uncertainty(
                 &mut self.config.uncertainties,
@@ -178,6 +181,16 @@ impl<'a> Projector<'a> {
             } else {
                 matched.push(index);
             }
+        }
+
+        // `glob()` returns matches sorted; the dump lists files in the order
+        // they were first included, which can differ.
+        if is_glob {
+            matched.sort_unstable_by_key(|&index| self.files[index].source_file);
+        }
+        self.include_projections += matched.len();
+        if self.include_projections > MAX_INCLUDE_PROJECTIONS {
+            return Vec::new();
         }
 
         if report_missing_literal && (cycle || (matched.is_empty() && !is_glob)) {

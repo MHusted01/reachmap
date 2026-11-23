@@ -55,6 +55,12 @@ pub enum NginxParseError {
         /// Maximum allowed token count.
         limit: usize,
     },
+    /// Following `include`s would project more files than the parser allows.
+    #[error("nginx configuration includes expand to more than {limit} included files")]
+    TooManyIncludeProjections {
+        /// Maximum number of included files projected.
+        limit: usize,
+    },
     /// Block nesting exceeded the parser depth bound.
     #[error("nginx configuration exceeds {limit} levels of block nesting at {}", format_location(.file.as_deref(), *.line))]
     NestingTooDeep {
@@ -135,7 +141,7 @@ fn format_location(file: Option<&str>, line: usize) -> String {
 pub fn parse_nginx_config(input: &str) -> Result<NginxConfig, NginxParseError> {
     let tokens = lexer::tokenize(input)?;
     let files = parser::parse(&tokens)?;
-    Ok(project::project(&files))
+    project::project(&files)
 }
 
 #[cfg(test)]
