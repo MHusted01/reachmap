@@ -16,7 +16,7 @@ use super::{Collection, NginxRouteReport, backend_candidate, listen_candidate};
 pub(super) fn write_report(report: &NginxRouteReport, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     writeln!(
         f,
-        "Nginx routes (on-disk config files and local TCP sockets only; running master reload state, TCP connectivity, HTTP responses, upstream policy, and application authentication are unverified)"
+        "Nginx routes (config files on disk at Nginx's built-in path and local TCP sockets only; whether a running Nginx loaded this configuration, TCP connectivity, HTTP responses, upstream policy, and application authentication are unverified)"
     )?;
     if report.config.servers.is_empty()
         && matches!(report.collection, Collection::Complete)

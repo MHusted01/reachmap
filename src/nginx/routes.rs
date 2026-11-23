@@ -113,6 +113,12 @@ pub enum NginxScanError {
         /// Maximum number of files read.
         limit: usize,
     },
+    /// Expanding one `include` pattern scans too many directory entries.
+    #[error("an Nginx include pattern scans more than {limit} directory entries")]
+    GlobTooWide {
+        /// Maximum number of directory entries scanned per pattern.
+        limit: usize,
+    },
     /// `include`s are nested deeper than the collector follows.
     #[error("Nginx configuration includes are nested more than {limit} levels deep")]
     IncludeTooDeep {

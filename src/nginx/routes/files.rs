@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use std::io::{self, ErrorKind};
 
 use super::NginxScanError;
-use crate::collect::nginx_files::{ConfigFiles, FileRead};
+use crate::collect::nginx_files::{ConfigFiles, DirList, FileRead};
 use crate::parse::nginx::{
     MAX_INPUT_BYTES, include_patterns, is_glob_component, matches_glob_component,
 };
@@ -18,6 +18,9 @@ pub(super) const MAX_FILES: usize = 1024;
 
 /// Deepest chain of nested `include`s followed.
 pub(super) const MAX_INCLUDE_DEPTH: usize = 32;
+
+/// Most directory entries one `include` pattern may scan while expanding.
+pub(super) const MAX_GLOB_ENTRIES: usize = 64 * MAX_FILES;
 
 /// Reads `main` and every file it includes, depth first in include order like
 /// `nginx -T`, each once and after a `# configuration file <path>:` line.
@@ -116,42 +119,60 @@ impl<F: ConfigFiles> Walk<'_, F> {
             return Ok(vec![full]);
         }
         let mut paths = vec![String::new()];
+        let mut budget = MAX_GLOB_ENTRIES;
+        // Like `glob()`, return only paths that exist: after the first wildcard,
+        // literal components are looked up in their directory too.
+        let mut expanding = false;
         for component in full.split('/').skip(1) {
+            expanding |= is_glob_component(component);
             let mut next = Vec::new();
             for base in &paths {
-                if is_glob_component(component) {
-                    self.extend_matches(base, component, &mut next)?;
+                if expanding {
+                    self.extend_matches(base, component, &mut budget, &mut next)?;
                 } else {
                     next.push(format!("{base}/{component}"));
                 }
-                if next.len() > MAX_FILES {
-                    return Err(NginxScanError::TooManyFiles { limit: MAX_FILES });
-                }
             }
             paths = next;
+        }
+        if paths.len() > MAX_FILES {
+            return Err(NginxScanError::TooManyFiles { limit: MAX_FILES });
         }
         paths.sort_unstable();
         Ok(paths)
     }
 
-    /// Adds the entries of directory `base` that match `component`.
+    /// Adds the entries of directory `base` that match `component`, scanning
+    /// at most `budget` more entries.
     fn extend_matches(
         &self,
         base: &str,
         component: &str,
+        budget: &mut usize,
         paths: &mut Vec<String>,
     ) -> Result<(), NginxScanError> {
         let dir = if base.is_empty() { "/" } else { base };
-        let names = self
-            .files
-            .list(dir)
-            .map_err(|error| read_error(dir, &error))?;
-        paths.extend(
-            names
-                .into_iter()
-                .filter(|name| matches_glob_component(component, name))
-                .map(|name| format!("{base}/{name}")),
-        );
+        let entries = match self.files.list(dir, *budget) {
+            Ok(DirList::Entries(entries)) => entries,
+            Ok(DirList::TooMany) => {
+                return Err(NginxScanError::GlobTooWide {
+                    limit: MAX_GLOB_ENTRIES,
+                });
+            }
+            Err(error) => return Err(read_error(dir, &error)),
+        };
+        *budget -= entries.len();
+        for entry in entries {
+            if !matches_glob_component(component, &entry.name) {
+                continue;
+            }
+            // A name that is not UTF-8 cannot be read into the text format;
+            // fail rather than drop a file Nginx would include.
+            if !entry.utf8 {
+                return Err(unreadable(dir, "a matching file name is not valid UTF-8"));
+            }
+            paths.push(format!("{base}/{}", entry.name));
+        }
         Ok(())
     }
 }
@@ -172,7 +193,6 @@ fn too_large() -> NginxScanError {
 fn read_error(path: &str, error: &io::Error) -> NginxScanError {
     match error.kind() {
         ErrorKind::PermissionDenied => NginxScanError::PermissionDenied,
-        ErrorKind::InvalidData => unreadable(path, "a file name in it is not valid UTF-8"),
         kind => NginxScanError::ReadFailed {
             path: sanitize(path),
             kind: kind.to_string(),

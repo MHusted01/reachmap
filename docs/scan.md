@@ -554,12 +554,13 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
   responses, upstream policy, or application-level authentication.
 - **Which files.** `nginx -V` names the main file (`--conf-path`, relative to
   `--prefix`, or `<prefix>/conf/nginx.conf`). reachmap follows `include` like
-  Nginx: relative paths start at the main file's directory, `*` and `?` match
-  within each path component in sorted order and skip hidden files, and each
-  file is read once. Only regular files are opened (symlinks are followed);
-  a directory, FIFO, socket or device fails the scan. An include that names a
-  missing file, uses a variable, or uses a `[...]` pattern is reported as a
-  configuration uncertainty.
+  Nginx: relative paths start at the main file's directory, `*`, `?` and
+  `[...]` match within each path component in sorted order and skip hidden
+  files, and each file is read once. Only regular files are opened (symlinks
+  are followed); a directory, FIFO, socket or device fails the scan, and so
+  does a matching file name that is not UTF-8. An include that names a missing
+  file or uses a variable is reported as a configuration uncertainty. A quoted
+  `--conf-path` in `nginx -V` is not guessed at: the scan fails instead.
 - **Separate layers.** Frontend `listen` listener state, backend target
   listener state, configured proxy-layer auth indicators (`auth_basic`,
   `auth_request`, `ssl_verify_client`, `allow`/`deny`), and unverified
@@ -576,8 +577,8 @@ Server app.example.test (/etc/nginx/sites-enabled/app.conf)
   never runs `nginx -T` or `nginx -t`, whose configuration test can create log
   files and temp directories. Reading `/etc/nginx/` and included files often
   requires `sudo`. Missing `nginx` or configuration files, permission errors,
-  `nginx -V` failures, timeouts, and configurations over 8 MiB, 1024 files or
-  32 nested includes fail cleanly with exit 1 without echoing configuration
+  `nginx -V` failures, timeouts, and configurations over 8 MiB, 1024 files,
+  32 nested includes or 65536 directory entries scanned per pattern fail cleanly with exit 1 without echoing configuration
   lines.
 - **Exit status.** Returns exit 0 only when collection is complete and no
   configuration uncertainties (`if`, `rewrite`, `auth_request`, `allow`/`deny`,

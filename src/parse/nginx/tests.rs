@@ -550,3 +550,24 @@ fn relative_includes_resolve_against_the_main_configuration_directory() {
         Some(ProxyTarget::StaticHttp { .. })
     ));
 }
+
+#[test]
+fn top_level_include_cycles_end_as_unresolved_includes() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        include a.conf;
+        # configuration file /etc/nginx/a.conf:
+        include b.conf;
+        # configuration file /etc/nginx/b.conf:
+        include a.conf;
+        ",
+    )
+    .expect("a cycle is parsed, not followed forever");
+
+    assert!(
+        config
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::UnresolvedInclude)
+    );
+}

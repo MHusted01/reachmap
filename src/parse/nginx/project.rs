@@ -11,6 +11,7 @@ use super::directives::{
     is_benign_upstream_directive, is_secret_bearing, record_common_uncertainty,
     resolve_relative_pattern,
 };
+use super::includes::is_glob_component;
 use super::listen::push_uncertainty;
 use super::parser::{Directive, FileAst};
 use super::target::parse_upstream_server;
@@ -77,13 +78,14 @@ impl<'a> Projector<'a> {
                     http_dir.line,
                 );
             }
+            let mut visited = BTreeSet::from([index]);
             for directive in &self.files[index].directives {
                 if directive.name != "http" {
                     self.project_top_level_directive(
                         directive,
                         self.files[index].source_file,
-                        index,
                         saw_stream,
+                        &mut visited,
                     );
                 }
             }
@@ -92,27 +94,30 @@ impl<'a> Projector<'a> {
         for index in 0..self.files.len() {
             if !self.consumed[index] {
                 self.consumed[index] = true;
-                self.project_top_level_file(&self.files[index], index, saw_stream);
+                let mut visited = BTreeSet::from([index]);
+                self.project_top_level_file(&self.files[index], saw_stream, &mut visited);
             }
         }
 
         self.config.upstreams = self.upstreams.values().cloned().collect();
     }
 
+    /// Projects a file outside `http`. `visited` holds the files already on
+    /// this include chain, so an include cycle ends instead of recursing.
     fn project_top_level_file(
         &mut self,
         file: &'a FileAst<'a>,
-        file_index: usize,
         saw_stream: bool,
+        visited: &mut BTreeSet<usize>,
     ) {
         let has_http_children = file
             .directives
             .iter()
             .any(|d| matches!(d.name.as_ref(), "server" | "upstream"));
         if has_http_children && !saw_stream {
-            let mut visited = BTreeSet::from([file_index]);
-            self.collect_http_upstreams(&file.directives, file.source_file, &mut visited);
-            let mut visited = BTreeSet::from([file_index]);
+            let mut upstream_visited = visited.clone();
+            self.collect_http_upstreams(&file.directives, file.source_file, &mut upstream_visited);
+            let mut visited = visited.clone();
             let mut auth = AuthSignals::default();
             let mut acl = ScopeAclState::default();
             self.project_http_directives(
@@ -126,7 +131,7 @@ impl<'a> Projector<'a> {
         }
 
         for directive in &file.directives {
-            self.project_top_level_directive(directive, file.source_file, file_index, saw_stream);
+            self.project_top_level_directive(directive, file.source_file, saw_stream, visited);
         }
     }
 
@@ -134,8 +139,8 @@ impl<'a> Projector<'a> {
         &mut self,
         directive: &'a Directive<'a>,
         source_file: Option<&'a str>,
-        file_index: usize,
         saw_stream: bool,
+        visited: &mut BTreeSet<usize>,
     ) {
         let name = directive.name.as_ref();
         match name {
@@ -154,16 +159,15 @@ impl<'a> Projector<'a> {
                 directive.line,
             ),
             "include" => {
-                let mut visited = BTreeSet::from([file_index]);
                 for included in self.resolve_include(
                     &directive.args,
                     source_file,
                     directive.line,
-                    &mut visited,
+                    visited,
                     true,
                 ) {
                     self.consumed[included] = true;
-                    self.project_top_level_file(&self.files[included], included, saw_stream);
+                    self.project_top_level_file(&self.files[included], saw_stream, visited);
                 }
             }
             _ if is_benign_top_level(name) || is_secret_bearing(name) => {}
@@ -365,7 +369,7 @@ impl<'a> Projector<'a> {
         // the directory of the main file, which comes first in the dump.
         let main_file = self.files.first().and_then(|file| file.source_file);
         let resolved_pattern = resolve_relative_pattern(main_file, pattern);
-        let is_glob = pattern.contains('*') || pattern.contains('?');
+        let is_glob = is_glob_component(pattern);
         let mut matched = Vec::new();
 
         for (index, file) in self.files.iter().enumerate() {

@@ -83,7 +83,7 @@ fn replays_captured_nginx_routes_and_separates_frontend_backend_and_auth() {
         "{text}"
     );
     assert!(
-        text.contains("on-disk config files and local TCP sockets only"),
+        text.contains("config files on disk at Nginx's built-in path and local TCP sockets only"),
         "{text}"
     );
     assert!(

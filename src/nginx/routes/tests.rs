@@ -109,8 +109,10 @@ http {
     );
     let text = rep.to_string();
 
-    assert!(text.contains("on-disk config files and local TCP sockets only"));
-    assert!(text.contains("running master reload state"));
+    assert!(
+        text.contains("config files on disk at Nginx's built-in path and local TCP sockets only")
+    );
+    assert!(text.contains("whether a running Nginx loaded this configuration"));
     assert!(text.contains("application authentication are unverified"));
     assert!(text.contains("listen: 0.0.0.0:80 [default_server] (TCP listener 0.0.0.0:80)"));
     assert!(text.contains("listen: [::]:80 [ipv6only=on] (TCP listener [::]:80)"));

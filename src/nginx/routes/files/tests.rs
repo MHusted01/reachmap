@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io::{self, ErrorKind};
 
 use super::*;
+use crate::collect::nginx_files::EntryName;
 use crate::nginx::UncertaintyKind;
 use crate::parse::nginx::parse_nginx_config;
 
@@ -44,7 +45,7 @@ impl ConfigFiles for FakeFiles {
         })
     }
 
-    fn list(&self, dir: &str) -> io::Result<Vec<String>> {
+    fn list(&self, dir: &str, limit: usize) -> io::Result<DirList> {
         if let Some(Entry::Fails(kind)) = self.0.get(dir) {
             return Err(io::Error::from(*kind));
         }
@@ -56,9 +57,21 @@ impl ConfigFiles for FakeFiles {
             .map(|rest| rest.split('/').next().unwrap_or(rest).to_owned())
             .collect();
         names.dedup();
-        // Directory order is arbitrary; the walk must sort.
+        if names.len() > limit {
+            return Ok(DirList::TooMany);
+        }
+        // Directory order is arbitrary; the walk must sort. A `\u{fffd}` marks
+        // a name that is not UTF-8 on disk.
         names.reverse();
-        Ok(names)
+        Ok(DirList::Entries(
+            names
+                .into_iter()
+                .map(|name| EntryName {
+                    utf8: !name.contains('\u{fffd}'),
+                    name,
+                })
+                .collect(),
+        ))
     }
 }
 
@@ -132,13 +145,25 @@ fn reads_each_file_once_even_with_repeats_and_cycles() {
         );
     let dump = read_config(MAIN, &files).unwrap();
     assert_eq!(dump.matches("# configuration file").count(), 3);
+
+    // The cycle ends in an incomplete report (exit 1), not a stack overflow.
+    let report =
+        super::super::collect_with(Ok(dump), || panic!("no listeners to look up")).unwrap();
+    assert!(!report.is_complete());
+    assert!(
+        report
+            .config()
+            .uncertainties
+            .iter()
+            .any(|u| u.kind == UncertaintyKind::UnresolvedInclude)
+    );
 }
 
 #[test]
 fn missing_literal_includes_are_left_for_the_parser() {
     let files = FakeFiles::default().text(
         MAIN,
-        "http { include missing.conf; include none/*.conf; include site[12].conf; }",
+        "http { include missing.conf; include none/*.conf; include none/site[12].conf; }",
     );
     let dump = read_config(MAIN, &files).unwrap();
     assert_eq!(dump.matches("# configuration file").count(), 1);
@@ -148,12 +173,41 @@ fn missing_literal_includes_are_left_for_the_parser() {
         .into_iter()
         .filter(|u| u.kind == UncertaintyKind::UnresolvedInclude)
         .count();
-    assert_eq!(unresolved, 2, "the literal and the bracket pattern");
+    assert_eq!(unresolved, 1, "only the literal; globs may match nothing");
 
     assert!(matches!(
         read_config(MAIN, &FakeFiles::default()),
         Err(NginxScanError::ConfigNotFound { path }) if path == MAIN
     ));
+}
+
+#[test]
+fn bracket_classes_expand_like_glob() {
+    let files = FakeFiles::default()
+        .text(
+            MAIN,
+            "http { include conf.d/site[12]*.conf; include conf.d/[!s]*.conf; }",
+        )
+        .text("/etc/nginx/conf.d/site1-prod.conf", "server { listen 81; }")
+        .text("/etc/nginx/conf.d/site2.conf", "server { listen 82; }")
+        .text("/etc/nginx/conf.d/site3.conf", "server { listen 83; }")
+        .text("/etc/nginx/conf.d/api.conf", "server { listen 84; }");
+    let dump = read_config(MAIN, &files).unwrap();
+    for (name, read) in [
+        ("site1-prod.conf", true),
+        ("site2.conf", true),
+        ("site3.conf", false),
+        ("api.conf", true),
+    ] {
+        assert_eq!(dump.contains(&format!("/conf.d/{name}:")), read, "{name}");
+    }
+    let config = parse_nginx_config(&dump).unwrap();
+    assert!(
+        config.uncertainties.is_empty(),
+        "{:?}",
+        config.uncertainties
+    );
+    assert_eq!(config.servers.len(), 3);
 }
 
 #[test]
@@ -206,10 +260,19 @@ fn unsafe_or_unreadable_files_fail_cleanly() {
 
     let bad_name = FakeFiles::default()
         .text(MAIN, "include conf.d/*.conf;")
-        .with("/etc/nginx/conf.d", Entry::Fails(ErrorKind::InvalidData));
+        .text("/etc/nginx/conf.d/app.conf", "")
+        .text("/etc/nginx/conf.d/notes\u{fffd}.txt", "");
+    assert!(
+        read_config(MAIN, &bad_name).is_ok(),
+        "a name that cannot match is skipped"
+    );
+    let bad_match = bad_name.text("/etc/nginx/conf.d/x\u{fffd}.conf", "");
     assert!(matches!(
-        read_config(MAIN, &bad_name),
-        Err(NginxScanError::UnreadableFile { .. })
+        read_config(MAIN, &bad_match),
+        Err(NginxScanError::UnreadableFile {
+            reason: "a matching file name is not valid UTF-8",
+            ..
+        })
     ));
 
     let control = FakeFiles::default()
@@ -252,6 +315,30 @@ fn byte_file_and_depth_limits_are_enforced() {
     assert!(matches!(
         read_config(MAIN, &many),
         Err(NginxScanError::TooManyFiles { limit: MAX_FILES })
+    ));
+
+    // Many directories with no match are fine; only matches count as files.
+    let mut wide = FakeFiles::default().text(MAIN, "include /srv/*/routes.conf;");
+    for index in 0..=MAX_FILES {
+        wide = wide.text(&format!("/srv/{index:05}/other.conf"), "");
+    }
+    assert_eq!(
+        read_config(MAIN, &wide)
+            .unwrap()
+            .matches("# configuration")
+            .count(),
+        1
+    );
+
+    let mut huge_dir = FakeFiles::default().text(MAIN, "include conf.d/*.conf;");
+    for index in 0..=MAX_GLOB_ENTRIES {
+        huge_dir = huge_dir.text(&format!("/etc/nginx/conf.d/{index:06}.txt"), "");
+    }
+    assert!(matches!(
+        read_config(MAIN, &huge_dir),
+        Err(NginxScanError::GlobTooWide {
+            limit: MAX_GLOB_ENTRIES
+        })
     ));
 
     let mut deep = FakeFiles::default().text(MAIN, "include 0.conf;");

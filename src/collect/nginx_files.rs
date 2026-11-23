@@ -18,20 +18,40 @@ pub(crate) enum FileRead {
     Bytes(Vec<u8>),
 }
 
+/// One directory entry. A name that is not UTF-8 is kept lossily, so the walk
+/// can tell whether a pattern would have matched it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EntryName {
+    /// The name, with invalid UTF-8 replaced when `utf8` is false.
+    pub(crate) name: String,
+    /// Whether the name is valid UTF-8.
+    pub(crate) utf8: bool,
+}
+
+/// What listing one directory found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DirList {
+    /// Every entry, in no particular order. A missing path, or one that is
+    /// not a directory, has none, as for `glob()`.
+    Entries(Vec<EntryName>),
+    /// The directory has more entries than the limit it was listed with.
+    TooMany,
+}
+
 /// Read-only filesystem operations the Nginx include walk needs.
 pub(crate) trait ConfigFiles {
     /// Reads the regular file at `path` (following symlinks) if it holds at
     /// most `limit` bytes.
     fn read(&self, path: &str, limit: u64) -> io::Result<FileRead>;
 
-    /// Lists the entry names of the directory `dir`. A missing path, or one
-    /// that is not a directory, has no entries, as for `glob()`.
-    fn list(&self, dir: &str) -> io::Result<Vec<String>>;
+    /// Lists the directory `dir` if it has at most `limit` entries.
+    fn list(&self, dir: &str, limit: usize) -> io::Result<DirList>;
 }
 
-/// The real filesystem. Files are opened read-only and non-blocking, and only
-/// regular files are read, so a FIFO cannot stall the scan and opening a
-/// device has no side effect.
+/// The real filesystem. A file is first pinned with `O_PATH`, which opens
+/// nothing, and only a regular file is then reopened for reading through
+/// `/proc/self/fd`: a path swapped to a FIFO or device after the check still
+/// reaches the checked file, so opening a device never happens.
 #[cfg(target_os = "linux")]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct DiskFiles;
@@ -39,22 +59,14 @@ pub(crate) struct DiskFiles;
 #[cfg(target_os = "linux")]
 impl ConfigFiles for DiskFiles {
     fn read(&self, path: &str, limit: u64) -> io::Result<FileRead> {
-        use std::fs::{self, File};
+        use std::fs::File;
         use std::io::Read;
+        use std::os::fd::AsRawFd;
 
-        use rustix::fs::{Mode, OFlags, open};
+        use rustix::fs::{FileType, Mode, OFlags, fstat, open};
 
-        // Refuse non-regular files before opening them, then check the opened
-        // file again in case the path changed in between.
-        match fs::metadata(path) {
-            Ok(metadata) if !metadata.is_file() => return Ok(FileRead::NotRegular),
-            Ok(_) => {}
-            Err(error) if is_missing(error.kind()) => return Ok(FileRead::Missing),
-            Err(error) => return Err(error),
-        }
-        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
-        let file = match open(path, flags, Mode::empty()) {
-            Ok(fd) => File::from(fd),
+        let pinned = match open(path, OFlags::PATH | OFlags::CLOEXEC, Mode::empty()) {
+            Ok(fd) => fd,
             Err(error) => {
                 let error = io::Error::from(error);
                 return if is_missing(error.kind()) {
@@ -64,9 +76,12 @@ impl ConfigFiles for DiskFiles {
                 };
             }
         };
-        if !file.metadata()?.is_file() {
+        if FileType::from_raw_mode(fstat(&pinned)?.st_mode) != FileType::RegularFile {
             return Ok(FileRead::NotRegular);
         }
+        let verified = format!("/proc/self/fd/{}", pinned.as_raw_fd());
+        let flags = OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOCTTY | OFlags::CLOEXEC;
+        let file = File::from(open(verified.as_str(), flags, Mode::empty())?);
         let mut bytes = Vec::new();
         file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
         if u64::try_from(bytes.len()).map_or(true, |len| len > limit) {
@@ -75,19 +90,27 @@ impl ConfigFiles for DiskFiles {
         Ok(FileRead::Bytes(bytes))
     }
 
-    fn list(&self, dir: &str) -> io::Result<Vec<String>> {
+    fn list(&self, dir: &str, limit: usize) -> io::Result<DirList> {
         let entries = match std::fs::read_dir(dir) {
             Ok(entries) => entries,
-            Err(error) if is_missing(error.kind()) => return Ok(Vec::new()),
+            Err(error) if is_missing(error.kind()) => return Ok(DirList::Entries(Vec::new())),
             Err(error) => return Err(error),
         };
-        entries
-            .map(|entry| {
-                entry?.file_name().into_string().map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidData, "file name is not UTF-8")
-                })
-            })
-            .collect()
+        let mut names = Vec::new();
+        for entry in entries {
+            if names.len() == limit {
+                return Ok(DirList::TooMany);
+            }
+            let name = entry?.file_name();
+            names.push(match name.into_string() {
+                Ok(name) => EntryName { name, utf8: true },
+                Err(name) => EntryName {
+                    name: name.to_string_lossy().into_owned(),
+                    utf8: false,
+                },
+            });
+        }
+        Ok(DirList::Entries(names))
     }
 }
 
@@ -149,20 +172,43 @@ mod tests {
     }
 
     #[test]
-    fn lists_directories_and_treats_missing_ones_as_empty() {
+    fn lists_directories_within_a_limit_and_treats_missing_ones_as_empty() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
         let dir = TempDir::new("nginx-files-list");
         dir.file("conf.d/b.conf", "");
         dir.file("conf.d/a.conf", "");
+        std::fs::write(
+            dir.path()
+                .join("conf.d")
+                .join(OsStr::from_bytes(b"c\xff.conf")),
+            "",
+        )
+        .unwrap();
 
-        let mut names = DiskFiles.list(&text(&dir, "conf.d")).unwrap();
-        names.sort();
-        assert_eq!(names, ["a.conf", "b.conf"]);
-        assert!(DiskFiles.list(&text(&dir, "missing")).unwrap().is_empty());
-        assert!(
-            DiskFiles
-                .list(&text(&dir, "conf.d/a.conf"))
-                .unwrap()
-                .is_empty()
+        let DirList::Entries(mut names) = DiskFiles.list(&text(&dir, "conf.d"), 3).unwrap() else {
+            panic!("three entries fit a limit of three");
+        };
+        names.sort_by(|a, b| a.name.cmp(&b.name));
+        let utf8: Vec<(&str, bool)> = names.iter().map(|n| (n.name.as_str(), n.utf8)).collect();
+        assert_eq!(
+            utf8,
+            [
+                ("a.conf", true),
+                ("b.conf", true),
+                ("c\u{fffd}.conf", false)
+            ]
+        );
+        assert_eq!(
+            DiskFiles.list(&text(&dir, "conf.d"), 2).unwrap(),
+            DirList::TooMany
+        );
+        let empty = DirList::Entries(Vec::new());
+        assert_eq!(DiskFiles.list(&text(&dir, "missing"), 2).unwrap(), empty);
+        assert_eq!(
+            DiskFiles.list(&text(&dir, "conf.d/a.conf"), 2).unwrap(),
+            empty
         );
     }
 }

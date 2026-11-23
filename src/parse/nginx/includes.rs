@@ -51,7 +51,8 @@ fn collect_includes(directives: &[Directive<'_>], patterns: &mut Vec<String>) {
 /// loads without `-c`, from the `configure arguments:` line of `nginx -V`.
 ///
 /// A relative `--conf-path` is relative to `--prefix`, as in Nginx. Returns
-/// `None` when the result is not an absolute path.
+/// `None` when the result is not an absolute path, or when a value is quoted
+/// (it may contain spaces that the printed arguments no longer delimit).
 pub fn conf_path_from_build_info(build_info: &str) -> Option<String> {
     let arguments = build_info
         .lines()
@@ -65,6 +66,12 @@ pub fn conf_path_from_build_info(build_info: &str) -> Option<String> {
     };
     let prefix = value("--prefix=").unwrap_or(DEFAULT_PREFIX);
     let conf = value("--conf-path=").unwrap_or(DEFAULT_CONF_PATH);
+    if [prefix, conf]
+        .iter()
+        .any(|value| value.starts_with(['\'', '"']))
+    {
+        return None;
+    }
     let path = if conf.starts_with('/') {
         conf.to_owned()
     } else {
@@ -73,11 +80,10 @@ pub fn conf_path_from_build_info(build_info: &str) -> Option<String> {
     path.starts_with('/').then_some(path)
 }
 
-/// Whether one path component of an `include` pattern is expanded by Nginx's
-/// `glob()`. Patterns with `[` are treated as literal paths: when no such
-/// file exists, the route parser reports an unresolved include.
+/// Whether an `include` pattern, or one component of it, is expanded by
+/// Nginx's `glob()`: it contains `*`, `?` or `[`, as Nginx checks.
 pub fn is_glob_component(component: &str) -> bool {
-    component.contains(['*', '?'])
+    component.contains(['*', '?', '['])
 }
 
 /// Whether a directory entry matches one glob component. Like `glob()`, a
@@ -155,13 +161,15 @@ mod tests {
     fn non_absolute_conf_paths_are_rejected() {
         let relative_prefix = "configure arguments: --prefix=nginx --conf-path=nginx.conf";
         assert_eq!(conf_path_from_build_info(relative_prefix), None);
+        let quoted = "configure arguments: --conf-path='/etc/my nginx/nginx.conf'";
+        assert_eq!(conf_path_from_build_info(quoted), None);
     }
 
     #[test]
     fn glob_components_follow_nginx_glob_rules() {
         assert!(is_glob_component("*.conf"));
         assert!(is_glob_component("site?"));
-        assert!(!is_glob_component("site[12].conf"));
+        assert!(is_glob_component("site[12].conf"));
         assert!(!is_glob_component("default"));
 
         assert!(matches_glob_component("*.conf", "app.conf"));
@@ -169,5 +177,16 @@ mod tests {
         assert!(!matches_glob_component("*", ".app.conf.swp"));
         assert!(matches_glob_component(".*", ".hidden"));
         assert!(matches_glob_component("site?", "site1"));
+        assert!(matches_glob_component("site[12]*.conf", "site1-prod.conf"));
+        assert!(!matches_glob_component("site[12]*.conf", "site3.conf"));
+        assert!(matches_glob_component("[!.]*", "app"));
+        assert!(matches_glob_component("[a-c]x", "bx"));
+        assert!(!matches_glob_component("[a-c]x", "dx"));
+        assert!(matches_glob_component("[^a-c]x", "dx"));
+        assert!(matches_glob_component("[]]x", "]x"));
+        assert!(
+            matches_glob_component("[x", "[x"),
+            "an unclosed `[` is literal"
+        );
     }
 }

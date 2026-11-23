@@ -218,32 +218,76 @@ pub(super) fn resolve_relative_pattern(main_file: Option<&str>, pattern: &str) -
     }
 }
 
+/// Matches `text` against a `glob()` pattern: `*` matches any run of
+/// characters, `?` one character, and `[...]` one character from a class with
+/// ranges (`a-z`) and negation (`!` or `^`). A `[` without a closing `]` is a
+/// literal. Backslash escapes are not supported.
 pub(super) fn glob_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let (mut pi, mut ti) = (0usize, 0usize);
-    let (mut star_p, mut star_t) = (None, 0usize);
+    let pattern: Vec<char> = pattern.chars().collect();
+    let text: Vec<char> = text.chars().collect();
+    let (mut p, mut t) = (0usize, 0usize);
+    // After a `*`: the pattern index behind it and the text index it covers up to.
+    let mut star: Option<(usize, usize)> = None;
 
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star_p = Some(pi);
-            pi += 1;
-            star_t = ti;
-        } else if let Some(sp) = star_p {
-            pi = sp + 1;
-            star_t += 1;
-            ti = star_t;
-        } else {
-            return false;
+    while t < text.len() {
+        let step = match pattern.get(p) {
+            Some('*') => {
+                star = Some((p + 1, t));
+                p += 1;
+                continue;
+            }
+            Some('?') => Some(p + 1),
+            Some('[') => match match_class(&pattern, p, text[t]) {
+                Some((true, next)) => Some(next),
+                Some((false, _)) => None,
+                None => (text[t] == '[').then_some(p + 1),
+            },
+            Some(&literal) => (literal == text[t]).then_some(p + 1),
+            None => None,
+        };
+        match (step, star) {
+            (Some(next), _) => {
+                p = next;
+                t += 1;
+            }
+            (None, Some((after_star, covered))) => {
+                p = after_star;
+                t = covered + 1;
+                star = Some((after_star, covered + 1));
+            }
+            (None, None) => return false,
         }
     }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
+    pattern[p..].iter().all(|&c| c == '*')
+}
+
+/// Matches `c` against the class starting at `pattern[open] == '['`. Returns
+/// whether it matched and the index after the closing `]`, or `None` when the
+/// class is not closed.
+fn match_class(pattern: &[char], open: usize, c: char) -> Option<(bool, usize)> {
+    let mut i = open + 1;
+    let negated = matches!(pattern.get(i), Some('!' | '^'));
+    if negated {
+        i += 1;
     }
-    pi == p.len()
+    let first = i;
+    let mut matched = false;
+    while let Some(&low) = pattern.get(i) {
+        if low == ']' && i > first {
+            return Some((matched != negated, i + 1));
+        }
+        match (pattern.get(i + 1), pattern.get(i + 2)) {
+            (Some('-'), Some(&high)) if high != ']' => {
+                matched |= (low..=high).contains(&c);
+                i += 3;
+            }
+            _ => {
+                matched |= low == c;
+                i += 1;
+            }
+        }
+    }
+    None
 }
 
 pub(super) fn is_secret_bearing(name: &str) -> bool {
