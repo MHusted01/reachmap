@@ -1,4 +1,5 @@
 scrub-anchor "com.apple/*" all fragment reassemble
+scrub in all fragment reassemble
 block drop in all
 pass in quick on lo0 all flags S/SA keep state
 pass in on en0 inet proto tcp from any to any port = ssh flags S/SA keep state

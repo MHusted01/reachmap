@@ -51,8 +51,24 @@ fn family(ip: IpAddr) -> AddressFamily {
 }
 
 impl Criteria {
-    /// Matches one new inbound connection or datagram.
-    pub(super) fn matches(&self, traffic: &Traffic<'_>, opening_flags: u8) -> Match {
+    pub(super) fn has_port_condition(&self) -> bool {
+        self.source.as_ref().is_some_and(|ep| ep.port.is_some())
+            || self
+                .destination
+                .as_ref()
+                .is_some_and(|ep| ep.port.is_some())
+    }
+
+    /// Matches one new inbound connection, datagram, or non-initial IPv4 fragment.
+    pub(super) fn matches(
+        &self,
+        traffic: &Traffic<'_>,
+        opening_flags: u8,
+        fragment: bool,
+    ) -> Match {
+        if fragment && self.has_port_condition() {
+            return Match::No;
+        }
         self.matches_common(traffic, opening_flags)
             .and(opt_destination(self.destination.as_ref(), traffic))
     }

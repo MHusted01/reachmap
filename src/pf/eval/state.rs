@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
-use super::super::model::{AnchorName, Construct};
+use super::super::model::{AnchorName, Construct, Entry, Kind};
 use super::super::{AnchorRulesets, Ruleset, Verdict};
 
 /// A rule's place: its line, and the anchor it is in, if any.
@@ -84,6 +84,8 @@ pub(super) struct Path {
     /// The earliest rule whose TCP flags condition distinguishes bare SYN from
     /// ECN-capable SYN on this path.
     pub(super) ecn_origin: Option<Origin>,
+    /// The earliest rule with a transport port condition on this path.
+    pub(super) port_origin: Option<Origin>,
 }
 
 pub(super) type Paths = BTreeSet<Path>;
@@ -106,6 +108,13 @@ impl Path {
         }
         self
     }
+
+    pub(super) fn with_port(mut self, origin: Option<&Origin>) -> Self {
+        if self.port_origin.is_none() {
+            self.port_origin = origin.cloned();
+        }
+        self
+    }
 }
 
 pub(super) fn unknown(construct: Construct, origin: &Origin) -> Paths {
@@ -118,6 +127,7 @@ pub(super) fn unknown(construct: Construct, origin: &Origin) -> Paths {
         }),
         uncertain: None,
         ecn_origin: None,
+        port_origin: None,
     }])
 }
 
@@ -184,6 +194,36 @@ pub(super) fn combine_tcp_verdicts(plain: &Paths, ecn: &Paths) -> Verdict {
     }
 }
 
+pub(super) fn combine_fragment_verdicts(full: &Paths, frag: &Paths) -> Verdict {
+    let v_full = verdict(full);
+    let v_frag = verdict(frag);
+    match (&v_full, &v_frag) {
+        (Verdict::Unknown { .. }, _) => v_full,
+        (_, Verdict::Unknown { .. }) => v_frag,
+        (Verdict::Pass { .. }, Verdict::Pass { .. })
+        | (Verdict::Block { .. }, Verdict::Block { .. }) => v_full,
+        (Verdict::Pass { .. }, Verdict::Block { .. })
+        | (Verdict::Block { .. }, Verdict::Pass { .. }) => {
+            let reason = full
+                .iter()
+                .chain(frag.iter())
+                .filter_map(|path| path.port_origin.as_ref())
+                .min()
+                .map_or_else(
+                    || "unreassembled IPv4 fragment changed verdict".to_string(),
+                    |origin| {
+                        Uncertain {
+                            origin: origin.clone(),
+                            construct: Construct::UnreassembledFragment,
+                        }
+                        .to_string()
+                    },
+                );
+            Verdict::Unknown { reason }
+        }
+    }
+}
+
 /// Returns direct child rulesets for a wildcard anchor (`*` or `prefix/*`),
 /// ordered lexicographically as PF evaluates them.
 pub(super) fn direct_children<'a>(
@@ -206,6 +246,27 @@ pub(super) fn direct_children<'a>(
             let rest = key.strip_prefix(prefix)?;
             (!rest.is_empty() && !rest.contains('/') && rest != "*")
                 .then_some((key.as_str(), rules))
+        })
+        .collect()
+}
+
+pub(super) fn has_filter_entries(entries: &[Entry]) -> bool {
+    entries.iter().any(|entry| {
+        matches!(
+            entry.kind,
+            Kind::Filter { .. } | Kind::Anchor { .. } | Kind::Unparseable
+        )
+    })
+}
+
+pub(super) fn promote_anchor_stops(paths: Paths) -> Paths {
+    paths
+        .into_iter()
+        .map(|mut path| {
+            if path.stop == Stop::Anchor {
+                path.stop = Stop::Full;
+            }
+            path
         })
         .collect()
 }

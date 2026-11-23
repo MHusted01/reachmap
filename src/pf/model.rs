@@ -28,6 +28,7 @@ pub(super) enum Construct {
     StateLimit,
     TcpEcnFlags,
     Tos,
+    UnreassembledFragment,
     UnrecognizedSyntax,
     UnparseableRule,
     MissingAnchor,
@@ -56,6 +57,7 @@ impl fmt::Display for Construct {
             Self::StateLimit => "state limit",
             Self::TcpEcnFlags => "tcp flags (ECN)",
             Self::Tos => "tos condition",
+            Self::UnreassembledFragment => "unreassembled IPv4 fragment",
             Self::UnrecognizedSyntax => "unrecognized syntax",
             Self::UnparseableRule => "unparseable text",
             Self::MissingAnchor => "missing anchor ruleset",
@@ -135,6 +137,9 @@ impl AnchorName {
         &self.display
     }
 
+    /// Resolves `self` relative to `parent`, matching Apple PF's
+    /// `pf_anchor_setup`: only leading `../` segments step up the parent path,
+    /// while embedded `..`, `.`, `./`, and `//` stay literal.
     pub(super) fn resolve(&self, parent: Option<&Self>) -> Option<Self> {
         if let Some(absolute) = self.lookup.strip_prefix('/') {
             let trimmed = absolute.trim_start_matches('/');
@@ -159,7 +164,7 @@ impl AnchorName {
             base.pop()?;
             rest = next;
         }
-        if rest.is_empty() {
+        if rest.is_empty() || rest == ".." {
             return None;
         }
         if base.is_empty() {
@@ -239,7 +244,13 @@ pub(super) enum Kind {
         criteria: Criteria,
         target: TranslationTarget,
     },
-    Scrub {
+    ScrubReassemble {
+        criteria: Criteria,
+    },
+    NoScrub {
+        criteria: Criteria,
+    },
+    ScrubOther {
         criteria: Criteria,
     },
     ScrubAnchor {

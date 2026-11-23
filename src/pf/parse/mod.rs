@@ -74,7 +74,7 @@ fn parse_line(line: &str) -> Parsed {
         "scrub-anchor" => scrub_anchor(&mut cursor),
         "no" if cursor.peek() == Some(&Token::Word("scrub")) => {
             cursor.next();
-            Parsed::Entry(Kind::Scrub {
+            Parsed::Entry(Kind::NoScrub {
                 criteria: parse_criteria(&mut cursor, CriteriaMode::Scrub).criteria,
             })
         }
@@ -107,11 +107,13 @@ fn anchor(cursor: &mut Cursor<'_>) -> Parsed {
 fn scrub(cursor: &mut Cursor<'_>) -> Parsed {
     let parsed = parse_criteria(cursor, CriteriaMode::Scrub);
     if parsed.scrub_changes_verdict || parsed.criteria.unsupported.is_some() {
-        Parsed::Entry(Kind::Scrub {
+        Parsed::Entry(Kind::ScrubOther {
             criteria: parsed.criteria,
         })
     } else {
-        Parsed::Ignored
+        Parsed::Entry(Kind::ScrubReassemble {
+            criteria: parsed.criteria,
+        })
     }
 }
 
@@ -121,7 +123,7 @@ fn scrub_anchor(cursor: &mut Cursor<'_>) -> Parsed {
     };
     let parsed = parse_criteria(cursor, CriteriaMode::Scrub);
     if parsed.scrub_changes_verdict || parsed.criteria.unsupported.is_some() {
-        Parsed::Entry(Kind::Scrub {
+        Parsed::Entry(Kind::ScrubOther {
             criteria: parsed.criteria,
         })
     } else {

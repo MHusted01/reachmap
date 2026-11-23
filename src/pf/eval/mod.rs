@@ -8,46 +8,73 @@ use crate::socket::Protocol;
 
 use super::fields::{SYN, SYN_ECN, TcpFlags};
 use super::matching::Match;
-use super::model::{Action, AnchorName, Construct, Entry, Kind, Ruleset, is_group_name};
+use super::model::{Action, AnchorName, Construct, Kind, Ruleset, is_group_name};
 use super::{AnchorRulesets, Traffic, Verdict};
 
+mod scrub;
 mod state;
 
+use scrub::{Reassembly, evaluate_scrub};
 use state::{
-    Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, combine_tcp_verdicts, direct_children,
-    unknown, verdict,
+    Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, combine_fragment_verdicts,
+    combine_tcp_verdicts, direct_children, has_filter_entries, promote_anchor_stops, unknown,
+    verdict,
 };
 
 /// Anchors may contain anchors. Deeper than this the walk gives up.
 const MAX_ANCHOR_DEPTH: usize = 8;
+
+#[derive(Clone, Copy)]
+struct AnchorQuick {
+    is_quick: bool,
+    has_more: bool,
+}
 
 pub(super) fn evaluate(
     rules: &Ruleset,
     anchors: &AnchorRulesets,
     traffic: &Traffic<'_>,
 ) -> Verdict {
+    let base = Walker {
+        anchors,
+        traffic,
+        opening_flags: SYN,
+        fragment: false,
+    };
+    let skipped = base.skipped(rules);
+    if skipped.iter().all(Path::is_done) {
+        return verdict(&skipped);
+    }
+    let reassembled = match evaluate_scrub(rules, anchors, traffic) {
+        Reassembly::Unknown(uncertain) => {
+            let (finished, _): (Paths, Paths) = skipped.into_iter().partition(Path::is_done);
+            let paths: Paths = finished
+                .into_iter()
+                .chain(unknown(uncertain.construct, &uncertain.origin))
+                .collect();
+            return verdict(&paths);
+        }
+        Reassembly::Reassembled => true,
+        Reassembly::MaybeUnreassembled => false,
+    };
     if traffic.protocol == Protocol::Tcp {
-        let plain = Walker {
-            anchors,
-            traffic,
-            opening_flags: SYN,
-        }
-        .evaluate(rules);
+        let plain = base.evaluate_after_skip(rules, skipped.clone());
         let ecn = Walker {
-            anchors,
-            traffic,
             opening_flags: SYN_ECN,
+            ..base
         }
-        .evaluate(rules);
+        .evaluate_after_skip(rules, skipped);
         combine_tcp_verdicts(&plain, &ecn)
-    } else {
-        let paths = Walker {
-            anchors,
-            traffic,
-            opening_flags: SYN,
+    } else if traffic.destination.is_ipv4() && !reassembled {
+        let full = base.evaluate_after_skip(rules, skipped.clone());
+        let frag = Walker {
+            fragment: true,
+            ..base
         }
-        .evaluate(rules);
-        verdict(&paths)
+        .evaluate_after_skip(rules, skipped);
+        combine_fragment_verdicts(&full, &frag)
+    } else {
+        verdict(&base.evaluate_after_skip(rules, skipped))
     }
 }
 
@@ -55,27 +82,24 @@ struct Walker<'a> {
     anchors: &'a AnchorRulesets,
     traffic: &'a Traffic<'a>,
     opening_flags: u8,
+    fragment: bool,
 }
 
 impl Walker<'_> {
-    fn evaluate(&self, rules: &Ruleset) -> Paths {
-        let start = self.skipped(rules);
-        if start.iter().all(Path::is_done) {
-            return start;
-        }
-        if let Some(pre) = self.pre_filter(rules, None, 0) {
+    fn evaluate_after_skip(&self, rules: &Ruleset, start: Paths) -> Paths {
+        if let Some(found) = self.translation(rules, None, 0) {
             let (finished, _): (Paths, Paths) = start.into_iter().partition(Path::is_done);
             return finished
                 .into_iter()
-                .chain(unknown(pre.construct, &pre.origin))
+                .chain(unknown(found.construct, &found.origin))
                 .collect();
         }
         self.run(rules, None, 0, start)
     }
 
-    /// Translation and normalization rules run before filtering, whatever their
-    /// position, so one that could match makes the verdict unknown.
-    fn pre_filter(
+    /// Translation rules run before filtering, whatever their position, so
+    /// one that could match makes the verdict unknown.
+    fn translation(
         &self,
         rules: &Ruleset,
         anchor: Option<&AnchorName>,
@@ -91,28 +115,20 @@ impl Walker<'_> {
                     construct: Construct::Translation,
                 })
             }
-            Kind::Scrub { criteria }
-                if criteria.matches(self.traffic, self.opening_flags) != Match::No =>
-            {
-                Some(Uncertain {
-                    origin: Origin::new(entry.line, anchor),
-                    construct: Construct::Normalization,
-                })
-            }
-            Kind::Anchor { name, criteria } | Kind::ScrubAnchor { name, criteria }
+            Kind::Anchor { name, criteria }
                 if depth < MAX_ANCHOR_DEPTH
-                    && criteria.matches(self.traffic, self.opening_flags) != Match::No =>
+                    && criteria.matches(self.traffic, self.opening_flags, false) != Match::No =>
             {
                 let resolved = name.resolve(anchor)?;
                 if resolved.is_wildcard() {
                     direct_children(self.anchors, resolved.lookup())
                         .into_iter()
                         .find_map(|(key, body)| {
-                            self.pre_filter(body, Some(&AnchorName::new(key)), depth + 1)
+                            self.translation(body, Some(&AnchorName::new(key)), depth + 1)
                         })
                 } else {
                     let body = self.anchors.get(resolved.lookup())?;
-                    self.pre_filter(body, Some(&resolved), depth + 1)
+                    self.translation(body, Some(&resolved), depth + 1)
                 }
             }
             _ => None,
@@ -127,6 +143,7 @@ impl Walker<'_> {
             outcome: Outcome::Pass(Cause::Default),
             uncertain: None,
             ecn_origin: None,
+            port_origin: None,
         }]);
         for skip in &rules.skip {
             let matched = if is_group_name(&skip.name) {
@@ -143,6 +160,7 @@ impl Walker<'_> {
                         outcome: Outcome::Pass(Cause::Skip),
                         uncertain: uncertain.cloned(),
                         ecn_origin: None,
+                        port_origin: None,
                     })
                     .collect()
             });
@@ -163,7 +181,6 @@ impl Walker<'_> {
             .enumerate()
             .fold(start, |paths, (idx, entry)| {
                 let origin = Origin::new(entry.line, anchor);
-                let has_more = has_filter_entries(&rules.entries[idx + 1..]);
                 match &entry.kind {
                     Kind::Filter { action, criteria } => {
                         let outcome = if let Some(construct) = criteria.effect_construct() {
@@ -182,6 +199,8 @@ impl Walker<'_> {
                             .flags
                             .is_some_and(TcpFlags::depends_on_ecn)
                             .then(|| origin.clone());
+                        let port_origin = (!self.fragment && criteria.has_port_condition())
+                            .then(|| origin.clone());
                         let stop = if criteria.quick {
                             Stop::Full
                         } else {
@@ -189,7 +208,7 @@ impl Walker<'_> {
                         };
                         branch(
                             paths,
-                            criteria.matches(self.traffic, self.opening_flags),
+                            criteria.matches(self.traffic, self.opening_flags, self.fragment),
                             &origin,
                             |live, uncertain| {
                                 live.into_iter()
@@ -199,6 +218,9 @@ impl Walker<'_> {
                                         outcome: outcome.clone(),
                                         uncertain: uncertain.cloned(),
                                         ecn_origin: prev.ecn_origin.or_else(|| ecn_origin.clone()),
+                                        port_origin: prev
+                                            .port_origin
+                                            .or_else(|| port_origin.clone()),
                                     })
                                     .collect()
                             },
@@ -209,23 +231,25 @@ impl Walker<'_> {
                             .flags
                             .is_some_and(TcpFlags::depends_on_ecn)
                             .then(|| origin.clone());
+                        let port_origin = (!self.fragment && criteria.has_port_condition())
+                            .then(|| origin.clone());
+                        let quick = AnchorQuick {
+                            is_quick: criteria.quick,
+                            has_more: has_filter_entries(&rules.entries[idx + 1..]),
+                        };
                         branch(
                             paths,
-                            criteria.matches(self.traffic, self.opening_flags),
+                            criteria.matches(self.traffic, self.opening_flags, self.fragment),
                             &origin,
                             |live, uncertain| {
-                                self.enter(
-                                    name,
-                                    anchor,
-                                    criteria.quick,
-                                    has_more,
-                                    &origin,
-                                    depth,
-                                    live,
-                                )
-                                .into_iter()
-                                .map(|path| path.tagged(uncertain).with_ecn(ecn_origin.as_ref()))
-                                .collect()
+                                self.enter(name, anchor, quick, &origin, depth, live)
+                                    .into_iter()
+                                    .map(|path| {
+                                        path.tagged(uncertain)
+                                            .with_ecn(ecn_origin.as_ref())
+                                            .with_port(port_origin.as_ref())
+                                    })
+                                    .collect()
                             },
                         )
                     }
@@ -235,9 +259,11 @@ impl Walker<'_> {
                         &origin,
                         |_, _| unknown(Construct::UnparseableRule, &origin),
                     ),
-                    Kind::Translation { .. } | Kind::Scrub { .. } | Kind::ScrubAnchor { .. } => {
-                        paths
-                    }
+                    Kind::Translation { .. }
+                    | Kind::ScrubReassemble { .. }
+                    | Kind::NoScrub { .. }
+                    | Kind::ScrubOther { .. }
+                    | Kind::ScrubAnchor { .. } => paths,
                 }
             })
     }
@@ -245,13 +271,11 @@ impl Walker<'_> {
     /// Runs the supplied rules of an anchor in place of its `anchor` line.
     /// Without them nothing can be said, and a `quick` rule inside could have
     /// ended the walk, so the path stops there as unknown.
-    #[allow(clippy::too_many_arguments)]
     fn enter(
         &self,
         name: &AnchorName,
         parent: Option<&AnchorName>,
-        anchor_quick: bool,
-        has_more: bool,
+        quick: AnchorQuick,
         origin: &Origin,
         depth: usize,
         live: Paths,
@@ -268,7 +292,7 @@ impl Walker<'_> {
             if depth >= MAX_ANCHOR_DEPTH {
                 return unknown(Construct::AnchorTooDeep, origin);
             }
-            let mut out = self.run_bodies(&children, anchor_quick, has_more, depth, live);
+            let mut out = self.run_bodies(&children, quick, depth, live);
             if !complete {
                 out.extend(unknown(Construct::MissingAnchor, origin));
             }
@@ -280,85 +304,54 @@ impl Walker<'_> {
         if depth >= MAX_ANCHOR_DEPTH {
             return unknown(Construct::AnchorTooDeep, origin);
         }
-        self.run_bodies(
-            &[(resolved.lookup(), body)],
-            anchor_quick,
-            has_more,
-            depth,
-            live,
-        )
+        self.run_bodies(&[(resolved.lookup(), body)], quick, depth, live)
     }
 
     fn run_bodies(
         &self,
         bodies: &[(&str, &Ruleset)],
-        anchor_quick: bool,
-        has_more: bool,
+        quick: AnchorQuick,
         depth: usize,
         live: Paths,
     ) -> Paths {
-        let (prev_matched, prev_unmatched): (Paths, Paths) =
-            live.into_iter().partition(|path| path.matched);
-        let mut out = Paths::new();
-        for (was_matched, bucket) in [(false, prev_unmatched), (true, prev_matched)] {
-            if bucket.is_empty() {
-                continue;
+        let mut current: Paths = live
+            .into_iter()
+            .map(|mut path| {
+                path.matched = false;
+                path
+            })
+            .collect();
+        for (body_idx, &(key, body)) in bodies.iter().enumerate() {
+            let scope = AnchorName::new(key);
+            current = self.run(body, Some(&scope), depth + 1, current);
+            let more_children = bodies[body_idx + 1..]
+                .iter()
+                .any(|(_, child)| has_filter_entries(&child.entries));
+            if more_children {
+                current = promote_anchor_stops(current);
             }
-            let mut current: Paths = bucket
-                .into_iter()
-                .map(|mut path| {
-                    path.matched = false;
-                    path
-                })
-                .collect();
-            for (body_idx, &(key, body)) in bodies.iter().enumerate() {
-                let scope = AnchorName::new(key);
-                current = self.run(body, Some(&scope), depth + 1, current);
-                let more_children = bodies[body_idx + 1..]
-                    .iter()
-                    .any(|(_, child)| has_filter_entries(&child.entries));
-                if more_children {
-                    current = promote_anchor_stops(current);
-                }
-            }
-            for mut path in current {
+        }
+        current
+            .into_iter()
+            .map(|mut path| {
                 match path.stop {
                     Stop::Full => {}
                     Stop::Anchor | Stop::None => {
-                        if anchor_quick && path.matched {
-                            path.stop = if has_more { Stop::Full } else { Stop::Anchor };
+                        if quick.is_quick && path.matched {
+                            path.stop = if quick.has_more {
+                                Stop::Full
+                            } else {
+                                Stop::Anchor
+                            };
                         } else {
                             path.stop = Stop::None;
                         }
                     }
                 }
-                path.matched = path.matched || was_matched;
-                out.insert(path);
-            }
-        }
-        out
+                path
+            })
+            .collect()
     }
-}
-
-fn has_filter_entries(entries: &[Entry]) -> bool {
-    entries.iter().any(|entry| {
-        matches!(
-            entry.kind,
-            Kind::Filter { .. } | Kind::Anchor { .. } | Kind::Unparseable
-        )
-    })
-}
-
-fn promote_anchor_stops(paths: Paths) -> Paths {
-    paths
-        .into_iter()
-        .map(|mut path| {
-            if path.stop == Stop::Anchor {
-                path.stop = Stop::Full;
-            }
-            path
-        })
-        .collect()
 }
 
 /// Applies one rule to the paths that are still running. `taken` builds the

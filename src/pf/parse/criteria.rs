@@ -4,7 +4,7 @@ use crate::socket::AddressFamily;
 
 use super::super::fields::TcpFlags;
 use super::super::lex::Token;
-use super::super::model::{Construct, Criteria, Direction, RuleProtocol};
+use super::super::model::{Construct, Criteria, Direction};
 use super::Cursor;
 use super::endpoints::{endpoint, interface, next_word, protocol};
 
@@ -49,10 +49,6 @@ pub(super) fn parse_criteria(cursor: &mut Cursor<'_>, mode: CriteriaMode) -> Par
             criteria.unsupported = Some(construct);
             saw_arrow =
                 scan_remaining_effects(cursor, &mut criteria, mode == CriteriaMode::Translation);
-            break;
-        }
-        if criteria.protocol == Some(RuleProtocol::Other) {
-            // Never matches TCP or UDP, so the rest cannot matter.
             break;
         }
     }
@@ -157,6 +153,15 @@ fn apply(criteria: &mut Criteria, cursor: &mut Cursor<'_>, word: &str) -> Result
                 Some(TcpFlags::parse(next_word(cursor)?).ok_or(Construct::UnrecognizedSyntax)?);
         }
         "all" | "drop" | "return" | "allow-opts" => {}
+        "icmp-type" | "icmp6-type" => {
+            next_word(cursor)?;
+            if cursor
+                .next_if(|token| *token == Token::Word("code"))
+                .is_some()
+            {
+                next_word(cursor)?;
+            }
+        }
         "log" | "return-rst" | "return-icmp" | "return-icmp6" => {
             skip_group(cursor);
         }

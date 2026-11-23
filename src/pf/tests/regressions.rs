@@ -382,6 +382,14 @@ fn wildcard_anchors_evaluate_direct_children_and_require_complete_marker() {
     )]);
     assert_eq!(
         check(DEFAULT_MACOS, &incomplete, &packet),
+        unknown("missing anchor ruleset in rule at line 1")
+    );
+    assert_eq!(
+        check(
+            "pass in all\nanchor \"com.apple/*\" all",
+            &incomplete,
+            &packet
+        ),
         unknown("missing anchor ruleset in rule at line 2")
     );
 
@@ -564,14 +572,14 @@ fn duplicate_endpoint_clauses_are_rejected_as_unknown() {
 
 #[test]
 fn block_return_options_with_parentheses_are_accepted() {
-    assert_eq!(tcp(BLOCK_RETURN_OPTIONS, "en0", 23), block_at(1));
+    assert_eq!(tcp(BLOCK_RETURN_OPTIONS, "en0", 23), block_at(2));
     assert_eq!(
         check(
             BLOCK_RETURN_OPTIONS,
             &Default::default(),
             &traffic("en0", Protocol::Udp, HOST, 161)
         ),
-        block_at(2)
+        block_at(3)
     );
     assert_eq!(
         check(
@@ -579,7 +587,7 @@ fn block_return_options_with_parentheses_are_accepted() {
             &Default::default(),
             &traffic("en0", Protocol::Udp, "2001:db8::1", 161)
         ),
-        block_at(3)
+        block_at(4)
     );
     assert_eq!(tcp(BLOCK_RETURN_OPTIONS, "en0", 22), default_pass());
 }

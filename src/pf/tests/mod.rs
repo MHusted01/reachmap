@@ -6,6 +6,7 @@ use crate::socket::Protocol;
 
 use super::{AnchorRulesets, Ruleset, Traffic, Verdict};
 
+mod edge_cases;
 mod regressions;
 
 const DEFAULT_MACOS: &str = include_str!("../../../tests/fixtures/pf/default_macos.txt");
@@ -95,6 +96,14 @@ fn a_missing_anchor_ruleset_is_unknown_not_pass() {
     let traffic = traffic("en0", Protocol::Tcp, HOST, 22);
     assert_eq!(
         check(DEFAULT_MACOS, &AnchorRulesets::new(), &traffic),
+        unknown("missing anchor ruleset in rule at line 1")
+    );
+    assert_eq!(
+        check(
+            "pass in all\nanchor \"com.apple/*\" all",
+            &AnchorRulesets::new(),
+            &traffic
+        ),
         unknown("missing anchor ruleset in rule at line 2")
     );
 }
@@ -115,15 +124,15 @@ fn inbound_default_block_with_exceptions() {
             &traffic(interface, protocol, destination, port),
         )
     };
-    assert_eq!(run("en0", Protocol::Tcp, HOST, 22), pass_at(4));
-    assert_eq!(run("en1", Protocol::Tcp, HOST, 22), block_at(2));
-    assert_eq!(run("en0", Protocol::Tcp, HOST, 8000), pass_at(5));
-    assert_eq!(run("en0", Protocol::Tcp, HOST, 8100), pass_at(5));
-    assert_eq!(run("en0", Protocol::Tcp, HOST, 8101), block_at(2));
-    assert_eq!(run("en0", Protocol::Udp, HOST, 5353), pass_at(6));
-    assert_eq!(run("en0", Protocol::Tcp, HOST, 5353), block_at(2));
-    assert_eq!(run("lo0", Protocol::Tcp, "127.0.0.1", 9999), pass_at(3));
-    assert_eq!(run("en0", Protocol::Tcp, "2001:db8::5", 22), block_at(2));
+    assert_eq!(run("en0", Protocol::Tcp, HOST, 22), pass_at(5));
+    assert_eq!(run("en1", Protocol::Tcp, HOST, 22), block_at(3));
+    assert_eq!(run("en0", Protocol::Tcp, HOST, 8000), pass_at(6));
+    assert_eq!(run("en0", Protocol::Tcp, HOST, 8100), pass_at(6));
+    assert_eq!(run("en0", Protocol::Tcp, HOST, 8101), block_at(3));
+    assert_eq!(run("en0", Protocol::Udp, HOST, 5353), pass_at(7));
+    assert_eq!(run("en0", Protocol::Tcp, HOST, 5353), block_at(3));
+    assert_eq!(run("lo0", Protocol::Tcp, "127.0.0.1", 9999), pass_at(4));
+    assert_eq!(run("en0", Protocol::Tcp, "2001:db8::5", 22), block_at(3));
 }
 
 #[test]

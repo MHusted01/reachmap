@@ -1,3 +1,4 @@
+scrub in all fragment reassemble
 block return-rst(ttl 64) in quick on en0 inet proto tcp from any to any port = 23
 block return-icmp(port-unr) in quick on en0 inet proto udp from any to any port = 161
 block return-icmp6(1, 4) in quick on en0 inet6 proto udp from any to any port = 161
