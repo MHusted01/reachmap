@@ -10,6 +10,31 @@ Unreleased changes are kept as one file per change in
 [`changelog.d/`](changelog.d/) and folded into the next version section when it
 is released; see "Releases" in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## [0.6.0] - 2026-11-23
+
+`reachmap scan --nginx-routes` explains configured Nginx reverse proxy routes
+on Linux: frontend listeners, server names, locations, backend targets and the
+local TCP listeners they reach, with proxy-layer auth indicators reported
+separately. Reports describe the configuration on disk from `nginx -T`, which
+can differ from what a running Nginx has loaded; TCP connectivity, HTTP
+responses and application authentication remain separate observations.
+Snapshots keep a secret-minimized route model for offline `replay` on Linux and
+macOS. Changelog entries are now collected as one fragment file per change. See
+the [Nginx route scope](https://github.com/MHusted01/reachmap/blob/eca2af5/docs/scan.md#nginx)
+and [Nginx verification](https://github.com/MHusted01/reachmap/blob/eca2af5/docs/nginx-verification.md).
+
+### Added
+
+- Add a scoped five-layer offline correlation module for Nginx reverse proxy
+  paths, a disposable Linux verification lab (`scripts/test-nginx-routes.sh`),
+  and verification docs (`docs/nginx-verification.md`)
+  ([#110](https://github.com/MHusted01/reachmap/issues/110)).
+- `reachmap scan --nginx-routes` reports configured Nginx reverse proxy routes
+  with local TCP listener linking, `--snapshot --host-ref LABEL` capture, and
+  offline `reachmap replay` ([#109](https://github.com/MHusted01/reachmap/issues/109)).
+- Add a pure, bounded Nginx configuration parser and secret-minimized route
+  model ([#108](https://github.com/MHusted01/reachmap/issues/108)).
+
 ## [0.5.0] - 2026-11-22
 
 Tailscale route reports describe configured Serve and Funnel routes and local
