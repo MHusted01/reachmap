@@ -1,7 +1,7 @@
 use crate::socket::Protocol;
 
 use super::{
-    HOST, Verdict, anchors, block_at, check, default_pass, pass_at, tcp, traffic, unknown,
+    HOST, Verdict, anchors, block_at, check, default_pass, pass_at, tcp, tcp_to, traffic, unknown,
 };
 
 #[test]
@@ -42,7 +42,7 @@ fn udp_port_rules_require_reassembly_and_follow_first_match_scrub() {
     let lone_block = "block drop in on en0 inet proto udp from any to any port = 5353";
     assert_eq!(
         check(lone_block, &Default::default(), &udp_v4),
-        unknown("unreassembled UDP fragment in rule at line 1")
+        unknown("unreassembled fragment in rule at line 1")
     );
 
     let reassembled = "scrub in all fragment reassemble\nblock drop in on en0 inet proto udp from any to any port = 5353";
@@ -60,7 +60,7 @@ fn udp_port_rules_require_reassembly_and_follow_first_match_scrub() {
     let no_scrub_before_scrub = "no scrub in on en0 proto udp all\nscrub in all fragment reassemble\nblock drop in on en0 inet proto udp from any to any port = 5353";
     assert_eq!(
         check(no_scrub_before_scrub, &Default::default(), &udp_v4),
-        unknown("unreassembled UDP fragment in rule at line 3")
+        unknown("unreassembled fragment in rule at line 3")
     );
 
     let no_port_with_no_scrub = "no scrub in on en0 all\nblock drop in all";
@@ -73,7 +73,7 @@ fn udp_port_rules_require_reassembly_and_follow_first_match_scrub() {
     let lone_v6_block = "block drop in on en0 inet6 proto udp from any to any port = 5353";
     assert_eq!(
         check(lone_v6_block, &Default::default(), &udp_v6),
-        unknown("unreassembled UDP fragment in rule at line 1")
+        unknown("unreassembled fragment in rule at line 1")
     );
 
     let v6_reassembled = "scrub in all fragment reassemble\nblock drop in on en0 inet6 proto udp from any to any port = 5353";
@@ -190,7 +190,7 @@ fn wildcard_preserves_earlier_child_match_across_later_empty_anchor() {
     ]);
     assert_eq!(
         check(
-            "anchor \"site/*\" quick all\nblock drop in all",
+            "scrub in all fragment reassemble\nanchor \"site/*\" quick all\nblock drop in all",
             &tree,
             &packet
         ),
@@ -235,4 +235,92 @@ fn all_is_mutually_exclusive_with_explicit_host_clauses() {
         tcp("block drop in quick all all", "en0", 22),
         unknown("unrecognized syntax in rule at line 1")
     );
+}
+
+#[test]
+fn nested_non_quick_wildcard_consumes_match_on_quick_outer_unwind() {
+    let packet = traffic("en0", Protocol::Tcp, HOST, 22);
+    let tree = anchors(&[
+        ("outer", "anchor \"sub/*\" all"),
+        ("outer/sub/*", ""),
+        ("outer/sub/10", "block drop in all"),
+    ]);
+    assert_eq!(
+        check("anchor \"outer\" quick all\npass in all", &tree, &packet),
+        pass_at(2)
+    );
+
+    let quick_wildcard = anchors(&[
+        ("outer", "anchor \"sub/*\" quick all"),
+        ("outer/sub/*", ""),
+        ("outer/sub/10", "block drop in all"),
+    ]);
+    assert_eq!(
+        check(
+            "anchor \"outer\" quick all\npass in all",
+            &quick_wildcard,
+            &packet
+        ),
+        Verdict::Block {
+            reason: "matched block rule at line 1 of anchor \"outer/sub/10\"".to_string()
+        }
+    );
+}
+
+#[test]
+fn ipv6_scrub_ignores_protocol_predicate_while_ipv4_checks_it() {
+    let rules = "scrub in proto udp from any to any fragment reassemble\nblock drop in all\npass in on en0 proto tcp from any to any port = 22";
+    assert_eq!(tcp_to(rules, "en0", "2001:db8::1", 22), pass_at(3));
+    assert_eq!(
+        tcp(rules, "en0", 22),
+        unknown("unreassembled fragment in rule at line 3")
+    );
+}
+
+#[test]
+fn tcp_port_and_flag_rules_require_reassembly_unless_flags_any() {
+    let port_rule = "block drop in all\npass in on en0 proto tcp from any to any port = 22";
+    assert_eq!(
+        tcp(port_rule, "en0", 22),
+        unknown("unreassembled fragment in rule at line 2")
+    );
+    assert_eq!(
+        tcp(
+            &format!("scrub in all fragment reassemble\n{port_rule}"),
+            "en0",
+            22
+        ),
+        pass_at(3)
+    );
+
+    let flag_rule = "block drop in all\npass in on en0 proto tcp all flags S/SA";
+    assert_eq!(
+        tcp(flag_rule, "en0", 22),
+        unknown("unreassembled fragment in rule at line 2")
+    );
+    assert_eq!(
+        tcp(
+            "block drop in all\npass in on en0 proto tcp all flags any",
+            "en0",
+            22
+        ),
+        pass_at(2)
+    );
+}
+
+#[test]
+fn scrub_rule_with_table_preserves_table_reason_without_table_name() {
+    let reassemble_table = "scrub in on en0 proto tcp from <secret_tbl> to any fragment reassemble\nblock drop in all\npass in on en0 proto tcp from any to any port = 22";
+    let reassemble_result = tcp(reassemble_table, "en0", 22);
+    assert_eq!(reassemble_result, unknown("table in rule at line 1"));
+    if let Verdict::Unknown { reason } = reassemble_result {
+        assert!(!reason.contains("secret_tbl"));
+    }
+
+    let other_table = "scrub in on en0 from <secret_tbl> to any fragment crop\nblock drop in all";
+    let other_result = tcp(other_table, "en0", 22);
+    assert_eq!(other_result, unknown("table in rule at line 1"));
+    if let Verdict::Unknown { reason } = other_result {
+        assert!(!reason.contains("secret_tbl"));
+    }
 }

@@ -190,6 +190,11 @@ impl TcpFlags {
     pub(super) fn depends_on_ecn(self) -> bool {
         self.matches(SYN) != self.matches(SYN_ECN)
     }
+
+    /// Whether this flag filter constrains any TCP flag bits.
+    pub(super) fn is_constrained(self) -> bool {
+        self.mask != 0
+    }
 }
 
 fn bits(letters: &str) -> Option<u8> {

@@ -150,29 +150,31 @@ fn the_last_match_wins_unless_a_quick_rule_ends_the_walk() {
 
 #[test]
 fn quick_rules_decide_in_file_order() {
-    assert_eq!(tcp(QUICK_ORDER, "en0", 22), pass_at(1));
-    assert_eq!(tcp(QUICK_ORDER, "en0", 8080), block_at(2));
-    assert_eq!(tcp(QUICK_ORDER, "en0", 9000), block_at(2));
+    assert_eq!(tcp(QUICK_ORDER, "en0", 22), pass_at(2));
+    assert_eq!(tcp(QUICK_ORDER, "en0", 8080), block_at(3));
+    assert_eq!(tcp(QUICK_ORDER, "en0", 9000), block_at(3));
     assert_eq!(tcp(QUICK_ORDER, "en0", 80), default_pass());
     assert_eq!(tcp(QUICK_ORDER, "en1", 8080), default_pass());
 }
 
 #[test]
 fn interface_address_family_and_source_conditions() {
-    assert_eq!(tcp(CONDITIONS, "en0", 22), pass_at(2));
-    assert_eq!(tcp_to(CONDITIONS, "en0", "192.0.2.11", 22), block_at(1));
-    assert_eq!(tcp(CONDITIONS, "en1", 80), block_at(3));
-    assert_eq!(tcp(CONDITIONS, "en0", 80), block_at(1));
-    assert_eq!(tcp_to(CONDITIONS, "en1", "2001:db8::7", 443), pass_at(4));
-    assert_eq!(tcp_to(CONDITIONS, "en1", "2001:db9::7", 443), block_at(1));
-    assert_eq!(tcp(CONDITIONS, "en1", 443), block_at(1));
-    // Rule 5 only matches peers in 198.51.100.0/24 and blocks like rule 1.
-    assert_eq!(tcp(CONDITIONS, "en0", 8443), block_at(1));
+    assert_eq!(tcp(CONDITIONS, "en0", 22), pass_at(3));
+    assert_eq!(tcp_to(CONDITIONS, "en0", "192.0.2.11", 22), block_at(2));
+    assert_eq!(tcp(CONDITIONS, "en1", 80), block_at(4));
+    assert_eq!(tcp(CONDITIONS, "en0", 80), block_at(2));
+    assert_eq!(tcp_to(CONDITIONS, "en1", "2001:db8::7", 443), pass_at(5));
+    assert_eq!(tcp_to(CONDITIONS, "en1", "2001:db9::7", 443), block_at(2));
+    assert_eq!(tcp(CONDITIONS, "en1", 443), block_at(2));
+    // Rule 6 only matches peers in 198.51.100.0/24 and blocks like rule 2.
+    assert_eq!(tcp(CONDITIONS, "en0", 8443), block_at(2));
 }
 
 fn port_rule(spec: &str, port: u16) -> Verdict {
     tcp(
-        &format!("block drop in proto tcp from any to any port {spec}"),
+        &format!(
+            "scrub in all fragment reassemble\nblock drop in proto tcp from any to any port {spec}"
+        ),
         "en0",
         port,
     )
@@ -203,7 +205,7 @@ fn port_operators() {
     ];
     for (spec, ports) in cases {
         for &(port, blocked) in *ports {
-            let expected = if blocked { block_at(1) } else { default_pass() };
+            let expected = if blocked { block_at(2) } else { default_pass() };
             assert_eq!(port_rule(spec, port), expected, "port {spec} for {port}");
         }
     }
@@ -213,16 +215,17 @@ fn port_operators() {
 fn an_unknown_service_name_is_not_guessed() {
     assert_eq!(
         port_rule("= nonsense", 22),
-        unknown("unrecognized syntax in rule at line 1")
+        unknown("unrecognized syntax in rule at line 2")
     );
 }
 
 #[test]
 fn network_prefixes_and_negation() {
-    let rules = "block drop in all\npass in proto tcp from any to";
+    let rules =
+        "scrub in all fragment reassemble\nblock drop in all\npass in proto tcp from any to";
     assert_eq!(
         tcp_to(&format!("{rules} 192.0.2.0/24 port = 22"), "en0", HOST, 22),
-        pass_at(2)
+        pass_at(3)
     );
     assert_eq!(
         tcp_to(
@@ -231,11 +234,11 @@ fn network_prefixes_and_negation() {
             "192.0.2.11",
             22
         ),
-        block_at(1)
+        block_at(2)
     );
     assert_eq!(
         tcp_to(&format!("{rules} 0.0.0.0/0 port = 22"), "en0", HOST, 22),
-        pass_at(2)
+        pass_at(3)
     );
     assert_eq!(
         tcp_to(
@@ -244,7 +247,7 @@ fn network_prefixes_and_negation() {
             "2001:db8:1::5",
             22
         ),
-        pass_at(2)
+        pass_at(3)
     );
     assert_eq!(
         tcp_to(
@@ -253,15 +256,15 @@ fn network_prefixes_and_negation() {
             "2001:db9::5",
             22
         ),
-        block_at(1)
+        block_at(2)
     );
     let negated = format!("{rules} ! 192.0.2.0/24 port = 22");
-    assert_eq!(tcp_to(&negated, "en0", "198.51.100.1", 22), pass_at(2));
-    assert_eq!(tcp_to(&negated, "en0", HOST, 22), block_at(1));
-    assert_eq!(tcp_to(&negated, "en0", "2001:db8::1", 22), block_at(1));
+    assert_eq!(tcp_to(&negated, "en0", "198.51.100.1", 22), pass_at(3));
+    assert_eq!(tcp_to(&negated, "en0", HOST, 22), block_at(2));
+    assert_eq!(tcp_to(&negated, "en0", "2001:db8::1", 22), block_at(2));
     assert_eq!(
         tcp_to(&format!("{rules} 192.0.2.0/33 port = 22"), "en0", HOST, 22),
-        unknown("unrecognized syntax in rule at line 2")
+        unknown("unrecognized syntax in rule at line 3")
     );
 }
 
@@ -269,11 +272,11 @@ fn network_prefixes_and_negation() {
 fn to_self_matches_a_local_destination() {
     assert_eq!(
         tcp(
-            "block drop in all\npass in on en0 from any to self port = 22",
+            "scrub in all fragment reassemble\nblock drop in all\npass in on en0 from any to self port = 22",
             "en0",
             22
         ),
-        pass_at(2)
+        pass_at(3)
     );
 }
 
@@ -298,13 +301,17 @@ fn protocol_direction_and_other_protocols() {
 
 #[test]
 fn tcp_flags_only_match_the_opening_syn() {
-    let rule = |flags: &str| format!("block drop in proto tcp from any to any flags {flags}");
+    let rule = |flags: &str| {
+        format!(
+            "scrub in all fragment reassemble\nblock drop in proto tcp from any to any flags {flags}"
+        )
+    };
     assert_eq!(tcp(&rule("A/A"), "en0", 22), default_pass());
-    assert_eq!(tcp(&rule("S/SA"), "en0", 22), block_at(1));
-    assert_eq!(tcp(&rule("any"), "en0", 22), block_at(1));
+    assert_eq!(tcp(&rule("S/SA"), "en0", 22), block_at(2));
+    assert_eq!(tcp(&rule("any"), "en0", 22), block_at(2));
     assert_eq!(
         tcp(&rule("Q/SA"), "en0", 22),
-        unknown("unrecognized syntax in rule at line 1")
+        unknown("unrecognized syntax in rule at line 2")
     );
 }
 
@@ -464,26 +471,25 @@ fn translation_rules_inside_supplied_anchors_count() {
 
 #[test]
 fn restrictions_on_the_peer_are_unknown_unless_a_source_is_named() {
-    let rules =
-        "block drop in all\npass in on en0 inet proto tcp from 192.0.2.0/24 to any port = 22";
+    let rules = "scrub in all fragment reassemble\nblock drop in all\npass in on en0 inet proto tcp from 192.0.2.0/24 to any port = 22";
     assert_eq!(
         tcp(rules, "en0", 22),
-        unknown("source address restriction in rule at line 2")
+        unknown("source address restriction in rule at line 3")
     );
     let with_source = |source: &str| {
         let mut traffic = traffic("en0", Protocol::Tcp, HOST, 22);
         traffic.source = Some(ip(source));
         check(rules, &AnchorRulesets::new(), &traffic)
     };
-    assert_eq!(with_source("192.0.2.77"), pass_at(2));
-    assert_eq!(with_source("198.51.100.9"), block_at(1));
+    assert_eq!(with_source("192.0.2.77"), pass_at(3));
+    assert_eq!(with_source("198.51.100.9"), block_at(2));
     assert_eq!(
         tcp(
-            "block drop in all\npass in proto tcp from any port = 53 to any port = 22",
+            "scrub in all fragment reassemble\nblock drop in all\npass in proto tcp from any port = 53 to any port = 22",
             "en0",
             22
         ),
-        unknown("source port restriction in rule at line 2")
+        unknown("source port restriction in rule at line 3")
     );
     assert_eq!(
         tcp("block drop in all\npass in from self to any", "en0", 22),
@@ -503,7 +509,7 @@ fn supplied_anchor_rules_are_evaluated_in_place_of_the_anchor_line() {
     };
     assert_eq!(
         check(
-            "block drop in all\nanchor \"quick\" all\nblock drop in all",
+            "scrub in all fragment reassemble\nblock drop in all\nanchor \"quick\" all\nblock drop in all",
             &anchors,
             &traffic
         ),
@@ -511,7 +517,7 @@ fn supplied_anchor_rules_are_evaluated_in_place_of_the_anchor_line() {
     );
     assert_eq!(
         check(
-            "block drop in all\nanchor \"plain\" all",
+            "scrub in all fragment reassemble\nblock drop in all\nanchor \"plain\" all",
             &anchors,
             &traffic
         ),
@@ -519,11 +525,11 @@ fn supplied_anchor_rules_are_evaluated_in_place_of_the_anchor_line() {
     );
     assert_eq!(
         check(
-            "anchor \"plain\" all\nblock drop in all",
+            "scrub in all fragment reassemble\nanchor \"plain\" all\nblock drop in all",
             &anchors,
             &traffic
         ),
-        block_at(2)
+        block_at(3)
     );
 }
 
@@ -535,7 +541,11 @@ fn anchors_nest_and_nesting_is_bounded() {
     ]);
     let traffic = traffic("en0", Protocol::Tcp, HOST, 22);
     assert_eq!(
-        check("block drop in all\nanchor \"a\" all", &nested, &traffic),
+        check(
+            "scrub in all fragment reassemble\nblock drop in all\nanchor \"a\" all",
+            &nested,
+            &traffic
+        ),
         Verdict::Pass {
             reason: "matched pass rule at line 1 of anchor \"a/b\"".to_string()
         }
@@ -607,8 +617,12 @@ fn comments_blank_lines_and_empty_input() {
 fn options_after_the_conditions_do_not_change_the_match() {
     let rule = "pass in log (all) quick on en0 inet proto tcp from any to any port = 22 flags S/SA keep state (if-bound) label \"ssh rule\" tag \"t\"";
     assert_eq!(
-        tcp(&format!("block drop in all\n{rule}"), "en0", 22),
-        pass_at(2)
+        tcp(
+            &format!("scrub in all fragment reassemble\nblock drop in all\n{rule}"),
+            "en0",
+            22
+        ),
+        pass_at(3)
     );
     assert_eq!(
         tcp("block return-rst in proto tcp all no state", "en0", 22),

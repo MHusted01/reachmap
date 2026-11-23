@@ -61,7 +61,7 @@ impl fmt::Display for Construct {
             Self::StateLimit => "state limit",
             Self::TcpEcnFlags => "tcp flags (ECN)",
             Self::Tos => "tos condition",
-            Self::UnreassembledFragment => "unreassembled UDP fragment",
+            Self::UnreassembledFragment => "unreassembled fragment",
             Self::UnrecognizedSyntax => "unrecognized syntax",
             Self::UnparseableRule => "unparseable text",
             Self::MissingAnchor => "missing anchor ruleset",

@@ -85,8 +85,8 @@ pub(super) struct Path {
     /// The earliest rule whose TCP flags condition distinguishes bare SYN from
     /// ECN-capable SYN on this path.
     pub(super) ecn_origin: Option<Origin>,
-    /// The earliest rule with a transport port condition on this path.
-    pub(super) port_origin: Option<Origin>,
+    /// The earliest rule with a fragment-sensitive condition on this path.
+    pub(super) fragment_origin: Option<Origin>,
 }
 
 pub(super) type Paths = BTreeSet<Path>;
@@ -110,9 +110,9 @@ impl Path {
         self
     }
 
-    pub(super) fn with_port(mut self, origin: Option<&Origin>) -> Self {
-        if self.port_origin.is_none() {
-            self.port_origin = origin.cloned();
+    pub(super) fn with_fragment(mut self, origin: Option<&Origin>) -> Self {
+        if self.fragment_origin.is_none() {
+            self.fragment_origin = origin.cloned();
         }
         self
     }
@@ -128,7 +128,7 @@ pub(super) fn unknown(construct: Construct, origin: &Origin) -> Paths {
         }),
         uncertain: None,
         ecn_origin: None,
-        port_origin: None,
+        fragment_origin: None,
     }])
 }
 
@@ -195,23 +195,34 @@ pub(super) fn combine_tcp_verdicts(plain: &Paths, ecn: &Paths) -> Verdict {
     }
 }
 
-pub(super) fn combine_fragment_verdicts(full: &Paths, frag: &Paths) -> Verdict {
-    let v_full = verdict(full);
+pub(super) fn combine_fragment_verdict(
+    unfragmented: Verdict,
+    full_a: &Paths,
+    full_b: Option<&Paths>,
+    frag: &Paths,
+    scrub_uncertain: Option<&Uncertain>,
+) -> Verdict {
     let v_frag = verdict(frag);
-    match (&v_full, &v_frag) {
-        (Verdict::Unknown { .. }, _) => v_full,
+    match (&unfragmented, &v_frag) {
+        (Verdict::Unknown { .. }, _) => unfragmented,
         (_, Verdict::Unknown { .. }) => v_frag,
         (Verdict::Pass { .. }, Verdict::Pass { .. })
-        | (Verdict::Block { .. }, Verdict::Block { .. }) => v_full,
+        | (Verdict::Block { .. }, Verdict::Block { .. }) => unfragmented,
         (Verdict::Pass { .. }, Verdict::Block { .. })
         | (Verdict::Block { .. }, Verdict::Pass { .. }) => {
-            let reason = full
+            if let Some(uncertain) = scrub_uncertain {
+                return Verdict::Unknown {
+                    reason: uncertain.to_string(),
+                };
+            }
+            let reason = full_a
                 .iter()
+                .chain(full_b.into_iter().flat_map(|paths| paths.iter()))
                 .chain(frag.iter())
-                .filter_map(|path| path.port_origin.as_ref())
+                .filter_map(|path| path.fragment_origin.as_ref())
                 .min()
                 .map_or_else(
-                    || "unreassembled UDP fragment changed verdict".to_string(),
+                    || "unreassembled fragment changed verdict".to_string(),
                     |origin| {
                         Uncertain {
                             origin: origin.clone(),

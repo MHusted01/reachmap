@@ -6,7 +6,6 @@
 
 use std::collections::BTreeSet;
 
-use super::super::fields::SYN;
 use super::super::matching::Match;
 use super::super::model::{AnchorName, Construct, Kind, Ruleset};
 use super::super::{AnchorRulesets, Traffic};
@@ -24,13 +23,14 @@ enum ScrubState {
 struct ScrubPath {
     done: bool,
     state: ScrubState,
+    uncertain: Option<Uncertain>,
 }
 
 type ScrubPaths = BTreeSet<ScrubPath>;
 
 pub(super) enum Reassembly {
     Reassembled,
-    MaybeUnreassembled,
+    MaybeUnreassembled(Option<Uncertain>),
     Unknown(Uncertain),
 }
 
@@ -42,6 +42,7 @@ pub(super) fn evaluate_scrub(
     let start = ScrubPaths::from([ScrubPath {
         done: false,
         state: ScrubState::None,
+        uncertain: None,
     }]);
     let paths = walk_scrub(rules, anchors, traffic, None, 0, start);
     if let Some(uncertain) = paths.iter().find_map(|path| match &path.state {
@@ -56,7 +57,12 @@ pub(super) fn evaluate_scrub(
     {
         Reassembly::Reassembled
     } else {
-        Reassembly::MaybeUnreassembled
+        let uncertain = paths
+            .iter()
+            .filter_map(|path| path.uncertain.as_ref())
+            .min()
+            .cloned();
+        Reassembly::MaybeUnreassembled(uncertain)
     }
 }
 
@@ -71,36 +77,60 @@ fn walk_scrub(
     rules.entries.iter().fold(start, |paths, entry| {
         let origin = Origin::new(entry.line, anchor);
         match &entry.kind {
-            Kind::ScrubReassemble { criteria } => {
-                branch_scrub(paths, criteria.matches(traffic, SYN, false), |live| {
+            Kind::ScrubReassemble { criteria } => branch_scrub(
+                paths,
+                criteria.matches_scrub(traffic),
+                &origin,
+                |live, uncertain| {
                     live.into_iter()
-                        .map(|_| ScrubPath {
+                        .map(|path| ScrubPath {
                             done: true,
                             state: ScrubState::Reassembled,
+                            uncertain: path.uncertain.or_else(|| uncertain.cloned()),
                         })
                         .collect()
-                })
-            }
-            Kind::NoScrub { criteria } => {
-                branch_scrub(paths, criteria.matches(traffic, SYN, false), |live| {
+                },
+            ),
+            Kind::NoScrub { criteria } => branch_scrub(
+                paths,
+                criteria.matches_scrub(traffic),
+                &origin,
+                |live, uncertain| {
                     live.into_iter()
-                        .map(|_| ScrubPath {
+                        .map(|path| ScrubPath {
                             done: true,
                             state: ScrubState::None,
+                            uncertain: path.uncertain.or_else(|| uncertain.cloned()),
                         })
                         .collect()
-                })
-            }
-            Kind::ScrubOther { criteria } => {
-                branch_scrub(paths, criteria.matches(traffic, SYN, false), |_| {
-                    unknown_scrub(Construct::Normalization, &origin)
-                })
-            }
-            Kind::ScrubAnchor { name, criteria } => {
-                branch_scrub(paths, criteria.matches(traffic, SYN, false), |live| {
+                },
+            ),
+            Kind::ScrubOther { criteria } => branch_scrub(
+                paths,
+                criteria.matches_scrub(traffic),
+                &origin,
+                |_, uncertain| {
+                    let construct = uncertain
+                        .map(|u| u.construct)
+                        .or(criteria.unsupported)
+                        .unwrap_or(Construct::Normalization);
+                    unknown_scrub(construct, &origin)
+                },
+            ),
+            Kind::ScrubAnchor { name, criteria } => branch_scrub(
+                paths,
+                criteria.matches_scrub(traffic),
+                &origin,
+                |live, uncertain| {
                     enter_scrub_anchor(name, anchor, anchors, traffic, &origin, depth, live)
-                })
-            }
+                        .into_iter()
+                        .map(|mut path| {
+                            path.uncertain = path.uncertain.or_else(|| uncertain.cloned());
+                            path
+                        })
+                        .collect()
+                },
+            ),
             _ => paths,
         }
     })
@@ -158,13 +188,15 @@ fn unknown_scrub(construct: Construct, origin: &Origin) -> ScrubPaths {
             origin: origin.clone(),
             construct,
         }),
+        uncertain: None,
     }])
 }
 
 fn branch_scrub(
     paths: ScrubPaths,
     matched: Match,
-    taken: impl FnOnce(ScrubPaths) -> ScrubPaths,
+    origin: &Origin,
+    taken: impl FnOnce(ScrubPaths, Option<&Uncertain>) -> ScrubPaths,
 ) -> ScrubPaths {
     let (finished, live): (ScrubPaths, ScrubPaths) = paths.into_iter().partition(|path| path.done);
     if live.is_empty() {
@@ -172,9 +204,13 @@ fn branch_scrub(
     }
     let next = match matched {
         Match::No => live,
-        Match::Yes => taken(live),
-        Match::Maybe(_) => {
-            let moved = taken(live.clone());
+        Match::Yes => taken(live, None),
+        Match::Maybe(construct) => {
+            let uncertain = Uncertain {
+                origin: origin.clone(),
+                construct,
+            };
+            let moved = taken(live.clone(), Some(&uncertain));
             live.into_iter().chain(moved).collect()
         }
     };

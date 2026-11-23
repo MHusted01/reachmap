@@ -16,7 +16,7 @@ mod state;
 
 use scrub::{Reassembly, evaluate_scrub};
 use state::{
-    Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, branch, combine_fragment_verdicts,
+    Cause, Origin, Outcome, Path, Paths, Stop, Uncertain, branch, combine_fragment_verdict,
     combine_tcp_verdicts, direct_children, has_filter_entries, promote_anchor_stops, unknown,
     verdict,
 };
@@ -28,6 +28,7 @@ const MAX_ANCHOR_DEPTH: usize = 8;
 struct AnchorQuick {
     is_quick: bool,
     has_more: bool,
+    is_wildcard: bool,
 }
 
 pub(super) fn evaluate(
@@ -45,7 +46,7 @@ pub(super) fn evaluate(
     if skipped.iter().all(Path::is_done) {
         return verdict(&skipped);
     }
-    let reassembled = match evaluate_scrub(rules, anchors, traffic) {
+    let scrub_uncertain = match evaluate_scrub(rules, anchors, traffic) {
         Reassembly::Unknown(uncertain) => {
             let (finished, _): (Paths, Paths) = skipped.into_iter().partition(Path::is_done);
             let paths: Paths = finished
@@ -54,30 +55,36 @@ pub(super) fn evaluate(
                 .collect();
             return verdict(&paths);
         }
-        Reassembly::Reassembled => true,
-        Reassembly::MaybeUnreassembled => false,
+        Reassembly::Reassembled => None,
+        Reassembly::MaybeUnreassembled(uncertain) => Some(uncertain),
     };
-    // A TCP opening SYN carries no payload and orphan fragments cannot establish
-    // a handshake, whereas UDP datagrams can arrive as fragments over IPv4/IPv6.
-    if traffic.protocol == Protocol::Tcp {
+    let (unfragmented, full_a, full_b) = if traffic.protocol == Protocol::Tcp {
         let plain = base.evaluate_after_skip(rules, skipped.clone());
         let ecn = Walker {
             opening_flags: SYN_ECN,
             ..base
         }
-        .evaluate_after_skip(rules, skipped);
-        combine_tcp_verdicts(&plain, &ecn)
-    } else if !reassembled {
-        let full = base.evaluate_after_skip(rules, skipped.clone());
-        let frag = Walker {
-            fragment: true,
-            ..base
-        }
-        .evaluate_after_skip(rules, skipped);
-        combine_fragment_verdicts(&full, &frag)
+        .evaluate_after_skip(rules, skipped.clone());
+        (combine_tcp_verdicts(&plain, &ecn), plain, Some(ecn))
     } else {
-        verdict(&base.evaluate_after_skip(rules, skipped))
+        let full = base.evaluate_after_skip(rules, skipped.clone());
+        (verdict(&full), full, None)
+    };
+    let Some(scrub) = scrub_uncertain else {
+        return unfragmented;
+    };
+    let frag = Walker {
+        fragment: true,
+        ..base
     }
+    .evaluate_after_skip(rules, skipped);
+    combine_fragment_verdict(
+        unfragmented,
+        &full_a,
+        full_b.as_ref(),
+        &frag,
+        scrub.as_ref(),
+    )
 }
 
 struct Walker<'a> {
@@ -145,7 +152,7 @@ impl Walker<'_> {
             outcome: Outcome::Pass(Cause::Default),
             uncertain: None,
             ecn_origin: None,
-            port_origin: None,
+            fragment_origin: None,
         }]);
         for skip in &rules.skip {
             let matched = if is_group_name(&skip.name) {
@@ -162,7 +169,7 @@ impl Walker<'_> {
                         outcome: Outcome::Pass(Cause::Skip),
                         uncertain: uncertain.cloned(),
                         ecn_origin: None,
-                        port_origin: None,
+                        fragment_origin: None,
                     })
                     .collect()
             });
@@ -201,7 +208,7 @@ impl Walker<'_> {
                             .flags
                             .is_some_and(TcpFlags::depends_on_ecn)
                             .then(|| origin.clone());
-                        let port_origin = (!self.fragment && criteria.has_port_condition())
+                        let fragment_origin = (!self.fragment && criteria.skipped_by_fragment())
                             .then(|| origin.clone());
                         let stop = if criteria.quick {
                             Stop::Full
@@ -220,9 +227,9 @@ impl Walker<'_> {
                                         outcome: outcome.clone(),
                                         uncertain: uncertain.cloned(),
                                         ecn_origin: prev.ecn_origin.or_else(|| ecn_origin.clone()),
-                                        port_origin: prev
-                                            .port_origin
-                                            .or_else(|| port_origin.clone()),
+                                        fragment_origin: prev
+                                            .fragment_origin
+                                            .or_else(|| fragment_origin.clone()),
                                     })
                                     .collect()
                             },
@@ -233,11 +240,12 @@ impl Walker<'_> {
                             .flags
                             .is_some_and(TcpFlags::depends_on_ecn)
                             .then(|| origin.clone());
-                        let port_origin = (!self.fragment && criteria.has_port_condition())
+                        let fragment_origin = (!self.fragment && criteria.skipped_by_fragment())
                             .then(|| origin.clone());
                         let quick = AnchorQuick {
                             is_quick: criteria.quick,
                             has_more: has_filter_entries(&rules.entries[idx + 1..]),
+                            is_wildcard: false,
                         };
                         branch(
                             paths,
@@ -249,7 +257,7 @@ impl Walker<'_> {
                                     .map(|path| {
                                         path.tagged(uncertain)
                                             .with_ecn(ecn_origin.as_ref())
-                                            .with_port(port_origin.as_ref())
+                                            .with_fragment(fragment_origin.as_ref())
                                     })
                                     .collect()
                             },
@@ -294,7 +302,11 @@ impl Walker<'_> {
             if depth >= MAX_ANCHOR_DEPTH {
                 return unknown(Construct::AnchorTooDeep, origin);
             }
-            let mut out = self.run_bodies(&children, quick, depth, live);
+            let wildcard_quick = AnchorQuick {
+                is_wildcard: true,
+                ..quick
+            };
+            let mut out = self.run_bodies(&children, wildcard_quick, depth, live);
             if !complete {
                 out.extend(unknown(Construct::MissingAnchor, origin));
             }
@@ -356,19 +368,20 @@ impl Walker<'_> {
         current
             .into_iter()
             .map(|mut path| {
-                match path.stop {
-                    Stop::Full => {}
-                    Stop::Anchor | Stop::None => {
-                        if quick.is_quick && path.matched {
-                            path.stop = if quick.has_more {
-                                Stop::Full
-                            } else {
-                                Stop::Anchor
-                            };
+                let stop_here = matches!(path.stop, Stop::Anchor) || path.matched;
+                path.stop = match path.stop {
+                    Stop::Full => Stop::Full,
+                    Stop::Anchor | Stop::None if quick.is_quick && stop_here => {
+                        if quick.has_more {
+                            Stop::Full
                         } else {
-                            path.stop = Stop::None;
+                            Stop::Anchor
                         }
                     }
+                    Stop::Anchor | Stop::None => Stop::None,
+                };
+                if quick.is_wildcard {
+                    path.matched = false;
                 }
                 path
             })

@@ -22,7 +22,7 @@ fn quick_anchor_stops_after_a_matching_child_rule() {
     let packet = traffic("en0", Protocol::Tcp, HOST, 22);
     assert_eq!(
         check(
-            "block drop in all\nanchor \"local\" quick all\nblock drop in all",
+            "scrub in all fragment reassemble\nblock drop in all\nanchor \"local\" quick all\nblock drop in all",
             &child_anchors,
             &packet
         ),
@@ -32,15 +32,15 @@ fn quick_anchor_stops_after_a_matching_child_rule() {
     );
     assert_eq!(
         check(
-            "block drop in all\nanchor \"empty\" quick all\nblock drop in all",
+            "scrub in all fragment reassemble\nblock drop in all\nanchor \"empty\" quick all\nblock drop in all",
             &child_anchors,
             &packet
         ),
-        block_at(3)
+        block_at(4)
     );
     assert_eq!(
         check(
-            "block drop in all\nanchor \"outer\" quick all\nblock drop in all",
+            "scrub in all fragment reassemble\nblock drop in all\nanchor \"outer\" quick all\nblock drop in all",
             &child_anchors,
             &packet
         ),
@@ -305,35 +305,35 @@ fn inbound_binat_reverse_mapping_triggers_unknown_for_internal_listener() {
 fn tcp_ecn_opening_syn_flags_are_evaluated_alongside_bare_syn() {
     assert_eq!(
         tcp(
-            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW",
+            "scrub in all fragment reassemble\nblock drop in all\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW",
             "en0",
             22
         ),
-        unknown("tcp flags (ECN) in rule at line 2")
+        unknown("tcp flags (ECN) in rule at line 3")
     );
     assert_eq!(
         tcp(
-            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SAEW",
+            "scrub in all fragment reassemble\nblock drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SAEW",
             "en0",
             22
         ),
-        unknown("tcp flags (ECN) in rule at line 2")
+        unknown("tcp flags (ECN) in rule at line 3")
     );
     assert_eq!(
         tcp(
-            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SAEW\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW",
+            "scrub in all fragment reassemble\nblock drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SAEW\npass in on en0 proto tcp from any to any port = 22 flags SEW/SAEW",
             "en0",
             22
         ),
-        pass_at(2)
+        pass_at(3)
     );
     assert_eq!(
         tcp(
-            "block drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SA",
+            "scrub in all fragment reassemble\nblock drop in all\npass in on en0 proto tcp from any to any port = 22 flags S/SA",
             "en0",
             22
         ),
-        pass_at(2)
+        pass_at(3)
     );
 }
 
@@ -342,6 +342,7 @@ fn wildcard_anchors_evaluate_direct_children_and_require_complete_marker() {
     let packet = traffic("en0", Protocol::Tcp, HOST, 22);
     let ordered = anchors(&[
         ("com.apple/*", ""),
+        ("com.apple/100.scrub", "scrub in all fragment reassemble"),
         (
             "com.apple/200.allow",
             "pass in on en0 proto tcp from any to any port = 22",
@@ -360,6 +361,7 @@ fn wildcard_anchors_evaluate_direct_children_and_require_complete_marker() {
 
     let quick_child = anchors(&[
         ("com.apple/*", ""),
+        ("com.apple/100.scrub", "scrub in all fragment reassemble"),
         (
             "com.apple/200.allow",
             "pass in quick on en0 proto tcp from any to any port = 22",
@@ -403,7 +405,7 @@ fn wildcard_anchors_evaluate_direct_children_and_require_complete_marker() {
     ]);
     assert_eq!(
         check(
-            "anchor \"site/*\" quick all\nblock drop in all",
+            "scrub in all fragment reassemble\nanchor \"site/*\" quick all\nblock drop in all",
             &quick_wildcard,
             &packet
         ),

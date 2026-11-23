@@ -1,3 +1,4 @@
+scrub in all fragment reassemble
 block drop in all
 pass in on en0 inet proto tcp from any to 192.0.2.10 port = 22 flags S/SA keep state
 block drop in quick on ! en0 inet proto tcp from any to any port = 80
