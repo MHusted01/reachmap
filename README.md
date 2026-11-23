@@ -17,9 +17,12 @@ PORT  PROTO  ADDRESS    SERVICE                     REACHABLE FROM              
 warning: UFW is active, but it does not apply to these Docker ports: 8080
 ```
 
-> **Status.** v0.6.0 adds configured Nginx reverse proxy route explanations
-> that link frontend listeners and backend targets to local TCP listeners, with
-> offline replay. v0.5.0 added Tailscale Serve and Funnel routes and
+> **Status.** v0.6.0 adds `reachmap scan --nginx-routes` on Linux: configured
+> Nginx reverse proxy routes, with frontend listeners and backend targets linked
+> to local TCP listeners, snapshot capture and offline `reachmap replay`. It
+> reads the configuration on disk at Nginx's built-in path, which can differ
+> from what a running Nginx has loaded, and leaves application authentication
+> unverified. v0.5.0 added Tailscale Serve and Funnel routes and
 > single-endpoint Linux TCP audits over authenticated SSH.
 > [Changelog](CHANGELOG.md) ·
 > [Scan](docs/scan.md) · [JSON](docs/json.md) · [Probe](docs/probe.md) · [Diff](docs/diff.md) · [Egress](docs/egress.md) · [TCP path](docs/scan.md#linux-inbound-tcp-paths) · [Tailscale routes](docs/scan.md#tailscale) · [Nginx routes](docs/scan.md#nginx) · [SSH audit](docs/audit.md)

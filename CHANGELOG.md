@@ -15,13 +15,15 @@ is released; see "Releases" in [CONTRIBUTING.md](CONTRIBUTING.md).
 `reachmap scan --nginx-routes` explains configured Nginx reverse proxy routes
 on Linux: frontend listeners, server names, locations, backend targets and the
 local TCP listeners they reach, with proxy-layer auth indicators reported
-separately. Reports describe the configuration on disk from `nginx -T`, which
+separately. Collection stays read-only: reachmap reads the configuration files
+at the path Nginx was built with and runs only `nginx -V`, never the `nginx -T`
+configuration test. Reports therefore describe the configuration on disk, which
 can differ from what a running Nginx has loaded; TCP connectivity, HTTP
 responses and application authentication remain separate observations.
 Snapshots keep a secret-minimized route model for offline `replay` on Linux and
 macOS. Changelog entries are now collected as one fragment file per change. See
-the [Nginx route scope](https://github.com/MHusted01/reachmap/blob/eca2af5/docs/scan.md#nginx)
-and [Nginx verification](https://github.com/MHusted01/reachmap/blob/eca2af5/docs/nginx-verification.md).
+the [Nginx route scope](https://github.com/MHusted01/reachmap/blob/47a9769/docs/scan.md#nginx)
+and [Nginx verification](https://github.com/MHusted01/reachmap/blob/47a9769/docs/nginx-verification.md).
 
 ### Added
 
@@ -34,6 +36,14 @@ and [Nginx verification](https://github.com/MHusted01/reachmap/blob/eca2af5/docs
   offline `reachmap replay` ([#109](https://github.com/MHusted01/reachmap/issues/109)).
 - Add a pure, bounded Nginx configuration parser and secret-minimized route
   model ([#108](https://github.com/MHusted01/reachmap/issues/108)).
+
+### Fixed
+
+- `reachmap scan --nginx-routes` reads the configuration files from disk and
+  runs only `nginx -V`, instead of `nginx -T`, whose configuration test could
+  create configured log files and temp directories. Relative includes in
+  included files now resolve against the main configuration directory, as in
+  Nginx ([#124](https://github.com/MHusted01/reachmap/issues/124)).
 
 ## [0.5.0] - 2026-11-22
 
