@@ -1,0 +1,110 @@
+{
+  "admin": { "listen": "localhost:2019" },
+  "apps": {
+    "http": {
+      "http_port": 8080,
+      "https_port": 8443,
+      "servers": {
+        "edge": {
+          "listen": [":443", "tcp6/[::]:8443-8445"],
+          "tls_connection_policies": [
+            {
+              "match": { "sni": ["internal.example.test"] },
+              "client_authentication": { "mode": "require_and_verify" }
+            },
+            {}
+          ],
+          "routes": [
+            {
+              "match": [
+                { "host": ["App.Example.Test", "*.apps.example.test"] }
+              ],
+              "handle": [
+                {
+                  "handler": "subroute",
+                  "routes": [
+                    {
+                      "group": "group0",
+                      "match": [{ "path": ["/api/*"] }],
+                      "handle": [
+                        {
+                          "handler": "reverse_proxy",
+                          "upstreams": [
+                            { "dial": "127.0.0.1:3000" },
+                            { "dial": "[::1]:3001" }
+                          ]
+                        }
+                      ]
+                    },
+                    {
+                      "group": "group0",
+                      "handle": [
+                        {
+                          "handler": "subroute",
+                          "routes": [
+                            {
+                              "match": [{ "path": ["/health"] }],
+                              "handle": [
+                                { "handler": "static_response", "status_code": 200 }
+                              ],
+                              "terminal": true
+                            },
+                            {
+                              "handle": [
+                                {
+                                  "handler": "reverse_proxy",
+                                  "transport": { "protocol": "http", "tls": {} },
+                                  "upstreams": [{ "dial": "tcp/192.0.2.10:8443" }]
+                                }
+                              ]
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "terminal": true
+            }
+          ]
+        },
+        "internal": {
+          "listen": ["127.0.0.1:9080"],
+          "automatic_https": { "disable": true },
+          "routes": [
+            {
+              "match": [{ "path": ["/admin*"] }, { "host": ["admin.example.test"] }],
+              "handle": [
+                {
+                  "handler": "authentication",
+                  "providers": { "http_basic": { "hash": { "algorithm": "bcrypt" } } }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "localhost:4000" }]
+                }
+              ]
+            },
+            {
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "auth.example.test:9091" }],
+                  "handle_response": [
+                    { "match": { "status_code": [2] }, "routes": [] }
+                  ]
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [{ "dial": "198.51.100.7:8000" }]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    "tls": { "automation": { "policies": [] } }
+  }
+}

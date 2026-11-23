@@ -16,6 +16,7 @@
 
 mod artifact;
 pub mod baseline;
+pub mod caddy;
 pub mod collect;
 pub mod diff;
 pub mod docker;

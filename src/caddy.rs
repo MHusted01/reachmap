@@ -1,0 +1,216 @@
+//! Secret-minimized domain model for a bounded subset of Caddy's native JSON
+//! configuration (what `caddy adapt` prints).
+//!
+//! [`parse_caddy_config`] projects the JSON straight into these types. Only
+//! listeners, route matchers, proxy upstreams, proxy-layer authentication
+//! presence and explicit uncertainties are kept: never password hashes,
+//! header values, TLS material, storage or admin settings, or any field the
+//! model does not name.
+
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+mod address;
+mod dial;
+mod error;
+mod handler;
+mod listen;
+mod location;
+mod matcher;
+mod project;
+mod raw;
+
+#[cfg(test)]
+mod tests;
+
+pub use dial::{DialTarget, HostName};
+pub use error::{CaddyParseError, MAX_INPUT_BYTES};
+pub use handler::{Handler, Middleware, Responder, ReverseProxy};
+pub use listen::{ListenAddress, ListenHost, ListenNetwork, PortRange};
+pub use matcher::{HostMatcher, PathMatcher};
+pub use project::{MAX_ROUTE_DEPTH, parse_caddy_config};
+
+/// Port Caddy uses for HTTP when the `http` app names none.
+pub const DEFAULT_HTTP_PORT: u16 = 80;
+
+/// Port Caddy uses for HTTPS when the `http` app names none.
+pub const DEFAULT_HTTPS_PORT: u16 = 443;
+
+/// Routes, listeners and uncertainties extracted from one Caddy JSON config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaddyConfig {
+    /// Port of the HTTP-to-HTTPS redirects that automatic HTTPS adds.
+    pub http_port: u16,
+    /// Port automatic HTTPS treats as the HTTPS port.
+    pub https_port: u16,
+    /// Servers of the `http` app, ordered by their configuration key.
+    pub servers: Vec<CaddyServer>,
+    /// Constructs that could change routing or exposure but are not modeled.
+    pub uncertainties: Vec<Uncertainty>,
+}
+
+impl Default for CaddyConfig {
+    fn default() -> Self {
+        Self {
+            http_port: DEFAULT_HTTP_PORT,
+            https_port: DEFAULT_HTTPS_PORT,
+            servers: Vec::new(),
+            uncertainties: Vec::new(),
+        }
+    }
+}
+
+/// One entry of `apps.http.servers`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaddyServer {
+    /// Sanitized, length-bounded configuration key, e.g. `srv0`.
+    pub name: String,
+    /// Statically understood `listen` addresses.
+    pub listen: Vec<ListenAddress>,
+    /// Automatic HTTPS switches set on this server.
+    pub automatic_https: AutomaticHttps,
+    /// One entry per `tls_connection_policies` item.
+    pub tls_policies: Vec<TlsPolicy>,
+    /// Top-level routes in configuration order.
+    pub routes: Vec<Route>,
+}
+
+/// The `automatic_https` switches of a server. Both `false` when unset.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutomaticHttps {
+    /// `disable`: no certificates and no redirects for this server.
+    pub disabled: bool,
+    /// `disable_redirects`: certificates, but no HTTP-to-HTTPS redirect listener.
+    pub redirects_disabled: bool,
+}
+
+/// One TLS connection policy of a server, reduced to access signals.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TlsPolicy {
+    /// Whether the policy applies only to connections it matches (e.g. by SNI).
+    pub scoped: bool,
+    /// Client certificate requirement, when the policy configures one.
+    pub client_auth: Option<ClientAuthMode>,
+}
+
+/// How a TLS policy treats client certificates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientAuthMode {
+    /// `request`: asks for a certificate, accepts connections without one.
+    Request,
+    /// `require`: needs a certificate, does not verify it.
+    Require,
+    /// `verify_if_given`: verifies a certificate only when one is sent.
+    VerifyIfGiven,
+    /// `require_and_verify`: needs a certificate that verifies.
+    RequireAndVerify,
+    /// No `mode`, but trust material is configured; Caddy picks the mode.
+    Implicit,
+}
+
+/// One route: matcher sets, then a chain of handlers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Route {
+    /// Sanitized `group` name. Only the first matching route of a group runs.
+    pub group: Option<String>,
+    /// Matcher sets, of which any one must match. Empty matches every request.
+    pub matchers: Vec<MatcherSet>,
+    /// Handlers in chain order.
+    pub handlers: Vec<Handler>,
+    /// Whether no later route runs after this one matched.
+    pub terminal: bool,
+}
+
+/// One matcher set: every matcher in it must match.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MatcherSet {
+    /// `host` patterns, any of which may match; `None` when unconstrained.
+    pub hosts: Option<Vec<HostMatcher>>,
+    /// `path` patterns, any of which may match; `None` when unconstrained.
+    pub paths: Option<Vec<PathMatcher>>,
+    /// `false` when a matcher or pattern of this set was not modeled, so the
+    /// set may match other requests than `hosts` and `paths` say.
+    pub complete: bool,
+}
+
+/// A construct that could change routing or exposure but is not modeled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Uncertainty {
+    /// Category of the construct.
+    pub kind: UncertaintyKind,
+    /// Sanitized name of the construct (a field, matcher or handler name),
+    /// never a configured value.
+    pub construct: String,
+    /// JSON location, e.g. `apps.http.servers["srv0"].routes[1].handle[0]`.
+    pub location: String,
+}
+
+/// Category of an [`Uncertainty`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UncertaintyKind {
+    /// A runtime placeholder (`{...}`) in a listener, matcher or upstream.
+    Placeholder,
+    /// A matcher other than `host` and `path`, e.g. `expression` or `remote_ip`.
+    UnmodeledMatcher,
+    /// A `host` or `path` pattern beyond exact, prefix or leading wildcard.
+    UnsupportedPattern,
+    /// A handler that rewrites or remaps the request: `rewrite`, `uri`, `map`.
+    RoutingHandler,
+    /// A handler type the model does not know.
+    UnknownHandler,
+    /// `dynamic_upstreams`: proxy targets chosen at runtime.
+    DynamicUpstreams,
+    /// A Unix socket, UDP, file descriptor or non-HTTP proxy transport.
+    UnsupportedTransport,
+    /// A host name that needs DNS to become an address.
+    UnresolvedHost,
+    /// A server without `listen`, or a listen address without a port.
+    ImplicitListen,
+    /// An app other than `http` that may accept connections, e.g. `layer4`.
+    UnmodeledApp,
+    /// A server feature that can route requests: `errors` or `named_routes`.
+    UnmodeledServerFeature,
+    /// An authentication provider other than `http_basic`.
+    UnmodeledAuthProvider,
+    /// A client authentication `mode` the model does not know.
+    UnknownClientAuthMode,
+    /// Subroutes nested deeper than [`MAX_ROUTE_DEPTH`].
+    NestingTooDeep,
+    /// A value of the wrong shape or an invalid address.
+    Malformed,
+}
+
+impl fmt::Display for UncertaintyKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Placeholder => "runtime placeholder",
+            Self::UnmodeledMatcher => "unmodeled matcher",
+            Self::UnsupportedPattern => "unsupported match pattern",
+            Self::RoutingHandler => "request-rewriting handler",
+            Self::UnknownHandler => "unknown handler",
+            Self::DynamicUpstreams => "dynamic upstreams",
+            Self::UnsupportedTransport => "unsupported transport",
+            Self::UnresolvedHost => "host name requiring DNS resolution",
+            Self::ImplicitListen => "implicit listen port",
+            Self::UnmodeledApp => "unmodeled app",
+            Self::UnmodeledServerFeature => "unmodeled server feature",
+            Self::UnmodeledAuthProvider => "unmodeled authentication provider",
+            Self::UnknownClientAuthMode => "unknown client authentication mode",
+            Self::NestingTooDeep => "subroutes nested too deep",
+            Self::Malformed => "malformed value",
+        })
+    }
+}
+
+impl fmt::Display for Uncertainty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} (`{}`) at {}",
+            self.kind, self.construct, self.location
+        )
+    }
+}
