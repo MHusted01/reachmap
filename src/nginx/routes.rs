@@ -7,17 +7,23 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::collect::{self, CollectError};
+#[cfg(target_os = "linux")]
+use crate::collect::{self, nginx_files::DiskFiles};
 use crate::local_tcp::{
     Inventory, Listener, TcpEvidence, candidate, exact_candidate, read_inventory,
 };
 use crate::nginx::{ListenAddress, ListenEndpoint, NginxConfig, ProxyTarget};
+#[cfg(target_os = "linux")]
+use crate::parse::nginx::conf_path_from_build_info;
 use crate::parse::nginx::{NginxParseError, parse_nginx_config};
 use crate::scan::ScanError;
 
-use self::diagnostic::{Note, classify_nginx_error};
+use self::diagnostic::Note;
+#[cfg(target_os = "linux")]
+use self::diagnostic::classify_nginx_error;
 
 mod diagnostic;
+mod files;
 mod format;
 pub mod snapshot;
 
@@ -32,32 +38,31 @@ pub enum NginxScanError {
         "could not read Nginx configuration (permission denied); retry with privileges to read Nginx config files (e.g. sudo)"
     )]
     PermissionDenied,
-    /// `nginx -T` exited with a non-zero status; raw stderr is omitted so
-    /// config lines or secrets cannot leak.
+    /// `nginx -V` exited with a non-zero status; raw stderr is omitted.
     #[error(
-        "could not dump Nginx configuration (`nginx -T` failed{}); check Nginx config syntax and permissions (raw stderr omitted)",
+        "could not read Nginx build information (`nginx -V` failed{}); check the Nginx installation (raw stderr omitted)",
         format_exit_code(*.exit_code)
     )]
     CommandFailed {
         /// Process exit code, when available.
         exit_code: Option<i32>,
     },
-    /// `nginx -T` did not finish within the bounded timeout.
-    #[error("`nginx -T` did not finish within {timeout:?}")]
+    /// `nginx -V` did not finish within the bounded timeout.
+    #[error("`nginx -V` did not finish within {timeout:?}")]
     TimedOut {
         /// Timeout enforced by the collector.
         timeout: Duration,
     },
-    /// `nginx -T` stdout or stderr exceeded its bounded safety limit.
-    #[error("`nginx -T` {stream} output exceeded the {limit_bytes}-byte safety limit")]
+    /// `nginx -V` stdout or stderr exceeded its bounded safety limit.
+    #[error("`nginx -V` {stream} output exceeded the {limit_bytes}-byte safety limit")]
     OutputTooLarge {
         /// Which stream overflowed (`"stdout"` or `"stderr"`).
         stream: &'static str,
         /// Maximum accepted output length in bytes for that stream.
         limit_bytes: u64,
     },
-    /// `nginx -T` produced non-UTF-8 output.
-    #[error("`nginx -T` printed output that is not valid UTF-8")]
+    /// `nginx -V` produced non-UTF-8 output.
+    #[error("`nginx -V` printed output that is not valid UTF-8")]
     NotUtf8,
     /// Nginx collection requires Linux.
     #[error("Nginx route collection requires Linux (unavailable on {os})")]
@@ -65,13 +70,56 @@ pub enum NginxScanError {
         /// Current operating system identifier.
         os: &'static str,
     },
-    /// Spawning or reading `nginx -T` failed with an unexpected I/O error kind.
-    #[error("could not run `nginx -T` ({kind})")]
+    /// Spawning or reading `nginx -V` failed with an unexpected I/O error kind.
+    #[error("could not run `nginx -V` ({kind})")]
     RunFailed {
         /// Sanitized I/O error kind description.
         kind: String,
     },
-    /// Expanded configuration text could not be parsed within safety bounds.
+    /// `nginx -V` did not lead to an absolute main configuration path.
+    #[error("could not determine the Nginx configuration file from `nginx -V`")]
+    ConfigPathUnknown,
+    /// The main configuration file named by `nginx -V` does not exist.
+    #[error("Nginx configuration file {path} was not found")]
+    ConfigNotFound {
+        /// Sanitized path of the main configuration file.
+        path: String,
+    },
+    /// A configuration path cannot be read safely.
+    #[error("could not read Nginx configuration file {path} ({reason})")]
+    UnreadableFile {
+        /// Sanitized path that was refused.
+        path: String,
+        /// Why it was refused.
+        reason: &'static str,
+    },
+    /// Reading a configuration file or directory failed.
+    #[error("could not read Nginx configuration file {path} ({kind})")]
+    ReadFailed {
+        /// Sanitized path that failed.
+        path: String,
+        /// Sanitized I/O error kind description.
+        kind: String,
+    },
+    /// The configuration files together exceed the parser's input limit.
+    #[error("Nginx configuration files exceed the {limit_bytes}-byte input limit")]
+    ConfigTooLarge {
+        /// Maximum accepted total size in bytes.
+        limit_bytes: usize,
+    },
+    /// The configuration includes more files than the collector reads.
+    #[error("Nginx configuration includes more than {limit} files")]
+    TooManyFiles {
+        /// Maximum number of files read.
+        limit: usize,
+    },
+    /// `include`s are nested deeper than the collector follows.
+    #[error("Nginx configuration includes are nested more than {limit} levels deep")]
+    IncludeTooDeep {
+        /// Maximum include depth followed.
+        limit: usize,
+    },
+    /// Configuration text could not be parsed within safety bounds.
     #[error("could not parse Nginx configuration")]
     Parse(#[from] NginxParseError),
 }
@@ -175,17 +223,34 @@ impl fmt::Display for NginxRouteReport {
     }
 }
 
-/// Reads the on-disk Nginx configuration (`nginx -T`) and the local Linux TCP
-/// socket inventory. Discards raw config text immediately after parsing.
+/// Reads the on-disk Nginx configuration files and the local Linux TCP socket
+/// inventory. Runs only `nginx -V`, never Nginx's configuration test, and
+/// discards raw config text immediately after parsing.
 pub fn scan() -> Result<NginxRouteReport, NginxScanError> {
-    collect_with(collect::read_nginx_config(), read_inventory)
+    collect_with(read_config(), read_inventory)
+}
+
+/// Finds the main configuration file with `nginx -V` and reads it and its
+/// includes from disk.
+#[cfg(target_os = "linux")]
+fn read_config() -> Result<String, NginxScanError> {
+    let build_info = collect::read_nginx_build_info().map_err(classify_nginx_error)?;
+    let main = conf_path_from_build_info(&build_info).ok_or(NginxScanError::ConfigPathUnknown)?;
+    files::read_config(&main, &DiskFiles)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_config() -> Result<String, NginxScanError> {
+    Err(NginxScanError::UnsupportedOs {
+        os: std::env::consts::OS,
+    })
 }
 
 pub(in crate::nginx) fn collect_with(
-    raw_config: Result<String, CollectError>,
+    raw_config: Result<String, NginxScanError>,
     read_inventory: impl FnOnce() -> Result<Inventory, ScanError>,
 ) -> Result<NginxRouteReport, NginxScanError> {
-    let raw = raw_config.map_err(classify_nginx_error)?;
+    let raw = raw_config?;
     let config = parse_nginx_config(&raw)?;
     drop(raw);
 

@@ -204,11 +204,13 @@ pub(super) fn record_common_uncertainty(
     push_uncertainty(uncertainties, kind, name, source_file, line);
 }
 
-pub(super) fn resolve_relative_pattern(source_file: Option<&str>, pattern: &str) -> Option<String> {
+/// Joins a relative `include` pattern to the directory of the main
+/// configuration file, Nginx's configuration prefix.
+pub(super) fn resolve_relative_pattern(main_file: Option<&str>, pattern: &str) -> Option<String> {
     if pattern.starts_with('/') {
         return None;
     }
-    let dir = source_file?.rsplit_once('/')?.0;
+    let dir = main_file?.rsplit_once('/')?.0;
     if dir.is_empty() {
         Some(format!("/{pattern}"))
     } else {

@@ -193,11 +193,11 @@ impl HttpObservation<'_> {
 /// Layer 1: Configured on-disk Nginx route evidence and frontend listener status.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConfiguredRouteEvidence<'a> {
-    /// Always `true`: `nginx -T` reads on-disk configuration rather than master worker memory.
+    /// Always `true`: the collector reads on-disk configuration rather than master worker memory.
     pub on_disk_config_only: bool,
     /// Always `true`: whether the running Nginx master reloaded this config is unverified.
     pub running_master_reload_unverified: bool,
-    /// Whether `nginx -T` and local TCP socket inventory completed without partial notes.
+    /// Whether configuration and local TCP socket inventory collection completed without partial notes.
     pub collection_complete: bool,
     /// Number of dynamic or unmodeled configuration uncertainties recorded during parsing.
     pub uncertainty_count: usize,

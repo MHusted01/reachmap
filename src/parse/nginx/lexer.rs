@@ -1,4 +1,5 @@
-//! Bounded, zero-copy-by-default lexer for `nginx -T` output.
+//! Bounded, zero-copy-by-default lexer for Nginx configuration in the
+//! `nginx -T` format.
 
 use std::borrow::Cow;
 

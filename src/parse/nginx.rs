@@ -1,4 +1,5 @@
-//! Pure, bounded parser for expanded `nginx -T` configuration dumps.
+//! Pure, bounded parser for expanded Nginx configuration in the `nginx -T`
+//! format: each file after a `# configuration file <path>:` line.
 //!
 //! Lexes and parses Nginx directives over borrowed `&str` slices and
 //! immediately projects them into a secret-minimized [`NginxConfig`], never
@@ -11,7 +12,12 @@ use thiserror::Error;
 
 use crate::nginx::NginxConfig;
 
+pub use includes::{
+    conf_path_from_build_info, include_patterns, is_glob_component, matches_glob_component,
+};
+
 mod directives;
+mod includes;
 mod lexer;
 mod listen;
 mod parser;
@@ -19,7 +25,7 @@ mod project;
 mod server;
 mod target;
 
-/// Maximum accepted size of an expanded `nginx -T` configuration input (8 MiB).
+/// Maximum accepted size of an expanded configuration input (8 MiB).
 pub const MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Maximum number of lexical tokens accepted from a single input.
@@ -122,7 +128,7 @@ fn format_location(file: Option<&str>, line: usize) -> String {
     Location(file, line).to_string()
 }
 
-/// Parses an expanded `nginx -T` configuration dump into a secret-minimized
+/// Parses expanded Nginx configuration in the `nginx -T` format into a secret-minimized
 /// [`NginxConfig`] model without touching the filesystem or network.
 pub fn parse_nginx_config(input: &str) -> Result<NginxConfig, NginxParseError> {
     let tokens = lexer::tokenize(input)?;

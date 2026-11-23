@@ -256,7 +256,36 @@ grep -Fq "dynamic routing (\`rewrite\`)" "$work/dynamic_unknown.live.txt"
 jq -e '(.evidence.config.uncertainties | length) >= 2' "$work/dynamic_unknown.snapshot.json" >/dev/null
 printf 'ok: dynamic_unknown (uncertainties reported, exit 1)\n'
 
-# Case 5: Unprivileged collector lacking config read permission -> clean evidence gap.
+# Case 5: Read-only collection -> a root scan creates no configured log file or temp directory.
+stop_nginx
+side_log="$work/side-effect-access.log"
+side_temp="$work/side-effect-temp"
+cat >/etc/nginx/http.d/lab.conf <<CONF
+# $secret_comment
+server {
+    listen 192.0.2.1:8080;
+    server_name app.example.test;
+    access_log $side_log;
+    client_body_temp_path $side_temp;
+
+    location /app/ {
+        proxy_pass http://127.0.0.1:18080/;
+    }
+}
+CONF
+rm -rf -- "$side_log" "$side_temp"
+capture_and_replay read_only 0
+grep -Fq 'listen: 192.0.2.1:8080 (no matching TCP listener)' "$work/read_only.live.txt"
+if [[ -e $side_log || -e $side_temp ]]; then
+    echo 'reachmap scan --nginx-routes created a configured log file or temp directory' >&2
+    exit 1
+fi
+# Control: Nginx's own configuration test creates both, so the check above is meaningful.
+nginx -t -q
+[[ -f $side_log && -d $side_temp ]]
+printf 'ok: read_only (no log file or temp directory created; nginx -t creates both)\n'
+
+# Case 6: Unprivileged collector lacking config read permission -> clean evidence gap.
 chmod 600 /etc/nginx/http.d/lab.conf
 status=0
 su -s /bin/sh auditor -c "$binary scan --nginx-routes" \

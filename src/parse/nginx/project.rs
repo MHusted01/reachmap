@@ -361,7 +361,10 @@ impl<'a> Projector<'a> {
             return Vec::new();
         }
 
-        let resolved_pattern = resolve_relative_pattern(source_file, pattern);
+        // Nginx resolves relative includes against the configuration prefix,
+        // the directory of the main file, which comes first in the dump.
+        let main_file = self.files.first().and_then(|file| file.source_file);
+        let resolved_pattern = resolve_relative_pattern(main_file, pattern);
         let is_glob = pattern.contains('*') || pattern.contains('?');
         let mut matched = Vec::new();
 

@@ -1,0 +1,184 @@
+//! Reads the Nginx configuration from disk into the text `nginx -T` would
+//! print, without running Nginx: its configuration test can create log files
+//! and temp directories, and reachmap never changes the system.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
+
+use std::collections::BTreeSet;
+use std::io::{self, ErrorKind};
+
+use super::NginxScanError;
+use crate::collect::nginx_files::{ConfigFiles, FileRead};
+use crate::parse::nginx::{
+    MAX_INPUT_BYTES, include_patterns, is_glob_component, matches_glob_component,
+};
+use crate::sanitize::sanitize;
+
+/// Most configuration files one scan reads, and most paths one glob expands to.
+pub(super) const MAX_FILES: usize = 1024;
+
+/// Deepest chain of nested `include`s followed.
+pub(super) const MAX_INCLUDE_DEPTH: usize = 32;
+
+/// Reads `main` and every file it includes, depth first in include order like
+/// `nginx -T`, each once and after a `# configuration file <path>:` line.
+///
+/// Relative includes resolve against the directory of `main`, `*` and `?`
+/// expand like `glob()` in sorted order, and a literal include that does not
+/// exist is left for the route parser to report as unresolved.
+pub(super) fn read_config(main: &str, files: &impl ConfigFiles) -> Result<String, NginxScanError> {
+    let prefix = main.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let mut walk = Walk {
+        files,
+        prefix,
+        dump: String::new(),
+        seen: BTreeSet::new(),
+    };
+    if walk.visit(main, 0)? {
+        Ok(walk.dump)
+    } else {
+        Err(NginxScanError::ConfigNotFound {
+            path: sanitize(main),
+        })
+    }
+}
+
+struct Walk<'a, F> {
+    files: &'a F,
+    prefix: &'a str,
+    dump: String,
+    seen: BTreeSet<String>,
+}
+
+impl<F: ConfigFiles> Walk<'_, F> {
+    /// Appends `path` and the files it includes. Returns `false` when nothing
+    /// exists at `path`.
+    fn visit(&mut self, path: &str, depth: usize) -> Result<bool, NginxScanError> {
+        if depth > MAX_INCLUDE_DEPTH {
+            return Err(NginxScanError::IncludeTooDeep {
+                limit: MAX_INCLUDE_DEPTH,
+            });
+        }
+        if !self.seen.insert(path.to_owned()) {
+            return Ok(true);
+        }
+        if self.seen.len() > MAX_FILES {
+            return Err(NginxScanError::TooManyFiles { limit: MAX_FILES });
+        }
+        if path.chars().any(char::is_control) {
+            return Err(unreadable(path, "the path has control characters"));
+        }
+        let Some(text) = self.read(path)? else {
+            return Ok(false);
+        };
+        let start = self.dump.len();
+        self.dump.push_str("# configuration file ");
+        self.dump.push_str(path);
+        self.dump.push_str(":\n");
+        self.dump.push_str(&text);
+        if !text.ends_with('\n') {
+            self.dump.push('\n');
+        }
+        if self.dump.len() > MAX_INPUT_BYTES {
+            return Err(too_large());
+        }
+        for pattern in include_patterns(&self.dump[start..])? {
+            for included in self.expand(&pattern)? {
+                self.visit(&included, depth + 1)?;
+            }
+        }
+        Ok(true)
+    }
+
+    /// Reads one file within the bytes the dump has left.
+    fn read(&self, path: &str) -> Result<Option<String>, NginxScanError> {
+        let limit = MAX_INPUT_BYTES.saturating_sub(self.dump.len());
+        let limit = u64::try_from(limit).unwrap_or(u64::MAX);
+        let bytes = match self.files.read(path, limit) {
+            Ok(FileRead::Missing) => return Ok(None),
+            Ok(FileRead::NotRegular) => return Err(unreadable(path, "not a regular file")),
+            Ok(FileRead::TooLarge) => return Err(too_large()),
+            Ok(FileRead::Bytes(bytes)) => bytes,
+            Err(error) => return Err(read_error(path, &error)),
+        };
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| unreadable(path, "not valid UTF-8"))
+    }
+
+    /// The paths an `include` pattern names, in the order Nginx reads them.
+    fn expand(&self, pattern: &str) -> Result<Vec<String>, NginxScanError> {
+        let full = if pattern.starts_with('/') {
+            pattern.to_owned()
+        } else {
+            format!("{}/{pattern}", self.prefix)
+        };
+        if !is_glob_component(&full) {
+            return Ok(vec![full]);
+        }
+        let mut paths = vec![String::new()];
+        for component in full.split('/').skip(1) {
+            let mut next = Vec::new();
+            for base in &paths {
+                if is_glob_component(component) {
+                    self.extend_matches(base, component, &mut next)?;
+                } else {
+                    next.push(format!("{base}/{component}"));
+                }
+                if next.len() > MAX_FILES {
+                    return Err(NginxScanError::TooManyFiles { limit: MAX_FILES });
+                }
+            }
+            paths = next;
+        }
+        paths.sort_unstable();
+        Ok(paths)
+    }
+
+    /// Adds the entries of directory `base` that match `component`.
+    fn extend_matches(
+        &self,
+        base: &str,
+        component: &str,
+        paths: &mut Vec<String>,
+    ) -> Result<(), NginxScanError> {
+        let dir = if base.is_empty() { "/" } else { base };
+        let names = self
+            .files
+            .list(dir)
+            .map_err(|error| read_error(dir, &error))?;
+        paths.extend(
+            names
+                .into_iter()
+                .filter(|name| matches_glob_component(component, name))
+                .map(|name| format!("{base}/{name}")),
+        );
+        Ok(())
+    }
+}
+
+fn unreadable(path: &str, reason: &'static str) -> NginxScanError {
+    NginxScanError::UnreadableFile {
+        path: sanitize(path),
+        reason,
+    }
+}
+
+fn too_large() -> NginxScanError {
+    NginxScanError::ConfigTooLarge {
+        limit_bytes: MAX_INPUT_BYTES,
+    }
+}
+
+fn read_error(path: &str, error: &io::Error) -> NginxScanError {
+    match error.kind() {
+        ErrorKind::PermissionDenied => NginxScanError::PermissionDenied,
+        ErrorKind::InvalidData => unreadable(path, "a file name in it is not valid UTF-8"),
+        kind => NginxScanError::ReadFailed {
+            path: sanitize(path),
+            kind: kind.to_string(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests;

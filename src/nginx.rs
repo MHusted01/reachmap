@@ -14,7 +14,7 @@ pub mod audit;
 pub mod routes;
 
 /// Minimized route, upstream, and uncertainty summary extracted from an
-/// expanded `nginx -T` configuration dump.
+/// expanded configuration read from disk (the files `nginx -T` would print).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NginxConfig {
     /// Parsed `http` server blocks in configuration order.
@@ -277,7 +277,7 @@ pub enum UncertaintyKind {
     DynamicTarget,
     /// `include` pattern containing a `$variable`.
     DynamicInclude,
-    /// Literal `include` path not found among `nginx -T` file markers.
+    /// Literal `include` path not found among the configuration files read.
     UnresolvedInclude,
     /// Unsupported top-level context such as `stream {}` or `mail {}`.
     UnsupportedContext,

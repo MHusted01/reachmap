@@ -82,14 +82,13 @@ pub(super) const NGINX_PATHS: &[&str] = &[
 /// The name to look up through `PATH` when `nginx` is in none of [`NGINX_PATHS`].
 pub(super) const NGINX_PROGRAM: &str = "nginx";
 
-/// Prints the expanded Nginx configuration on stdout without mutating anything.
-pub(super) const NGINX_DUMP_ARGS: &[&str] = &["-T"];
+/// Prints Nginx's version and `configure` arguments on stderr and exits
+/// before any configuration, log or temp path is opened. `-T` and `-t` are
+/// never used: their configuration test can create files and directories.
+pub(super) const NGINX_BUILD_INFO_ARGS: &[&str] = &["-V"];
 
-/// Maximum stdout accepted from `nginx -T` (matches the bounded Nginx parser limit).
-pub(super) const MAX_NGINX_STDOUT: u64 = crate::parse::nginx::MAX_INPUT_BYTES as u64;
-
-/// Maximum stderr accepted from `nginx -T`.
-pub(super) const MAX_NGINX_STDERR: u64 = 64 * 1024;
+/// Maximum stdout and stderr accepted from `nginx -V`.
+pub(super) const MAX_NGINX_BUILD_INFO: u64 = 64 * 1024;
 
 /// How long a command may run. All of them answer in well under a second on a
 /// healthy host; a hung Docker daemon must not hang the scan.

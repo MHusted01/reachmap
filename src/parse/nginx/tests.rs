@@ -523,3 +523,30 @@ fn handles_braced_variables_acl_overrides_http_includes_and_duplicate_upstreams(
             .any(|u| u.kind == UncertaintyKind::UnmodeledDirective && u.directive == "set")
     );
 }
+
+#[test]
+fn relative_includes_resolve_against_the_main_configuration_directory() {
+    let config = parse_nginx_config(
+        "# configuration file /etc/nginx/nginx.conf:
+        http { include conf.d/*.conf; }
+        # configuration file /etc/nginx/conf.d/app.conf:
+        server {
+            listen 80;
+            location / { include snippets/proxy.conf; }
+        }
+        # configuration file /etc/nginx/snippets/proxy.conf:
+        proxy_pass http://127.0.0.1:8080;
+        ",
+    )
+    .expect("valid prefix-relative includes");
+
+    assert!(
+        config.uncertainties.is_empty(),
+        "unexpected uncertainties: {:?}",
+        config.uncertainties
+    );
+    assert!(matches!(
+        config.servers[0].locations[0].target,
+        Some(ProxyTarget::StaticHttp { .. })
+    ));
+}
