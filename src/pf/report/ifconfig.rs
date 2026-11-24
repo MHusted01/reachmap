@@ -10,8 +10,10 @@ use crate::sanitize::sanitize;
 pub(super) struct InterfaceInfo {
     pub(super) is_up: bool,
     pub(super) is_loopback: bool,
+    pub(super) is_broadcast: bool,
     pub(super) is_inactive: bool,
     pub(super) addresses: BTreeSet<IpAddr>,
+    pub(super) broadcasts: BTreeSet<IpAddr>,
 }
 
 impl Default for InterfaceInfo {
@@ -19,8 +21,10 @@ impl Default for InterfaceInfo {
         Self {
             is_up: true,
             is_loopback: false,
+            is_broadcast: false,
             is_inactive: false,
             addresses: BTreeSet::new(),
+            broadcasts: BTreeSet::new(),
         }
     }
 }
@@ -56,10 +60,11 @@ pub fn parse_ifconfig(text: &str) -> MacosInterfaces {
                 .filter(|(name, _)| !name.is_empty());
             current = parsed.as_ref().map(|(name, _)| name.clone());
             if let Some((name, rest)) = parsed {
-                let (is_up, is_loopback) = parse_flags(rest);
+                let (is_up, is_loopback, is_broadcast) = parse_flags(rest);
                 let info = interfaces.entry(name).or_default();
                 info.is_up = is_up;
                 info.is_loopback |= is_loopback;
+                info.is_broadcast |= is_broadcast;
             }
             continue;
         }
@@ -71,15 +76,7 @@ pub fn parse_ifconfig(text: &str) -> MacosInterfaces {
         };
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("inet ") {
-            if let Some(token) = rest.split_whitespace().next()
-                && let Ok(ip) = token.parse::<Ipv4Addr>()
-            {
-                let addr = IpAddr::V4(ip);
-                if addr.is_loopback() {
-                    info.is_loopback = true;
-                }
-                info.addresses.insert(addr);
-            }
+            parse_inet(rest, info);
         } else if let Some(rest) = trimmed.strip_prefix("inet6 ") {
             if let Some(token) = rest.split_whitespace().next() {
                 let ip_part = token.split('%').next().unwrap_or(token);
@@ -103,19 +100,67 @@ pub fn parse_ifconfig(text: &str) -> MacosInterfaces {
     MacosInterfaces { interfaces }
 }
 
-fn parse_flags(rest: &str) -> (bool, bool) {
+fn parse_inet(rest: &str, info: &mut InterfaceInfo) {
+    let mut tokens = rest.split_whitespace();
+    let Some(ip_token) = tokens.next() else {
+        return;
+    };
+    let Ok(ip) = ip_token.parse::<Ipv4Addr>() else {
+        return;
+    };
+    let addr = IpAddr::V4(ip);
+    if addr.is_loopback() {
+        info.is_loopback = true;
+    }
+    info.addresses.insert(addr);
+
+    let mut netmask: Option<u32> = None;
+    let mut saw_broadcast = false;
+    while let Some(key) = tokens.next() {
+        match key {
+            "netmask" => {
+                if let Some(val) = tokens.next()
+                    && let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X"))
+                    && let Ok(parsed) = u32::from_str_radix(hex, 16)
+                {
+                    netmask = Some(parsed);
+                }
+            }
+            "broadcast" => {
+                if let Some(val) = tokens.next()
+                    && let Ok(bcast) = val.parse::<Ipv4Addr>()
+                {
+                    info.is_broadcast = true;
+                    info.broadcasts.insert(IpAddr::V4(bcast));
+                    saw_broadcast = true;
+                }
+            }
+            _ => {}
+        }
+    }
+    if !saw_broadcast
+        && info.is_broadcast
+        && let Some(mask) = netmask
+        && mask != 0xffff_ffff
+        && mask != 0xffff_fffe
+    {
+        info.broadcasts
+            .insert(IpAddr::V4(Ipv4Addr::from(u32::from(ip) | !mask)));
+    }
+}
+
+fn parse_flags(rest: &str) -> (bool, bool, bool) {
     let Some(flags_pos) = rest.find("flags=") else {
-        return (true, false);
+        return (true, false, false);
     };
     let after = &rest[flags_pos..];
     let Some(open) = after.find('<') else {
-        return (true, false);
+        return (true, false, false);
     };
     let Some(close) = after[open + 1..].find('>') else {
-        return (true, false);
+        return (true, false, false);
     };
     let inner = &after[open + 1..open + 1 + close];
-    let is_up = inner.split(',').any(|flag| flag.trim() == "UP");
-    let is_loopback = inner.split(',').any(|flag| flag.trim() == "LOOPBACK");
-    (is_up, is_loopback)
+    let has = |flag_name: &str| inner.split(',').any(|flag| flag.trim() == flag_name);
+    (has("UP"), has("LOOPBACK"), has("BROADCAST"))
 }

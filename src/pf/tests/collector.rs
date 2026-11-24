@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::collect::CollectError;
 use crate::pf::{
     CollectedPf, PfCollectError, PfCommand, PfInterfaceVerdict, PfPort, PfReport, PfRunner,
-    Verdict, collect_with, parse_ifconfig,
+    SocketTarget, Verdict, collect_with, parse_ifconfig,
 };
 use crate::socket::{AddressFamily, Endpoint, Protocol};
 
@@ -87,11 +87,23 @@ impl PfRunner for StubRunner {
     }
 }
 
-fn target(port: u16, protocol: Protocol, address: &str) -> Endpoint {
-    Endpoint {
-        port,
-        protocol,
-        address: address.parse().unwrap(),
+fn target(port: u16, protocol: Protocol, address: &str) -> SocketTarget {
+    target_with_zone(port, protocol, address, None)
+}
+
+fn target_with_zone(
+    port: u16,
+    protocol: Protocol,
+    address: &str,
+    zone: Option<&str>,
+) -> SocketTarget {
+    SocketTarget {
+        endpoint: Endpoint {
+            port,
+            protocol,
+            address: address.parse().unwrap(),
+        },
+        zone: zone.map(ToOwned::to_owned),
     }
 }
 
@@ -644,4 +656,118 @@ fn weak_host_evaluates_all_active_interfaces_for_non_loopback_and_wildcard_socke
         .unwrap();
     assert_eq!(link_local.interfaces.len(), 1);
     assert_eq!(link_local.interfaces[0].interface.as_deref(), Some("en0"));
+}
+
+#[test]
+fn link_local_zone_scopes_to_one_interface_and_unzoned_duplicate_is_unknown() {
+    let ifconfig_dup = concat!(
+        "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+        "\tinet6 fe80::1234%en0 prefixlen 64 scopeid 0x4\n",
+        "\tstatus: active\n",
+        "en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+        "\tinet6 fe80::1234%en1 prefixlen 64 scopeid 0x5\n",
+        "\tstatus: active\n",
+    );
+    let mut runner = StubRunner::enabled_default();
+    runner.main_rules = Some(Ok(concat!(
+        "scrub in all fragment reassemble\n",
+        "block drop in on en0 all\n",
+        "pass in on en1 all\n",
+    )
+    .to_owned()));
+    let collected = collect_with(&mut runner).unwrap();
+    let ifaces = parse_ifconfig(ifconfig_dup);
+    let sockets = [
+        target_with_zone(5353, Protocol::Udp, "fe80::1234", Some("en0")),
+        target_with_zone(5354, Protocol::Udp, "fe80::1234", None),
+        target_with_zone(5355, Protocol::Udp, "fe80::1234", Some("4")),
+    ];
+    let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
+    else {
+        panic!("expected enabled pf report");
+    };
+
+    let zoned = ports.iter().find(|p| p.port == 5353).unwrap();
+    assert_eq!(zoned.interfaces.len(), 1);
+    assert_eq!(zoned.interfaces[0].interface.as_deref(), Some("en0"));
+    assert!(matches!(zoned.interfaces[0].outcome, Verdict::Block { .. }));
+
+    let unzoned = ports.iter().find(|p| p.port == 5354).unwrap();
+    assert_eq!(unzoned.interfaces[0].interface, None);
+    assert!(matches!(
+        &unzoned.interfaces[0].outcome,
+        Verdict::Unknown { reason } if reason.contains("multiple interfaces without a socket zone")
+    ));
+
+    let numeric = ports.iter().find(|p| p.port == 5355).unwrap();
+    assert_eq!(numeric.interfaces[0].interface, None);
+    assert!(matches!(
+        &numeric.interfaces[0].outcome,
+        Verdict::Unknown { reason } if reason.contains("numeric IPv6 zone")
+    ));
+}
+
+#[test]
+fn ipv4_wildcard_udp_checks_limited_and_interface_broadcast_destinations() {
+    let ifaces = parse_ifconfig(IFCONFIG_MACOS);
+    let sockets = [
+        target(5353, Protocol::Udp, "0.0.0.0"),
+        target(5353, Protocol::Tcp, "0.0.0.0"),
+    ];
+    for allow_dst in ["255.255.255.255", "192.0.2.255"] {
+        let mut runner = StubRunner::enabled_default();
+        runner.main_rules = Some(Ok(format!(
+            "scrub in all fragment reassemble\n\
+             block drop in all\n\
+             pass in on en0 inet proto udp from any to {allow_dst} port = 5353 keep state\n"
+        )));
+        let collected = collect_with(&mut runner).unwrap();
+        let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
+        else {
+            panic!("expected enabled pf report");
+        };
+        let udp = ports.iter().find(|p| p.protocol == Protocol::Udp).unwrap();
+        assert_eq!(udp.interfaces[0].interface.as_deref(), Some("en0"));
+        assert!(
+            matches!(
+                &udp.interfaces[0].outcome,
+                Verdict::Unknown { reason } if reason.contains("differ across addresses")
+            ),
+            "expected Unknown when broadcast {allow_dst} passes on en0, got {:?}",
+            udp.interfaces[0].outcome
+        );
+
+        let tcp = ports.iter().find(|p| p.protocol == Protocol::Tcp).unwrap();
+        assert_eq!(tcp.interfaces[0].interface.as_deref(), Some("en0"));
+        assert!(matches!(tcp.interfaces[0].outcome, Verdict::Block { .. }));
+    }
+}
+
+#[test]
+fn populated_child_anchor_changes_verdict_and_names_anchor_in_reason() {
+    let mut runner = StubRunner::enabled_default();
+    runner.anchor_rules.insert(
+        "com.apple".to_owned(),
+        Ok("scrub in all fragment reassemble\n".to_owned()),
+    );
+    runner.anchor_rules.insert(
+        "com.apple/250.ApplicationFirewall".to_owned(),
+        Ok("block drop in quick on en0 inet proto tcp from any to any port = 8080 flags S/SA keep state\n".to_owned()),
+    );
+    let collected = collect_with(&mut runner).unwrap();
+    let ifaces = parse_ifconfig(IFCONFIG_MACOS);
+    let sockets = [target(8080, Protocol::Tcp, "192.0.2.10")];
+    let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
+    else {
+        panic!("expected enabled pf report");
+    };
+    assert_eq!(ports[0].interfaces[0].interface.as_deref(), Some("en0"));
+    assert!(
+        matches!(
+            &ports[0].interfaces[0].outcome,
+            Verdict::Block { reason } if reason.contains("anchor \"com.apple/250.ApplicationFirewall\"")
+        ),
+        "expected child anchor block reason, got {:?}",
+        ports[0].interfaces[0].outcome
+    );
 }

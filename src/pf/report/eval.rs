@@ -1,13 +1,13 @@
 //! Socket-to-interface expansion and pf evaluation helpers for [`super::PfReport`].
 
 use std::collections::BTreeSet;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 
 use crate::sanitize::sanitize;
-use crate::socket::{AddressFamily, Endpoint, Protocol};
+use crate::socket::{AddressFamily, Protocol};
 
 use super::super::{AnchorRulesets, Ruleset, Traffic, Verdict};
-use super::{MacosInterfaces, PfInterfaceVerdict};
+use super::{MacosInterfaces, PfInterfaceVerdict, SocketTarget};
 
 const UNVERIFIED_V6ONLY_REASON: &str = "dual-stack acceptance of IPv4 on this IPv6 wildcard socket is not verified \
      (lsof does not report IPV6_V6ONLY)";
@@ -23,8 +23,9 @@ pub(super) struct EvalContext<'a> {
 impl EvalContext<'_> {
     pub(super) fn evaluate_socket(
         &self,
-        endpoint: Endpoint,
+        socket: &SocketTarget,
     ) -> Vec<(AddressFamily, Vec<PfInterfaceVerdict>)> {
+        let endpoint = socket.endpoint;
         let canonical = endpoint.address.to_canonical();
         if canonical.is_multicast() {
             return vec![(
@@ -67,6 +68,23 @@ impl EvalContext<'_> {
         let family = family_of(canonical);
         let verdicts = if canonical.is_loopback() {
             self.evaluate_loopback(endpoint.protocol, canonical, endpoint.port)
+        } else if let Some(zone) = socket.zone.as_deref().filter(|zone| !zone.is_empty()) {
+            if zone.chars().all(|ch| ch.is_ascii_digit()) {
+                vec![PfInterfaceVerdict {
+                    interface: None,
+                    outcome: Verdict::Unknown {
+                        reason:
+                            "numeric IPv6 zone identifier could not be mapped to an interface name"
+                                .to_owned(),
+                    },
+                }]
+            } else {
+                let iface = sanitize(zone);
+                vec![PfInterfaceVerdict {
+                    interface: Some(iface.clone()),
+                    outcome: self.eval_one(&iface, endpoint.protocol, canonical, endpoint.port),
+                }]
+            }
         } else {
             self.evaluate_specific(endpoint.protocol, canonical, endpoint.port)
         };
@@ -153,11 +171,22 @@ impl EvalContext<'_> {
                 .filter(|(_, info)| info.addresses.contains(&destination))
                 .map(|(name, _)| name)
                 .collect();
-            if active_holders.is_empty() {
+            let candidates = if active_holders.is_empty() {
                 holders
             } else {
                 active_holders
+            };
+            if candidates.len() > 1 {
+                return vec![PfInterfaceVerdict {
+                    interface: None,
+                    outcome: Verdict::Unknown {
+                        reason:
+                            "link-local address matches multiple interfaces without a socket zone"
+                                .to_owned(),
+                    },
+                }];
             }
+            candidates
         } else {
             let active: Vec<&String> = map
                 .active_interfaces()
@@ -241,6 +270,14 @@ impl EvalContext<'_> {
                     .copied()
                     .filter(|ip| family_of(*ip) == family && is_link_local(*ip)),
             );
+            if family == AddressFamily::Ipv4
+                && protocol == Protocol::Udp
+                && !info.is_loopback
+                && (info.is_broadcast || !info.broadcasts.is_empty())
+            {
+                candidates.insert(IpAddr::V4(Ipv4Addr::BROADCAST));
+                candidates.extend(info.broadcasts.iter().copied());
+            }
             if candidates.is_empty() {
                 continue;
             }

@@ -37,7 +37,9 @@ pub(crate) use collect::{
     PFCTL_ANCHORS_LIMIT, PFCTL_IFACES_LIMIT, PFCTL_INFO_LIMIT, PFCTL_RULES_LIMIT,
 };
 pub use model::Ruleset;
-pub use report::{MacosInterfaces, PfInterfaceVerdict, PfPort, PfReport, parse_ifconfig};
+pub use report::{
+    MacosInterfaces, PfInterfaceVerdict, PfPort, PfReport, SocketTarget, parse_ifconfig,
+};
 
 #[cfg(test)]
 mod tests;

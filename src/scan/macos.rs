@@ -1,6 +1,10 @@
 //! macOS socket inventory, application firewall status, and pf input verdicts.
 
+#[cfg(any(target_os = "macos", test))]
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+#[cfg(any(target_os = "macos", test))]
+use std::net::{IpAddr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +21,9 @@ use crate::errors::render_chain;
 use crate::parse::lsof;
 use crate::pf::PfReport;
 #[cfg(any(target_os = "macos", test))]
-use crate::pf::{CollectedPf, PfCollectError, parse_ifconfig};
+use crate::pf::{CollectedPf, PfCollectError, SocketTarget, parse_ifconfig};
+#[cfg(any(target_os = "macos", test))]
+use crate::socket::Protocol;
 use crate::{
     reach::{Reason, classify},
     service::{Process, Service},
@@ -142,7 +148,27 @@ fn assemble_scan(
         |reason| ApplicationFirewall::Unknown { reason },
         |text| parse_firewall(&text),
     );
-    let targets: Vec<Endpoint> = sockets.iter().map(|(endpoint, _)| *endpoint).collect();
+    let zone_map = extract_lsof_zones(lsof_output);
+    let unique_endpoints: BTreeSet<Endpoint> =
+        sockets.iter().map(|(endpoint, _)| *endpoint).collect();
+    let mut targets = Vec::new();
+    for endpoint in unique_endpoints {
+        if let Some(zones) = zone_map.get(&endpoint)
+            && !zones.is_empty()
+        {
+            for zone in zones {
+                targets.push(SocketTarget {
+                    endpoint,
+                    zone: zone.clone(),
+                });
+            }
+        } else {
+            targets.push(SocketTarget {
+                endpoint,
+                zone: None,
+            });
+        }
+    }
     let pf = match pf_result {
         Ok(CollectedPf::Enabled { .. }) => {
             let interfaces = read_interfaces().map(|text| parse_ifconfig(&text));
@@ -160,6 +186,71 @@ fn assemble_scan(
         Some(pf),
         diagnostic,
     ))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn extract_lsof_zones(text: &str) -> BTreeMap<Endpoint, BTreeSet<Option<String>>> {
+    let mut zones: BTreeMap<Endpoint, BTreeSet<Option<String>>> = BTreeMap::new();
+    let Some(stripped) = text.strip_suffix("\0\n") else {
+        return zones;
+    };
+    for record in stripped.split("\0\n") {
+        let mut fields = record.split('\0');
+        let Some(header) = fields.next() else {
+            continue;
+        };
+        if !header.starts_with('f') {
+            continue;
+        }
+        let mut protocol = "";
+        let mut family = "";
+        let mut name = "";
+        let mut listening = false;
+        for field in fields {
+            match field.as_bytes().first() {
+                Some(b'P') => protocol = &field[1..],
+                Some(b't') => family = &field[1..],
+                Some(b'n') => name = &field[1..],
+                Some(b'T') if field == "TST=LISTEN" => listening = true,
+                _ => {}
+            }
+        }
+        if family != "IPv6" {
+            continue;
+        }
+        let protocol = match protocol {
+            "TCP" if listening => Protocol::Tcp,
+            "UDP" if !name.contains("->") => Protocol::Udp,
+            _ => continue,
+        };
+        let Some((host, port_str)) = name.rsplit_once(':') else {
+            continue;
+        };
+        if port_str == "*" || port_str == "0" {
+            continue;
+        }
+        let Ok(port) = port_str.parse::<u16>() else {
+            continue;
+        };
+        let Some(inner) = host.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
+            continue;
+        };
+        let (addr_str, zone) = inner.split_once('%').map_or((inner, None), |(addr, z)| {
+            (addr, (!z.is_empty()).then(|| z.to_owned()))
+        });
+        let Ok(ip) = addr_str.parse::<Ipv6Addr>() else {
+            continue;
+        };
+        zones
+            .entry(Endpoint {
+                port,
+                protocol,
+                address: IpAddr::V6(ip),
+            })
+            .or_default()
+            .insert(zone);
+    }
+    zones
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -377,5 +468,70 @@ mod tests {
                 .as_str()
                 .is_some_and(|reason| reason.contains("sudo"))
         );
+    }
+
+    #[test]
+    fn assemble_scan_preserves_lsof_zone_for_duplicate_link_local_addresses() {
+        use std::time::Duration;
+
+        use crate::collect::CollectError;
+        use crate::pf::{PfCommand, PfRunner, collect_with};
+
+        struct RuleRunner;
+        impl PfRunner for RuleRunner {
+            fn run(
+                &mut self,
+                command: PfCommand<'_>,
+                _timeout: Duration,
+            ) -> Result<String, CollectError> {
+                match command {
+                    PfCommand::Info => Ok(include_str!(
+                        "../../tests/fixtures/pf/pfctl_info_enabled.txt"
+                    )
+                    .to_owned()),
+                    PfCommand::MainRules => Ok(concat!(
+                        "scrub in all fragment reassemble\n",
+                        "block drop in on en0 all\n",
+                        "pass in on en1 all\n",
+                    )
+                    .to_owned()),
+                    PfCommand::Interfaces => Ok("en0\nen1\n".to_owned()),
+                    PfCommand::RootAnchors => Ok(String::new()),
+                    PfCommand::AnchorRules(_) | PfCommand::AnchorChildren(_) => Ok(String::new()),
+                }
+            }
+        }
+
+        let lsof_text = concat!(
+            "p42\0cworker\0\n",
+            "f3\0tIPv6\0PUDP\0n[fe80::1234%en0]:5353\0\n",
+        );
+        let ifconfig_both = concat!(
+            "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+            "\tinet6 fe80::1234%en0 prefixlen 64 scopeid 0x4\n",
+            "\tstatus: active\n",
+            "en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+            "\tinet6 fe80::1234%en1 prefixlen 64 scopeid 0x5\n",
+            "\tstatus: active\n",
+        );
+        let report = assemble_scan(
+            lsof_text,
+            None,
+            Ok("Firewall is disabled. (State = 0)\n".to_owned()),
+            collect_with(&mut RuleRunner),
+            || Ok(ifconfig_both.to_owned()),
+        )
+        .unwrap();
+        let PfReport::Enabled { ports } = report.macos.as_ref().unwrap().pf.as_ref().unwrap()
+        else {
+            panic!("expected enabled pf report");
+        };
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].interfaces.len(), 1);
+        assert_eq!(ports[0].interfaces[0].interface.as_deref(), Some("en0"));
+        assert!(matches!(
+            ports[0].interfaces[0].outcome,
+            Verdict::Block { .. }
+        ));
     }
 }

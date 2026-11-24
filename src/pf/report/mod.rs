@@ -65,13 +65,22 @@ pub struct PfInterfaceVerdict {
     pub outcome: Verdict,
 }
 
+/// A listening socket input for [`PfReport::evaluate`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SocketTarget {
+    /// Listening endpoint (port, protocol, local address).
+    pub endpoint: Endpoint,
+    /// Link-local zone identifier from `lsof`, if any.
+    pub zone: Option<String>,
+}
+
 impl PfReport {
     /// Evaluates collected pf state against listening `sockets` and
     /// `interfaces`.
     #[must_use]
     pub fn evaluate(
         pf: Result<CollectedPf, PfCollectError>,
-        sockets: &[Endpoint],
+        sockets: &[SocketTarget],
         interfaces: Result<&MacosInterfaces, &str>,
     ) -> Self {
         let (rules, anchors, listed_interfaces, skipped_groups) = match pf {
@@ -95,12 +104,17 @@ impl PfReport {
             skipped_groups: &skipped_groups,
             interfaces,
         };
-        let unique: BTreeSet<Endpoint> = sockets.iter().copied().collect();
+        let unique: BTreeSet<&SocketTarget> = sockets.iter().collect();
         let mut grouped: BTreeMap<(u16, Protocol, IpAddr, AddressFamily), Vec<PfInterfaceVerdict>> =
             BTreeMap::new();
-        for endpoint in unique {
-            for (family, verdicts) in ctx.evaluate_socket(endpoint) {
-                let key = (endpoint.port, endpoint.protocol, endpoint.address, family);
+        for socket in unique {
+            for (family, verdicts) in ctx.evaluate_socket(socket) {
+                let key = (
+                    socket.endpoint.port,
+                    socket.endpoint.protocol,
+                    socket.endpoint.address,
+                    family,
+                );
                 grouped.entry(key).or_default().extend(verdicts);
             }
         }
