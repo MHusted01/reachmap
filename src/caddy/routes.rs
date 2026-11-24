@@ -22,6 +22,7 @@ use self::link::{
 };
 use self::source::Adapted;
 
+pub mod audit;
 mod auth;
 mod caddyfile;
 mod collect;

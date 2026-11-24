@@ -1,0 +1,232 @@
+{
+	"admin": {
+		"disabled": true
+	},
+	"apps": {
+		"http": {
+			"servers": {
+				"srv0": {
+					"listen": [
+						":8080"
+					],
+					"routes": [
+						{
+							"match": [
+								{
+									"host": [
+										"app.example.test"
+									]
+								}
+							],
+							"handle": [
+								{
+									"handler": "subroute",
+									"routes": [
+										{
+											"group": "group6",
+											"handle": [
+												{
+													"handler": "subroute",
+													"routes": [
+														{
+															"handle": [
+																{
+																	"handler": "reverse_proxy",
+																	"upstreams": [
+																		{
+																			"dial": "127.0.0.1:18081"
+																		}
+																	]
+																}
+															]
+														}
+													]
+												}
+											],
+											"match": [
+												{
+													"path": [
+														"/missing/*"
+													]
+												}
+											]
+										},
+										{
+											"group": "group6",
+											"handle": [
+												{
+													"handler": "subroute",
+													"routes": [
+														{
+															"handle": [
+																{
+																	"body": "ok",
+																	"handler": "static_response",
+																	"status_code": 200
+																}
+															]
+														}
+													]
+												}
+											],
+											"match": [
+												{
+													"path": [
+														"/healthz"
+													]
+												}
+											]
+										},
+										{
+											"group": "group6",
+											"handle": [
+												{
+													"handler": "subroute",
+													"routes": [
+														{
+															"handle": [
+																{
+																	"handler": "reverse_proxy",
+																	"upstreams": [
+																		{
+																			"dial": "198.51.100.25:8080"
+																		}
+																	]
+																}
+															]
+														}
+													]
+												}
+											],
+											"match": [
+												{
+													"path": [
+														"/remote/*"
+													]
+												}
+											]
+										},
+										{
+											"group": "group6",
+											"handle": [
+												{
+													"handler": "subroute",
+													"routes": [
+														{
+															"handle": [
+																{
+																	"handler": "authentication",
+																	"providers": {
+																		"http_basic": {
+																			"accounts": [
+																				{
+																					"password": "$2a$14$SYNTHETICxHASHxONLYxFORxTESTSxxxxxxxxxxxxxxxxxxxxxxxxx",
+																					"username": "labuser"
+																				}
+																			],
+																			"hash": {
+																				"algorithm": "bcrypt"
+																			},
+																			"hash_cache": {}
+																		}
+																	}
+																},
+																{
+																	"handler": "reverse_proxy",
+																	"upstreams": [
+																		{
+																			"dial": "127.0.0.1:18080"
+																		}
+																	]
+																}
+															]
+														}
+													]
+												}
+											],
+											"match": [
+												{
+													"path": [
+														"/admin/*"
+													]
+												}
+											]
+										},
+										{
+											"group": "group6",
+											"handle": [
+												{
+													"handler": "subroute",
+													"routes": [
+														{
+															"handle": [
+																{
+																	"handler": "reverse_proxy",
+																	"upstreams": [
+																		{
+																			"dial": "127.0.0.1:18080"
+																		},
+																		{
+																			"dial": "127.0.0.1:18081"
+																		}
+																	]
+																}
+															]
+														}
+													]
+												}
+											],
+											"match": [
+												{
+													"path": [
+														"/pool/*"
+													]
+												}
+											]
+										},
+										{
+											"group": "group6",
+											"handle": [
+												{
+													"handler": "subroute",
+													"routes": [
+														{
+															"handle": [
+																{
+																	"handler": "reverse_proxy",
+																	"upstreams": [
+																		{
+																			"dial": "127.0.0.1:18080"
+																		}
+																	]
+																}
+															]
+														}
+													]
+												}
+											],
+											"match": [
+												{
+													"path": [
+														"/app/*"
+													]
+												}
+											]
+										}
+									]
+								}
+							],
+							"terminal": true
+						}
+					],
+					"automatic_https": {
+						"disable": true,
+						"skip": [
+							"app.example.test"
+						]
+					}
+				}
+			}
+		}
+	}
+}
