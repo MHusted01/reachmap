@@ -10,7 +10,8 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::caddy::{
-    CaddyConfig, MAX_ROUTE_DEPTH, MAX_UNCERTAINTIES, Substitutions, parse_caddy_config_with,
+    CaddyConfig, CaddyServer, MAX_ROUTE_DEPTH, MAX_UNCERTAINTIES, Substitutions,
+    parse_caddy_config_with,
 };
 use crate::local_tcp::{Inventory, TcpEvidence, read_inventory};
 use crate::scan::ScanError;
@@ -156,14 +157,11 @@ fn validate_config(config: &CaddyConfig) -> Result<(), &'static str> {
     if config.uncertainties.len() > MAX_UNCERTAINTIES {
         return Err("too many configuration uncertainties");
     }
-    let protocols_noted = config.uncertainties_omitted > 0
-        || config.uncertainties.iter().any(|uncertainty| {
-            matches!(
-                uncertainty.construct.as_str(),
-                "protocols" | "listen_protocols"
-            )
-        });
-    if config.servers.iter().any(|server| !server.tcp_known) && !protocols_noted {
+    let unexplained = config
+        .servers
+        .iter()
+        .any(|server| !server.tcp_known && !protocols_noted(config, server));
+    if unexplained {
         return Err("expected an uncertainty for each server whose TCP listeners are unknown");
     }
     if config.http_port == Some(0) || config.https_port == Some(0) {
@@ -184,6 +182,23 @@ fn validate_config(config: &CaddyConfig) -> Result<(), &'static str> {
         return Err("expected a nonzero upstream port");
     }
     Ok(())
+}
+
+/// Whether an uncertainty names the `protocols` or `listen_protocols` field
+/// of `server`, or uncertainties past the cap were dropped. The parser builds
+/// the location from the same bounded name it stores as the server's name.
+fn protocols_noted(config: &CaddyConfig, server: &CaddyServer) -> bool {
+    let server_at = format!(
+        "apps.http.servers[\"{}\"]",
+        server.name.replace('"', "\\\"")
+    );
+    config.uncertainties_omitted > 0
+        || config.uncertainties.iter().any(|uncertainty| {
+            ["protocols", "listen_protocols"].iter().any(|field| {
+                uncertainty.construct == *field
+                    && uncertainty.location == format!("{server_at}.{field}")
+            })
+        })
 }
 
 impl fmt::Display for CaddyRouteReport {

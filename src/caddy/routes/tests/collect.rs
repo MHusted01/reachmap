@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use super::super::collect::read_source;
 use super::super::error::classify_adapt_error;
-use super::super::program::{CADDY_PATHS, Entry, Program, Refusal, locate, resolve_trusted};
+use super::super::program::{
+    CADDY_PATHS, Entry, Program, Refusal, inspect, locate, resolve_trusted,
+};
 use super::super::source::ConfigSource;
 use super::*;
 use crate::caddy::MAX_INPUT_BYTES;
@@ -119,6 +121,32 @@ fn system(
 
 fn resolved(entries: &[(&str, u32, u32, Option<&str>)], path: &str) -> Result<PathBuf, Refusal> {
     resolve_trusted(Path::new(path), &tree(entries))
+}
+
+#[test]
+fn a_missing_candidate_is_skipped_whatever_its_directory_allows() {
+    let shared = system(&[
+        ("/usr/local", 0, DIR, None),
+        ("/usr/local/bin", 0, 0o775, None),
+    ]);
+    let lookup = tree(&shared);
+    assert_eq!(
+        inspect(Path::new("/usr/local/bin/caddy"), &lookup),
+        Err(Refusal::Missing)
+    );
+    let present = system(&[
+        ("/usr/local", 0, DIR, None),
+        ("/usr/local/bin", 0, 0o775, None),
+        ("/usr/local/bin/caddy", 0, DIR, None),
+    ]);
+    assert_eq!(
+        inspect(Path::new("/usr/local/bin/caddy"), &tree(&present)),
+        Err(Refusal::Untrusted)
+    );
+    assert_eq!(
+        inspect(Path::new("/usr/bin/caddy"), &tree(&present)),
+        Ok(PathBuf::from("/usr/bin/caddy"))
+    );
 }
 
 #[test]

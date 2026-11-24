@@ -124,6 +124,20 @@ fn resolve(
     Ok(resolved)
 }
 
+/// Resolves a candidate path: one that does not exist is missing, whatever
+/// the directories above it allow, so the next candidate can be tried; one
+/// that exists must pass [`resolve_trusted`].
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) fn inspect(
+    path: &Path,
+    lookup: &impl Fn(&Path) -> Result<Entry, Refusal>,
+) -> Result<PathBuf, Refusal> {
+    if lookup(path) == Err(Refusal::Missing) {
+        return Err(Refusal::Missing);
+    }
+    resolve_trusted(path, lookup)
+}
+
 /// A file or directory owned by root that group and others cannot write.
 fn trusted_entry(entry: &Entry) -> Result<(), Refusal> {
     if entry.uid == 0 && entry.mode & 0o022 == 0 {
@@ -159,7 +173,7 @@ pub(super) fn inspect_program(path: &str) -> Program {
             link,
         })
     };
-    let resolved = match resolve_trusted(Path::new(path), &lookup) {
+    let resolved = match inspect(Path::new(path), &lookup) {
         Ok(resolved) => resolved,
         Err(Refusal::Missing) => return Program::Missing,
         Err(Refusal::Untrusted) => return Program::Untrusted,

@@ -226,6 +226,22 @@ fn unknown_tcp_state_replays_only_with_its_uncertainty() {
             .to_string()
             .contains("not linked: the protocols leave its TCP listener unknown")
     );
+
+    let mut second = value["evidence"]["config"]["servers"][0].clone();
+    second["name"] = json!("other");
+    second["listen"] = json!([]);
+    second["routes"] = json!([]);
+    value["evidence"]["config"]["servers"]
+        .as_array_mut()
+        .expect("servers")
+        .push(second);
+    let error = decode_value(&value).expect_err("second server unexplained");
+    assert!(
+        matches!(error, snapshot::ReplayError::Invalid(_)),
+        "{error:?}"
+    );
+    value["evidence"]["config"]["uncertainties_omitted"] = json!(1);
+    assert!(decode_value(&value).is_ok(), "the cap may have dropped it");
 }
 
 #[test]
