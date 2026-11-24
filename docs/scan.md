@@ -815,6 +815,10 @@ keep the file private. Replay validates the version and the evidence, and
 prints the same report offline on Linux and macOS. `--json` is not supported
 for Caddy replays.
 
+For a live comparison with HTTP requests from a separate client network, and
+the five-layer correlation of a snapshot with one client observation, see
+[Verify Caddy reverse proxy paths](caddy-verification.md).
+
 ## Requirements and limits
 
 - **Linux and macOS.** On other systems `scan` exits with status 1 and lists
