@@ -703,6 +703,118 @@ when you share the port on purpose. Serve alone is no warning.
   command on this host. Tailscale Services in `Tun` mode forward no port that
   reachmap can name, so they do not show either.
 
+## Caddy
+
+Caddy, like Nginx, takes HTTP and TLS connections on its own listeners and
+forwards them to local or internal upstreams. Run
+`sudo reachmap scan --caddy-routes` on Linux to see the configured servers,
+routes, `reverse_proxy` upstreams and proxy-layer authentication, linked to
+the local TCP listeners.
+
+```text
+Server srv0
+  listen: :443 (TCP listener [::]:443)
+  automatic HTTPS: enabled
+  HTTP/3: enabled (its UDP sockets are not linked)
+  route match all requests
+    authentication: http_basic
+  route match (host app.example.test path /api/*) [terminal]
+    reverse_proxy
+      upstream 127.0.0.1:3000 (TCP listener 127.0.0.1:3000)
+      upstream localhost:3001 (no matching TCP listener)
+      proxy auth: http_basic; application auth: unverified
+```
+
+- **Which configuration.** By default reachmap reads `/etc/caddy/Caddyfile`,
+  where Caddy's packages keep it. `--caddy-config PATH` names another file: a
+  path ending in `.json` is read as Caddy's native JSON config, any other path
+  as a Caddyfile. A Caddyfile is turned into JSON by `caddy adapt
+  --config=PATH --adapter caddyfile`; the JSON is parsed in memory and
+  discarded.
+- **Evidence boundary (disk vs. running Caddy).** The result describes the
+  configuration on disk. A running Caddy can differ: it may not have been
+  reloaded since the file changed, it may have been started with another
+  file, or its configuration may have been changed through the admin API.
+  reachmap never contacts the admin API, because that is a network request.
+  It does not verify TCP connectivity, HTTP responses, TLS certificate
+  issuance, or application authentication.
+- **Environment placeholders.** `caddy adapt` runs with an empty environment,
+  so the values of the Caddy service's environment never reach reachmap, and
+  `{$VAR}` placeholders in a Caddyfile become empty or their default. When the
+  Caddyfile itself contains `{$`, the report is partial and says so. Caddy also
+  expands placeholders in files the Caddyfile imports, which reachmap does not
+  read, so an `import` of anything other than a snippet defined in the
+  Caddyfile also makes the report partial (a leading byte-order mark is
+  ignored, as Caddy does). Runtime
+  placeholders such as `{env.VAR}` stay in the JSON and are reported as
+  configuration uncertainties.
+- **Separate layers.** Frontend listener state (each `listen` address),
+  upstream listener state (each static `reverse_proxy` upstream), configured
+  proxy-layer auth (`authentication` providers, the `forward_auth` shape, TLS
+  client certificate policies) and unverified application authentication are
+  reported separately. Auth from an earlier route that has matchers or a
+  group is marked `(some requests only)`; a terminal route, such as one
+  Caddyfile site, passes no auth to the routes after it. A TLS client
+  certificate policy only covers TLS connections, and a server can also take
+  cleartext HTTP, so it is always marked `(some requests only)`. Caddy uses
+  the first policy that matches, so policies after an unscoped one are
+  ignored.
+- **Linking rules.** Caddy listens through Go: a wildcard `tcp` address
+  (`:443`, `0.0.0.0:443` or `[::]:443`) is one dual-stack `[::]` socket, or
+  `0.0.0.0` on a host without IPv6; `tcp4/` is `0.0.0.0` and `tcp6/` an
+  IPv6-only `[::]`. A specific address must be bound exactly. Port ranges of up
+  to 64 ports are linked port by port; a wider range is not linked and makes
+  the report partial. Loopback upstreams also match wildcard listeners; any
+  other IP needs a listener bound to exactly that address, so a wildcard
+  socket cannot make a remote upstream look local. `localhost` is checked
+  against `127.0.0.1` and `::1`. Caddy versions differ in whether `tcp4/` or
+  `tcp6/` limits the family it dials, so `tcp4/localhost` and
+  `tcp6/localhost` are treated like other host names, which are not resolved
+  and not linked.
+  A listener reports as matched, missing, ambiguous (several could serve it),
+  or uncertain (socket options unknown). HTTP/3 UDP sockets and the HTTP
+  redirect listener that automatic HTTPS adds are not linked. When a server's
+  `protocols` hold only `h3` (older Caddy versions still open a TCP socket),
+  or `listen_protocols` overrides them for some addresses, its listen
+  addresses are not linked and the configuration is uncertain.
+- **Privileges and binary lookup.** reachmap runs only `caddy adapt` (never
+  `--validate`, which would start Caddy's modules), from `/usr/bin/caddy`,
+  `/usr/local/bin/caddy` or `/bin/caddy`, never through `PATH`. The path is
+  resolved one component at a time: every directory on the way and the binary
+  must be owned by root and not writable by group or others, and every
+  symlink must be owned by root. The resolved path is what runs. It runs with an
+  isolated environment (`LC_ALL=C`), a 10-second timeout, and output limits
+  of 8 MiB for the JSON and 64 KiB for diagnostics. Reading `/etc/caddy/` and
+  the files it imports can need `sudo`. A native JSON file needs no `caddy`
+  binary.
+- **Failures.** A missing or untrusted `caddy`, a missing or unreadable
+  configuration file, a file that is not regular or not UTF-8, permission
+  errors, a failing `caddy adapt`, a timeout, and output or files over 8 MiB
+  stop the scan with a reason on stderr and exit 1. They never report that no
+  routes exist. What `caddy adapt` prints is not shown, because its errors
+  quote configuration lines: run `caddy adapt` yourself to see them.
+- **Exit status.** 0 only when collection is complete and the configuration
+  has no uncertainties; 1 for a partial collection, configuration
+  uncertainties, or a collection or parse failure; 2 for invalid arguments.
+
+### Capture and replay Caddy evidence
+
+```sh
+(umask 077; sudo reachmap scan --caddy-routes --snapshot --host-ref example-host > caddy.json)
+reachmap replay caddy.json
+```
+
+The versioned JSON (`snapshot_version: 1`, `scope: "caddy_routes"`) records
+the host label, capture time, whether the source was a Caddyfile or a JSON
+file (not its path), the minimized routes, the local TCP listeners that could
+serve a listen address or upstream, and the collection diagnostics. Raw
+configuration, password hashes, header values, TLS material, storage and admin
+settings, and unrelated listeners are dropped in memory and never written.
+Server names, host and path matchers, upstream addresses and ports remain, so
+keep the file private. Replay validates the version and the evidence, and
+prints the same report offline on Linux and macOS. `--json` is not supported
+for Caddy replays.
+
 ## Requirements and limits
 
 - **Linux and macOS.** On other systems `scan` exits with status 1 and lists

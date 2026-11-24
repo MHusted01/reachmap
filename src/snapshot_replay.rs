@@ -5,6 +5,7 @@ use std::path::Path;
 use serde::Deserialize;
 use thiserror::Error;
 
+use crate::caddy::routes::snapshot as caddy_snapshot;
 use crate::host_input_snapshot::{self, SnapshotError};
 use crate::nftables::NftablesReport;
 use crate::nginx::routes::snapshot as nginx_snapshot;
@@ -18,6 +19,8 @@ pub enum Report {
     TailscaleRoutes(tailscale_snapshot::Snapshot),
     /// Configured Nginx routes and local TCP listener evidence.
     NginxRoutes(nginx_snapshot::Snapshot),
+    /// Configured Caddy routes and local TCP listener evidence.
+    CaddyRoutes(caddy_snapshot::Snapshot),
 }
 
 /// Why a saved scan snapshot could not be replayed.
@@ -32,6 +35,9 @@ pub enum Error {
     /// The Nginx route evidence was invalid.
     #[error(transparent)]
     NginxRoutes(#[from] nginx_snapshot::ReplayError),
+    /// The Caddy route evidence was invalid.
+    #[error(transparent)]
+    CaddyRoutes(#[from] caddy_snapshot::ReplayError),
 }
 
 #[derive(Deserialize)]
@@ -51,6 +57,7 @@ pub fn replay(path: &Path) -> Result<Report, Error> {
             &document,
         )?)),
         Some(nginx_snapshot::SCOPE) => Ok(Report::NginxRoutes(nginx_snapshot::decode(&document)?)),
+        Some(caddy_snapshot::SCOPE) => Ok(Report::CaddyRoutes(caddy_snapshot::decode(&document)?)),
         _ => Ok(Report::HostInput(host_input_snapshot::replay_document(
             &document,
         )?)),

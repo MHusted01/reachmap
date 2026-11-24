@@ -472,6 +472,10 @@ fn http3_defaults_apply_to_empty_protocols_and_listener_overrides_are_uncertain(
         config.servers[0].http3,
         "an empty list means the default set"
     );
+    assert!(
+        !config.servers[0].tcp_known,
+        "listen_protocols may override TCP for some addresses"
+    );
     let at = format!("{SERVER_AT}.listen_protocols");
     assert_eq!(
         listed(&config),
@@ -587,4 +591,23 @@ fn zero_app_ports_mean_the_defaults() {
         (config.http_port, config.https_port),
         (Some(DEFAULT_HTTP_PORT), Some(DEFAULT_HTTPS_PORT))
     );
+}
+
+#[test]
+fn tcp_listeners_are_known_unless_protocols_leave_them_open() {
+    let known = |protocols: &str| {
+        let config = parse(&with_server(&format!(
+            r#"{{"listen": [":443"], "protocols": {protocols}}}"#
+        )));
+        let noted = config
+            .uncertainties
+            .iter()
+            .any(|uncertainty| uncertainty.construct == "protocols");
+        (config.servers[0].tcp_known, noted)
+    };
+    assert_eq!(known(r#"["h3"]"#), (false, true));
+    assert_eq!(known(r#"["h1", "h3"]"#), (true, false));
+    assert_eq!(known(r#"["h2c"]"#), (true, false));
+    assert_eq!(known(r#"["h4"]"#), (true, false));
+    assert_eq!(known("[]"), (true, false));
 }

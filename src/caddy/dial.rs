@@ -48,10 +48,14 @@ impl DialTarget {
         let port = port.and_then(parse_port).ok_or(DialProblem::Invalid)?;
         match classify_host(host) {
             Host::Empty => Err(DialProblem::Invalid),
+            Host::Ip(ip) if !network_allows(network, ip) => Err(DialProblem::Invalid),
             Host::Ip(ip) => Ok(Self::Socket {
                 address: SocketAddr::new(ip, port),
             }),
-            Host::Name(name) if name.eq_ignore_ascii_case("localhost") => {
+            Host::Name(name)
+                if name.eq_ignore_ascii_case("localhost")
+                    && matches!(network, Network::Default | Network::Tcp) =>
+            {
                 Ok(Self::Localhost { port })
             }
             Host::Name(name) => HostName::new(name)
@@ -83,6 +87,16 @@ impl DialTarget {
             Self::Socket { address } => Some(address.ip()),
             Self::Localhost { .. } | Self::Hostname { .. } => None,
         }
+    }
+}
+
+/// Whether a dial on `network` can reach `ip`: `tcp4/` only dials IPv4 and
+/// `tcp6/` only IPv6.
+fn network_allows(network: Network, ip: IpAddr) -> bool {
+    match network {
+        Network::Tcp4 => ip.to_canonical().is_ipv4(),
+        Network::Tcp6 => ip.is_ipv6(),
+        Network::Default | Network::Tcp | Network::Other => true,
     }
 }
 
@@ -183,6 +197,16 @@ mod tests {
         let remote = dial("tcp/192.0.2.10:8443");
         assert!(!remote.is_loopback());
 
+        // Caddy versions differ in whether `tcp4/` and `tcp6/` limit which
+        // addresses `localhost` dials, so such a target is not linked.
+        for family in ["tcp4", "tcp6"] {
+            let qualified = dial(&format!("{family}/localhost:4000"));
+            assert!(
+                matches!(&qualified, DialTarget::Hostname { host, port: 4000 } if host.as_str() == "localhost"),
+                "{qualified:?}"
+            );
+        }
+
         let local = dial("LocalHost:4000");
         assert_eq!(local, DialTarget::Localhost { port: 4000 });
         assert!(local.is_loopback() && local.ip().is_none());
@@ -207,6 +231,8 @@ mod tests {
         assert_eq!(problem("127.0.0.1:8000-8001"), DialProblem::Invalid);
         assert_eq!(problem("\u{1b}[31mhost:80"), DialProblem::Invalid);
         assert_eq!(problem("a..b:80"), DialProblem::Invalid);
+        assert_eq!(problem("tcp4/[::1]:80"), DialProblem::Invalid);
+        assert_eq!(problem("tcp6/127.0.0.1:80"), DialProblem::Invalid);
     }
 
     #[test]

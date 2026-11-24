@@ -1,0 +1,195 @@
+{
+  "snapshot_version": 1,
+  "host_ref": "example-host",
+  "captured_at_unix_seconds": 1700000000,
+  "scope": "caddy_routes",
+  "evidence": {
+    "source": "json",
+    "config": {
+      "http_port": 80,
+      "https_port": 443,
+      "servers": [
+        {
+          "name": "public",
+          "listen": [
+            {
+              "network": "tcp",
+              "host": {
+                "kind": "any"
+              },
+              "ports": {
+                "first": 443,
+                "last": 443
+              }
+            },
+            {
+              "network": "tcp4",
+              "host": {
+                "kind": "any"
+              },
+              "ports": {
+                "first": 80,
+                "last": 80
+              }
+            },
+            {
+              "network": "tcp6",
+              "host": {
+                "kind": "ipv6",
+                "ip": "::"
+              },
+              "ports": {
+                "first": 8443,
+                "last": 8443
+              }
+            },
+            {
+              "network": "tcp",
+              "host": {
+                "kind": "ipv4",
+                "ip": "127.0.0.1"
+              },
+              "ports": {
+                "first": 9000,
+                "last": 9001
+              }
+            }
+          ],
+          "automatic_https": {
+            "disabled": false,
+            "redirects_disabled": false,
+            "hosts_skipped": false
+          },
+          "http3": true,
+          "tcp_known": true,
+          "tls_policies": [
+            {
+              "scoped": false,
+              "client_auth": "require_and_verify"
+            }
+          ],
+          "routes": [
+            {
+              "group": null,
+              "matchers": [],
+              "handlers": [
+                {
+                  "kind": "authentication",
+                  "http_basic": true,
+                  "other_providers": false
+                }
+              ],
+              "terminal": false
+            },
+            {
+              "group": null,
+              "matchers": [
+                {
+                  "hosts": [
+                    {
+                      "kind": "exact",
+                      "host": "app.example.test"
+                    }
+                  ],
+                  "paths": [
+                    {
+                      "kind": "prefix",
+                      "prefix": "/api/"
+                    }
+                  ],
+                  "complete": true
+                }
+              ],
+              "handlers": [
+                {
+                  "kind": "reverse_proxy",
+                  "upstreams": [
+                    {
+                      "kind": "socket",
+                      "address": "127.0.0.1:3000"
+                    },
+                    {
+                      "kind": "localhost",
+                      "port": 3001
+                    },
+                    {
+                      "kind": "socket",
+                      "address": "192.0.2.10:8080"
+                    },
+                    {
+                      "kind": "hostname",
+                      "host": "backend.example.test",
+                      "port": 9000
+                    }
+                  ],
+                  "complete": false,
+                  "tls": false,
+                  "forward_auth": false
+                }
+              ],
+              "terminal": true
+            }
+          ]
+        }
+      ],
+      "uncertainties": [
+        {
+          "kind": "unresolved_host",
+          "construct": "dial",
+          "location": "apps.http.servers[\"public\"].routes[1].handle[0].upstreams[3].dial"
+        }
+      ],
+      "uncertainties_omitted": 0
+    },
+    "collection": {
+      "status": "complete"
+    },
+    "inventory": {
+      "status": "collected",
+      "listeners": [
+        {
+          "address": "[::]:443",
+          "options": {
+            "bound_to_device": false,
+            "ipv6_only": false
+          }
+        },
+        {
+          "address": "0.0.0.0:80",
+          "options": {
+            "bound_to_device": false,
+            "ipv6_only": false
+          }
+        },
+        {
+          "address": "[::]:8443",
+          "options": {
+            "bound_to_device": false,
+            "ipv6_only": true
+          }
+        },
+        {
+          "address": "127.0.0.1:9000",
+          "options": {
+            "bound_to_device": false,
+            "ipv6_only": false
+          }
+        },
+        {
+          "address": "127.0.0.1:3000",
+          "options": {
+            "bound_to_device": false,
+            "ipv6_only": false
+          }
+        },
+        {
+          "address": "[::1]:3001",
+          "options": {
+            "bound_to_device": false,
+            "ipv6_only": true
+          }
+        }
+      ]
+    }
+  }
+}
