@@ -4,8 +4,8 @@ Use a fresh, disposable GitHub-hosted macOS runner to verify `reachmap scan`
 verdicts against real `pf` packet filtering and live TCP/UDP connection
 attempts. Never run the lab on a developer workstation or production Mac.
 `reachmap` itself stays strictly read-only: only [test-pf.sh](../scripts/test-pf.sh)
-modifies `pf` rules inside a dedicated test anchor and restores the runner's
-original `pf` state on exit.
+modifies `pf` rules inside a dedicated test anchor and restores the stock
+runner `pf` state on exit.
 
 ## Run the disposable macOS lab
 
@@ -20,36 +20,44 @@ The workflow checks out the repository with `contents: read` permissions and no
 secrets, builds `reachmap`, and runs `scripts/test-pf.sh target/debug/reachmap`
 on `macos-26`.
 
-To reproduce the lab inside a disposable local macOS VM, pass `--allow-pf-changes`
-explicitly (without it or `GITHUB_ACTIONS=true`, the script exits immediately
-without calling `pfctl`):
+Automatic execution is limited to GitHub-hosted runners (`GITHUB_ACTIONS=true`
+and `RUNNER_ENVIRONMENT=github-hosted`). To reproduce the lab inside a
+disposable local macOS VM with a stock `/etc/pf.conf` baseline, pass
+`--allow-pf-changes` explicitly:
 
 ```sh
 cargo build --locked
 scripts/test-pf.sh --allow-pf-changes target/debug/reachmap
 ```
 
-All test rules scope strictly to loopback interface `lo0` and a temporary alias
-`127.0.0.2` on ports `24443` and `24444` inside the `reachmap-test` anchor, so
-traffic on other interfaces is unaffected. On exit, the cleanup trap stops the
-test listeners, flushes `reachmap-test` and state entries, reloads
-`/etc/pf.conf`, restores the initial `pf` enabled/disabled status, and removes
-the temporary loopback alias.
+Before changing anything, the script verifies that only the stock `com.apple`
+anchors and rules are active and refuses to run against a custom ruleset.
+All test rules scope strictly to loopback interface `lo0` and temporary alias
+`127.0.0.2` (either matching all ports on `127.0.0.2` in Cases 3 and 5, or
+ports `24443` and `24444` specifically; Case 5 also applies `set skip on lo0`)
+inside the `reachmap-test` anchor, so traffic on `en0` and `127.0.0.1` stays
+unaffected. On exit (including `INT`/`TERM`), cleanup stops the test listeners,
+flushes `reachmap-test`, kills only `127.0.0.2` state entries via `pfctl -k`,
+reloads `/etc/pf.conf`, verifies the original `pf` enabled/disabled status is
+restored, removes the temporary loopback alias, and fails the run if any
+restoration step fails.
 
-## Test matrix
+## Expected test matrix (unverified until first runner dispatch)
 
-Every case runs against both TCP and UDP echo listeners bound to `127.0.0.2` and
-compares the `lo0` verdict in `reachmap scan --json` with an observed loopback
-connection attempt. Any mismatch fails the script with both values printed.
+Every case runs against live TCP and UDP echo listeners bound to `127.0.0.2`
+and compares the `lo0` verdict in `reachmap scan --json` with an observed
+loopback connection attempt. Unexpected probe errors fail immediately rather
+than counting as `blocked`, and expected drops are corroborated against
+incremented `pfctl -a reachmap-test -v -sr` packet counters.
 
-| Case | Ruleset configuration | Expected `reachmap` verdict | Observed probe | What it verifies |
+| Case | Ruleset configuration | Expected `reachmap` verdict | Expected probe | What it verifies |
 | --- | --- | --- | --- | --- |
 | 1. `pf` disabled | `pfctl -d` | `macos.pf.status == "disabled"` | `open` (TCP & UDP `24443`, `24444`) | Disabled `pf` does not claim filtering and leaves loopback reachable |
 | 2. Default anchors | Stock `/etc/pf.conf` enabled | `pass` on `lo0` (TCP & UDP `24443`, `24444`) | `open` | Default `com.apple/*` anchor tree evaluates cleanly without false blocks |
-| 3. `block in` + `pass` exception | `block in on lo0 ... to 127.0.0.2` with `pass in ... port 24443` | `pass` on `24443`, `block` on `24444` | `open` on `24443`, `blocked` on `24444` | Default block and port-specific pass exception agree for TCP and UDP |
-| 4. `quick` ordering | `block in quick ... port 24444` before `pass`; non-quick `block` before `pass` on `24443` | `pass` on `24443`, `block` on `24444` | `open` on `24443`, `blocked` on `24444` | `quick` short-circuits later rules while non-quick follows last-match-wins |
-| 5. `set skip on lo0` | `set skip on lo0` in main ruleset with `block in on lo0` in anchor | `pass` (`set skip`) on `24443` and `24444` | `open` on both ports | Skipped loopback interface bypasses filter rules in both `pf` and `reachmap` |
-| 6. Table rule | `pass in quick ... port 24443`; `block in ... to <lab_targets> port 24444` | `pass` on `24443`, `unknown` (`table`) on `24444` | `open` on `24443`, `blocked` on `24444` | Unmodeled `<table>` addresses fail closed as `unknown` rather than guessing |
+| 3. `block in` + `pass` exception | `block drop in on lo0 ... to 127.0.0.2` with `pass in ... port 24443` | `pass` on `24443`, `block` on `24444` | `open` on `24443`, `blocked` on `24444` | Default block and port-specific pass exception agree for TCP and UDP |
+| 4. `quick` ordering | `block drop in quick ... port 24444` before `pass`; non-quick `block` before `pass` on `24443` | `pass` on `24443`, `block` on `24444` | `open` on `24443`, `blocked` on `24444` | `quick` short-circuits later rules while non-quick follows last-match-wins |
+| 5. `set skip on lo0` | `set skip on lo0` in main ruleset with `block drop in on lo0 ... to 127.0.0.2` in anchor | `pass` (`set skip`) on `24443` and `24444` | `open` on both ports | Skipped loopback interface bypasses filter rules in both `pf` and `reachmap` |
+| 6. Table rule | `pass in quick ... port 24443`; `block drop in ... to <lab_targets> port 24444` | `pass` on `24443`, `unknown` (`table`) on `24444` | `open` on `24443`, `blocked` on `24444` | Unmodeled `<table>` addresses fail closed as `unknown` rather than guessing |
 | 7. Unprivileged scan | `pf` enabled (Case 3 rules), `reachmap scan --json` run without `sudo` | `macos.pf.status == "unknown"` (reason cites `sudo` / root privileges) | `open` on `24443`, `blocked` on `24444` | Missing `/dev/pf` permission surfaces an explicit evidence gap instead of `pass` |
 
 ## Scope and evidence limits
@@ -74,5 +82,7 @@ connection attempt. Any mismatch fails the script with both values printed.
 ## Verification record
 
 Target runner: GitHub Actions `macos-26` via `.github/workflows/pf-lab.yml`.
-Verified macOS (`sw_vers`, `uname -a`), `pfctl`, and `reachmap` versions will be
-recorded here after the first post-merge `workflow_dispatch` run on `main`.
+This document is still unverified against a live runner: `workflow_dispatch`
+requires `.github/workflows/pf-lab.yml` on `main` before it can run. The first
+post-merge run on `main` will record the verified `sw_vers`, `uname -a`,
+`/sbin/pfctl` binary identity, `reachmap` version, and workflow run URL here.
