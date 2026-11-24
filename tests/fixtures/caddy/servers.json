@@ -92,8 +92,30 @@
                 {
                   "handler": "reverse_proxy",
                   "upstreams": [{ "dial": "auth.example.test:9091" }],
+                  "rewrite": { "method": "GET", "uri": "/verify" },
+                  "headers": {
+                    "request": { "set": { "X-Forwarded-Method": ["{http.request.method}"] } }
+                  },
                   "handle_response": [
-                    { "match": { "status_code": [2] }, "routes": [] }
+                    {
+                      "match": { "status_code": [2] },
+                      "routes": [
+                        { "handle": [{ "handler": "vars" }] },
+                        {
+                          "match": [
+                            { "not": [{ "vars": { "{http.reverse_proxy.header.Remote-User}": [""] } }] }
+                          ],
+                          "handle": [
+                            {
+                              "handler": "headers",
+                              "request": {
+                                "set": { "Remote-User": ["{http.reverse_proxy.header.Remote-User}"] }
+                              }
+                            }
+                          ]
+                        }
+                      ]
+                    }
                   ]
                 },
                 {

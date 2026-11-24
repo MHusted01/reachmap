@@ -4,19 +4,17 @@
 use std::collections::HashMap;
 
 use super::error::{CaddyParseError, MAX_INPUT_BYTES};
-use super::listen::ListenAddress;
 use super::location::{JsonPath, bounded_name};
 use super::matcher::{HostMatcher, PathMatcher, PatternProblem};
-use super::raw::{
-    RawApps, RawAutomaticHttps, RawClientAuth, RawConfig, RawMatcherSet, RawRoute, RawServer,
-    RawTlsPolicy,
-};
+use super::raw::{RawApps, RawConfig, RawMatcherSet, RawRoute};
+use super::substitution::Substitutions;
 use super::{
-    AutomaticHttps, CaddyConfig, CaddyServer, ClientAuthMode, DEFAULT_HTTP_PORT,
-    DEFAULT_HTTPS_PORT, MatcherSet, Route, RouteGroup, TlsPolicy, Uncertainty, UncertaintyKind,
+    CaddyConfig, DEFAULT_HTTP_PORT, DEFAULT_HTTPS_PORT, MatcherSet, Route, RouteGroup, Uncertainty,
+    UncertaintyKind,
 };
 
 mod handler;
+mod server;
 
 /// Deepest subroute nesting followed; deeper subroutes become uncertain.
 pub const MAX_ROUTE_DEPTH: usize = 16;
@@ -25,42 +23,64 @@ pub const MAX_ROUTE_DEPTH: usize = 16;
 /// cannot make the result grow without bound.
 pub const MAX_UNCERTAINTIES: usize = 512;
 
-/// The `listener_wrappers` entry that only marks where TLS is handled.
-const TLS_WRAPPER: &str = "tls";
-
-/// The `protocols` entry that turns on HTTP/3.
-const HTTP3: &str = "h3";
+/// Shown in place of a name that contains a substituted value.
+pub const REDACTED: &str = "[substituted]";
 
 /// Apps that never accept connections of their own.
 const PASSIVE_APPS: [&str; 3] = ["tls", "pki", "events"];
 
 /// Parses Caddy's native JSON config (what `caddy adapt` prints) into the
-/// secret-minimized model.
+/// secret-minimized model, with no known substitutions.
+///
+/// # Errors
+///
+/// See [`parse_caddy_config_with`].
+pub fn parse_caddy_config(json: &str) -> Result<CaddyConfig, CaddyParseError> {
+    parse_caddy_config_with(json, &Substitutions::none())
+}
+
+/// Parses Caddy's native JSON config into the secret-minimized model,
+/// leaving out every modeled value that contains one of `substitutions`.
 ///
 /// # Errors
 ///
 /// Returns [`CaddyParseError`] when the input is too large, is not complete
 /// JSON, or has a modeled field of the wrong type. Problems inside a single
 /// handler or address become uncertainties instead.
-pub fn parse_caddy_config(json: &str) -> Result<CaddyConfig, CaddyParseError> {
+pub fn parse_caddy_config_with(
+    json: &str,
+    substitutions: &Substitutions,
+) -> Result<CaddyConfig, CaddyParseError> {
     if json.len() > MAX_INPUT_BYTES {
         return Err(CaddyParseError::InputTooLarge {
             limit_bytes: MAX_INPUT_BYTES,
         });
     }
     let raw: RawConfig = serde_json::from_str(json)?;
-    Ok(Projector::default().config(raw))
+    Ok(Projector::new(substitutions).config(raw))
 }
 
 /// Collects uncertainties and route group numbers while walking the config.
-#[derive(Default)]
-struct Projector {
+struct Projector<'a> {
+    substitutions: &'a Substitutions,
     uncertainties: Vec<Uncertainty>,
     omitted: usize,
+    /// Group numbers of the current server, by full group name.
     groups: HashMap<String, usize>,
 }
 
-impl Projector {
+impl<'a> Projector<'a> {
+    fn new(substitutions: &'a Substitutions) -> Self {
+        Self {
+            substitutions,
+            uncertainties: Vec::new(),
+            omitted: 0,
+            groups: HashMap::new(),
+        }
+    }
+}
+
+impl Projector<'_> {
     /// Records that `construct` at `at` is not modeled.
     fn note(&mut self, kind: UncertaintyKind, construct: &str, at: &JsonPath) {
         if self.uncertainties.len() >= MAX_UNCERTAINTIES {
@@ -69,7 +89,7 @@ impl Projector {
         }
         self.uncertainties.push(Uncertainty {
             kind,
-            construct: bounded_name(construct),
+            construct: self.name(construct),
             location: at.into(),
         });
     }
@@ -79,15 +99,44 @@ impl Projector {
         self.uncertainties.len() + self.omitted
     }
 
+    /// A name from the config made safe to show, or [`REDACTED`] when it
+    /// contains a substituted value.
+    fn name(&self, text: &str) -> String {
+        if self.substitutions.taints(text) {
+            REDACTED.to_owned()
+        } else {
+            bounded_name(text)
+        }
+    }
+
+    /// `at["key"]`, with a key that contains a substituted value redacted.
+    fn key(&self, at: &JsonPath, key: &str) -> JsonPath {
+        if self.substitutions.taints(key) {
+            at.key(REDACTED)
+        } else {
+            at.key(key)
+        }
+    }
+
+    /// Whether `value` contains a substituted value; if so, notes that the
+    /// `construct` at `at` was left out.
+    fn substituted(&mut self, value: &str, construct: &str, at: &JsonPath) -> bool {
+        let substituted = self.substitutions.taints(value);
+        if substituted {
+            self.note(UncertaintyKind::SubstitutedValue, construct, at);
+        }
+        substituted
+    }
+
     /// The group of a route, numbered by its full name within the current
-    /// route list, so that names which differ only after the display bound
-    /// stay apart.
+    /// server, so that names which differ only after the display bound stay
+    /// apart.
     fn group(&mut self, name: &str) -> RouteGroup {
         let next = self.groups.len();
         let id = *self.groups.entry(name.to_owned()).or_insert(next);
         RouteGroup {
             id,
-            label: bounded_name(name),
+            label: self.name(name),
         }
     }
 
@@ -98,14 +147,18 @@ impl Projector {
             .keys()
             .filter(|name| !PASSIVE_APPS.contains(&name.as_str()))
         {
-            self.note(UncertaintyKind::UnmodeledApp, name, &apps_at.key(name));
+            let at = self.key(&apps_at, name);
+            self.note(UncertaintyKind::UnmodeledApp, name, &at);
         }
         let http = http.unwrap_or_default();
         let servers_at = apps_at.field("http").field("servers");
         let servers = http
             .servers
             .into_iter()
-            .map(|(name, server)| self.server(&name, server, &servers_at.key(&name)))
+            .map(|(name, server)| {
+                let at = self.key(&servers_at, &name);
+                self.server(&name, server, &at)
+            })
             .collect();
         CaddyConfig {
             http_port: http.http_port.unwrap_or(DEFAULT_HTTP_PORT),
@@ -116,124 +169,11 @@ impl Projector {
         }
     }
 
-    fn server(&mut self, name: &str, raw: RawServer, at: &JsonPath) -> CaddyServer {
-        let listen = self.listen(raw.listen.as_deref(), &at.field("listen"));
-        self.server_features(&raw, at);
-        let policies_at = at.field("tls_connection_policies");
-        let tls_policies = raw
-            .tls_connection_policies
-            .into_iter()
-            .enumerate()
-            .map(|(index, policy)| self.tls_policy(policy, &policies_at.index(index)))
-            .collect();
-        CaddyServer {
-            name: bounded_name(name),
-            listen,
-            automatic_https: raw
-                .automatic_https
-                .as_ref()
-                .map(automatic_https)
-                .unwrap_or_default(),
-            http3: raw
-                .protocols
-                .as_ref()
-                .is_none_or(|protocols| protocols.iter().any(|protocol| protocol == HTTP3)),
-            tls_policies,
-            routes: self.routes(raw.routes, &at.field("routes"), 0),
-        }
-    }
-
-    /// Notes server fields that can route requests or change how the
-    /// listener accepts connections.
-    fn server_features(&mut self, raw: &RawServer, at: &JsonPath) {
-        let fields = [
-            ("errors", raw.errors.is_some()),
-            ("named_routes", raw.named_routes.is_some()),
-        ];
-        for (field, _) in fields.into_iter().filter(|(_, present)| *present) {
-            self.note(
-                UncertaintyKind::UnmodeledServerFeature,
-                field,
-                &at.field(field),
-            );
-        }
-        let wrappers_at = at.field("listener_wrappers");
-        for (index, _) in raw
-            .listener_wrappers
-            .iter()
-            .enumerate()
-            .filter(|(_, wrapper)| wrapper.wrapper.as_deref() != Some(TLS_WRAPPER))
-        {
-            let kind = UncertaintyKind::UnmodeledServerFeature;
-            self.note(kind, "listener_wrappers", &wrappers_at.index(index));
-        }
-    }
-
-    /// The statically understood addresses; a missing or empty `listen` is
-    /// uncertain because Caddy then picks the ports itself.
-    fn listen(&mut self, raw: Option<&[String]>, at: &JsonPath) -> Vec<ListenAddress> {
-        let Some(addresses) = raw.filter(|addresses| !addresses.is_empty()) else {
-            self.note(UncertaintyKind::ImplicitListen, "listen", at);
-            return Vec::new();
-        };
-        addresses
-            .iter()
-            .enumerate()
-            .filter_map(|(index, text)| {
-                ListenAddress::parse(text)
-                    .map_err(|problem| self.note(problem.kind(), "listen", &at.index(index)))
-                    .ok()
-            })
-            .collect()
-    }
-
-    fn tls_policy(&mut self, raw: RawTlsPolicy, at: &JsonPath) -> TlsPolicy {
-        let client_auth = raw
-            .client_authentication
-            .and_then(|auth| self.client_auth(&auth, &at.field("client_authentication")));
-        TlsPolicy {
-            scoped: raw.matcher.is_some(),
-            client_auth,
-        }
-    }
-
-    fn client_auth(&mut self, raw: &RawClientAuth, at: &JsonPath) -> Option<ClientAuthMode> {
-        if !raw.verifiers.is_empty() {
-            let field = "verifiers";
-            self.note(
-                UncertaintyKind::ClientCertificateVerifier,
-                field,
-                &at.field(field),
-            );
-        }
-        match raw.mode.as_deref() {
-            Some("request") => Some(ClientAuthMode::Request),
-            Some("require") => Some(ClientAuthMode::Require),
-            Some("verify_if_given") => Some(ClientAuthMode::VerifyIfGiven),
-            Some("require_and_verify") => Some(ClientAuthMode::RequireAndVerify),
-            None | Some("") => raw.has_trust().then_some(ClientAuthMode::Implicit),
-            Some(_) => {
-                self.note(
-                    UncertaintyKind::UnknownClientAuthMode,
-                    "mode",
-                    &at.field("mode"),
-                );
-                None
-            }
-        }
-    }
-
-    /// One route list. Group numbers restart for each list, as Caddy only
-    /// applies a group among the routes of one list.
     fn routes(&mut self, raw: Vec<RawRoute>, at: &JsonPath, depth: usize) -> Vec<Route> {
-        let outer_groups = std::mem::take(&mut self.groups);
-        let routes = raw
-            .into_iter()
+        raw.into_iter()
             .enumerate()
             .map(|(index, route)| self.route(route, &at.index(index), depth))
-            .collect();
-        self.groups = outer_groups;
-        routes
+            .collect()
     }
 
     fn route(&mut self, raw: RawRoute, at: &JsonPath, depth: usize) -> Route {
@@ -263,7 +203,8 @@ impl Projector {
     fn matcher_set(&mut self, raw: RawMatcherSet, at: &JsonPath) -> MatcherSet {
         let before = self.found();
         for name in raw.other.keys() {
-            self.note(UncertaintyKind::UnmodeledMatcher, name, &at.key(name));
+            let matcher_at = self.key(at, name);
+            self.note(UncertaintyKind::UnmodeledMatcher, name, &matcher_at);
         }
         let hosts = raw
             .host
@@ -289,19 +230,14 @@ impl Projector {
             .iter()
             .enumerate()
             .filter_map(|(index, pattern)| {
+                let at = at.index(index);
+                if self.substituted(pattern, construct, &at) {
+                    return None;
+                }
                 parse(pattern)
-                    .map_err(|problem| self.note(problem.kind(), construct, &at.index(index)))
+                    .map_err(|problem| self.note(problem.kind(), construct, &at))
                     .ok()
             })
             .collect()
-    }
-}
-
-/// The `automatic_https` switches.
-fn automatic_https(raw: &RawAutomaticHttps) -> AutomaticHttps {
-    AutomaticHttps {
-        disabled: raw.disable,
-        redirects_disabled: raw.disable_redirects,
-        hosts_skipped: raw.skip.is_some() || raw.skip_certificates.is_some(),
     }
 }

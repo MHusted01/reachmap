@@ -45,6 +45,9 @@ pub(super) struct RawServer {
     pub(super) listener_wrappers: Vec<RawListenerWrapper>,
     pub(super) protocols: Option<Vec<String>>,
     #[serde(default)]
+    pub(super) listen_protocols: Vec<IgnoredAny>,
+    pub(super) strict_sni_host: Option<bool>,
+    #[serde(default)]
     pub(super) routes: Vec<RawRoute>,
     pub(super) automatic_https: Option<RawAutomaticHttps>,
     #[serde(default)]
@@ -83,20 +86,24 @@ pub(super) struct RawTlsPolicy {
 pub(super) struct RawClientAuth {
     pub(super) mode: Option<String>,
     pub(super) ca: Option<IgnoredAny>,
-    pub(super) trusted_ca_certs: Option<IgnoredAny>,
-    pub(super) trusted_ca_certs_pem_files: Option<IgnoredAny>,
-    pub(super) trusted_leaf_certs: Option<IgnoredAny>,
+    #[serde(default)]
+    pub(super) trusted_ca_certs: Vec<IgnoredAny>,
+    #[serde(default)]
+    pub(super) trusted_ca_certs_pem_files: Vec<IgnoredAny>,
+    #[serde(default)]
+    pub(super) trusted_leaf_certs: Vec<IgnoredAny>,
     #[serde(default)]
     pub(super) verifiers: Vec<IgnoredAny>,
 }
 
 impl RawClientAuth {
-    /// Whether certificates to trust or verifiers are configured.
+    /// Whether certificates to trust or verifiers are configured. Empty
+    /// lists configure nothing, so Caddy leaves client authentication off.
     pub(super) fn has_trust(&self) -> bool {
         self.ca.is_some()
-            || self.trusted_ca_certs.is_some()
-            || self.trusted_ca_certs_pem_files.is_some()
-            || self.trusted_leaf_certs.is_some()
+            || !self.trusted_ca_certs.is_empty()
+            || !self.trusted_ca_certs_pem_files.is_empty()
+            || !self.trusted_leaf_certs.is_empty()
             || !self.verifiers.is_empty()
     }
 }
@@ -134,7 +141,9 @@ pub(super) enum RawHandler {
     Rewrite {},
     Uri {},
     Map {},
-    StaticResponse {},
+    StaticResponse {
+        status_code: Option<RawStatusCode>,
+    },
     FileServer {
         #[serde(default)]
         pass_thru: bool,
@@ -151,6 +160,15 @@ pub(super) enum RawHandler {
     Unknown,
 }
 
+/// A `static_response` status: Caddy accepts a number or a string, which
+/// may hold a placeholder.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(super) enum RawStatusCode {
+    Number(u16),
+    Text(String),
+}
+
 /// `reverse_proxy`.
 #[derive(Deserialize)]
 pub(super) struct RawReverseProxy {
@@ -158,21 +176,39 @@ pub(super) struct RawReverseProxy {
     pub(super) upstreams: Vec<RawUpstream>,
     pub(super) dynamic_upstreams: Option<IgnoredAny>,
     pub(super) transport: Option<RawTransport>,
+    pub(super) rewrite: Option<RawProxyRewrite>,
     #[serde(default)]
     pub(super) handle_response: Vec<RawResponseHandler>,
 }
 
 impl RawReverseProxy {
-    /// Whether `handle_response` has the shape Caddy's `forward_auth`
-    /// directive adapts to: one handler matching only 2xx status codes.
+    /// Whether the proxy has the shape Caddy's `forward_auth` directive
+    /// adapts to: the request is rewritten to a `GET` for the auth service,
+    /// and one response handler matches only 2xx answers with routes that
+    /// start with a lone `vars` handler, which lets the original request
+    /// continue down the chain.
     pub(super) fn is_forward_auth(&self) -> bool {
-        match self.handle_response.as_slice() {
-            [only] => only.matcher.as_ref().is_some_and(|matcher| {
-                matcher.headers.is_none() && matcher.status_code.as_deref() == Some(&[2])
-            }),
-            _ => false,
-        }
+        let rewrites_to_get = self
+            .rewrite
+            .as_ref()
+            .is_some_and(|rewrite| rewrite.method.as_deref() == Some("GET"));
+        let [only] = self.handle_response.as_slice() else {
+            return false;
+        };
+        let only_2xx = only.matcher.as_ref().is_some_and(|matcher| {
+            matcher.headers.is_none() && matcher.status_code.as_deref() == Some(&[2])
+        });
+        let falls_through = only.routes.first().is_some_and(|route| {
+            matches!(route.handle.as_slice(), [tag] if tag.handler.as_deref() == Some("vars"))
+        });
+        rewrites_to_get && only_2xx && falls_through
     }
+}
+
+/// `reverse_proxy.rewrite`: how the proxied request is changed.
+#[derive(Deserialize)]
+pub(super) struct RawProxyRewrite {
+    pub(super) method: Option<String>,
 }
 
 /// One static upstream.
@@ -187,6 +223,21 @@ pub(super) struct RawUpstream {
 pub(super) struct RawResponseHandler {
     #[serde(rename = "match")]
     pub(super) matcher: Option<RawResponseMatch>,
+    #[serde(default)]
+    pub(super) routes: Vec<RawResponseRoute>,
+}
+
+/// One route of a `handle_response` item, reduced to its handler types.
+#[derive(Deserialize)]
+pub(super) struct RawResponseRoute {
+    #[serde(default)]
+    pub(super) handle: Vec<RawHandlerTag>,
+}
+
+/// Only the `handler` field of a handler.
+#[derive(Deserialize)]
+pub(super) struct RawHandlerTag {
+    pub(super) handler: Option<String>,
 }
 
 /// The response matcher of a `handle_response` item.
@@ -208,6 +259,7 @@ pub(super) struct RawTransport {
 pub(super) struct RawSubroute {
     #[serde(default)]
     pub(super) routes: Vec<RawRoute>,
+    pub(super) errors: Option<IgnoredAny>,
 }
 
 /// `authentication`: only the provider names.

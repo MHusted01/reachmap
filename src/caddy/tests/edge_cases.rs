@@ -190,37 +190,46 @@ fn file_server_pass_thru_does_not_hide_the_next_handler() {
 
 #[test]
 fn only_the_forward_auth_shape_counts_as_an_auth_gate() {
-    let config = parse(&with_server(
-        r#"{"listen": [":80"], "routes": [{"handle": [
-            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:1"}],
-             "handle_response": [{"match": {"status_code": [404]}, "routes": []}]},
-            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:2"}],
-             "handle_response": [{"match": {"status_code": [2]}}, {"routes": []}]},
-            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:3"}],
-             "handle_response": [{"match": {"status_code": [2], "headers": {"X": ["1"]}}}]},
-            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:4"}],
-             "handle_response": [{"match": {"status_code": [2]}, "routes": []}]}
-        ]}]}"#,
-    ));
+    let adapted = r#"{"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:5"}],
+        "rewrite": {"method": "GET", "uri": "/verify"},
+        "handle_response": [{"match": {"status_code": [2]},
+            "routes": [{"handle": [{"handler": "vars"}]}, {"handle": [{"handler": "headers"}]}]}]}"#;
+    let config = parse(&with_server(&format!(
+        r#"{{"listen": [":80"], "routes": [{{"handle": [
+            {{"handler": "reverse_proxy", "upstreams": [{{"dial": "127.0.0.1:1"}}],
+             "handle_response": [{{"match": {{"status_code": [404]}}, "routes": []}}]}},
+            {{"handler": "reverse_proxy", "upstreams": [{{"dial": "127.0.0.1:2"}}],
+             "rewrite": {{"method": "GET"}},
+             "handle_response": [{{"match": {{"status_code": [2]}}}}, {{"routes": []}}]}},
+            {{"handler": "reverse_proxy", "upstreams": [{{"dial": "127.0.0.1:3"}}],
+             "rewrite": {{"method": "GET"}},
+             "handle_response": [{{"match": {{"status_code": [2], "headers": {{"X": ["1"]}}}},
+                 "routes": [{{"handle": [{{"handler": "vars"}}]}}]}}]}},
+            {{"handler": "reverse_proxy", "upstreams": [{{"dial": "127.0.0.1:4"}}],
+             "handle_response": [{{"match": {{"status_code": [2]}},
+                 "routes": [{{"handle": [{{"handler": "static_response", "status_code": 201}}]}}]}}]}},
+            {adapted}
+        ]}}]}}"#
+    )));
     let handlers = &config.servers[0].routes[0].handlers;
     let gates: Vec<bool> = handlers.iter().map(|h| proxy(h).forward_auth).collect();
-    assert_eq!(gates, [false, false, false, true]);
+    assert_eq!(gates, [false, false, false, false, true]);
+    assert!(proxy(&handlers[4]).complete);
     let handle = format!("{SERVER_AT}.routes[0].handle");
-    let expected: Vec<String> = (0..3)
+    let expected: Vec<String> = (0..4)
         .map(|index| format!("{handle}[{index}].handle_response"))
         .collect();
-    let actual: Vec<_> = listed(&config);
-    assert_eq!(actual.len(), 3);
-    for ((kind, construct, location), at) in actual.iter().zip(&expected) {
-        assert_eq!(
-            (*kind, *construct, *location),
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|at| {
             (
                 UncertaintyKind::ResponseHandling,
                 "handle_response",
-                at.as_str()
+                at.as_str(),
             )
-        );
-    }
+        })
+        .collect();
+    assert_eq!(listed(&config), expected);
 }
 
 #[test]
@@ -305,15 +314,15 @@ fn uncertainties_are_bounded_but_still_counted() {
 }
 
 #[test]
-fn group_numbers_are_scoped_to_their_route_list() {
-    let subroute = r#"{"handler": "subroute", "routes": [{"group": "b"}, {"group": "b"}]}"#;
+fn group_numbers_are_shared_within_a_server() {
+    let subroute = r#"{"handler": "subroute", "routes": [{"group": "b"}, {"group": "c"}]}"#;
     let routes = format!(
         r#"[{{"group": "a"}}, {{"group": "b", "handle": [{subroute}]}}, {{"group": "b"}}]"#
     );
     let json = format!(
         r#"{{"apps": {{"http": {{"servers": {{
             "one": {{"listen": [":80"], "routes": {routes}}},
-            "two": {{"listen": [":81"], "routes": [{{"group": "b"}}]}}
+            "two": {{"listen": [":81"], "routes": [{{"group": "c"}}]}}
         }}}}}}}}"#
     );
     let config = parse(&json);
@@ -324,15 +333,147 @@ fn group_numbers_are_scoped_to_their_route_list() {
             .collect()
     };
     let one = &config.servers[0].routes;
-    assert_eq!(ids(one), [0, 1, 1], "the outer list keeps its numbering");
+    assert_eq!(ids(one), [0, 1, 1]);
     assert_eq!(
         ids(subroutes(&one[1].handlers[0])),
-        [0, 0],
-        "a subroute restarts"
+        [1, 2],
+        "a subroute shares the request's groups"
     );
     assert_eq!(
         ids(&config.servers[1].routes),
         [0],
         "another server restarts"
+    );
+}
+
+#[test]
+fn strict_sni_host_off_with_client_auth_is_uncertain() {
+    let config = parse(&with_server(
+        r#"{"listen": [":443"], "strict_sni_host": false, "tls_connection_policies": [
+            {"match": {"sni": ["internal.example.test"]},
+             "client_authentication": {"mode": "require_and_verify"}},
+            {}
+        ]}"#,
+    ));
+    let at = format!("{SERVER_AT}.strict_sni_host");
+    assert_eq!(
+        listed(&config),
+        [(
+            UncertaintyKind::UnmodeledServerFeature,
+            "strict_sni_host",
+            at.as_str()
+        )]
+    );
+    let without_auth = parse(&with_server(
+        r#"{"listen": [":443"], "strict_sni_host": false}"#,
+    ));
+    assert!(without_auth.uncertainties.is_empty());
+}
+
+#[test]
+fn informational_static_responses_pass_the_request_on() {
+    let config = parse(&with_server(
+        r#"{"listen": [":80"], "routes": [{"handle": [
+            {"handler": "static_response", "status_code": 103},
+            {"handler": "static_response", "status_code": "103"},
+            {"handler": "static_response", "status_code": "{http.vars.status}"},
+            {"handler": "static_response", "status_code": "soon"},
+            {"handler": "static_response", "status_code": 404},
+            {"handler": "static_response"}
+        ]}]}"#,
+    ));
+    let early = Handler::Middleware {
+        middleware: Middleware::InformationalResponse,
+    };
+    let answer = Handler::Respond {
+        responder: Responder::StaticResponse,
+    };
+    let unmodeled = Handler::Unmodeled {};
+    assert_eq!(
+        config.servers[0].routes[0].handlers,
+        [
+            early.clone(),
+            early,
+            unmodeled.clone(),
+            unmodeled,
+            answer.clone(),
+            answer
+        ]
+    );
+    let handle = format!("{SERVER_AT}.routes[0].handle");
+    let placeholder = format!("{handle}[2].status_code");
+    let malformed = format!("{handle}[3].status_code");
+    assert_eq!(
+        listed(&config),
+        [
+            (
+                UncertaintyKind::Placeholder,
+                "status_code",
+                placeholder.as_str()
+            ),
+            (
+                UncertaintyKind::Malformed,
+                "status_code",
+                malformed.as_str()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn subroute_error_routes_are_uncertain() {
+    let config = parse(&with_server(
+        r#"{"listen": [":80"], "routes": [{"handle": [{"handler": "subroute",
+            "routes": [{"handle": [{"handler": "error"}]}],
+            "errors": {"routes": [{"handle": [
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:7000"}]}
+            ]}]}}]}]}"#,
+    ));
+    let at = format!("{SERVER_AT}.routes[0].handle[0].errors");
+    assert_eq!(
+        listed(&config),
+        [(
+            UncertaintyKind::UnmodeledServerFeature,
+            "errors",
+            at.as_str()
+        )]
+    );
+}
+
+#[test]
+fn empty_trust_lists_leave_client_auth_off() {
+    let config = parse(&with_server(
+        r#"{"listen": [":443"], "tls_connection_policies": [
+            {"client_authentication": {"trusted_ca_certs": []}},
+            {"client_authentication": {"trusted_ca_certs": ["AAAA"]}},
+            {"client_authentication": {"trusted_leaf_certs": [], "trusted_ca_certs_pem_files": []}}
+        ]}"#,
+    ));
+    let modes: Vec<_> = config.servers[0]
+        .tls_policies
+        .iter()
+        .map(|policy| policy.client_auth)
+        .collect();
+    assert_eq!(modes, [None, Some(ClientAuthMode::Implicit), None]);
+}
+
+#[test]
+fn http3_defaults_apply_to_empty_protocols_and_listener_overrides_are_uncertain() {
+    let config = parse(&with_server(
+        r#"{"listen": [":443", ":8443"], "protocols": [],
+            "listen_protocols": [[], ["h3"]]}"#,
+    ));
+    assert!(
+        config.servers[0].http3,
+        "an empty list means the default set"
+    );
+    let at = format!("{SERVER_AT}.listen_protocols");
+    assert_eq!(
+        listed(&config),
+        [(
+            UncertaintyKind::UnmodeledServerFeature,
+            "listen_protocols",
+            at.as_str()
+        )]
     );
 }

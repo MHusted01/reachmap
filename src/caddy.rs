@@ -10,10 +10,11 @@
 //! Two limits matter to consumers:
 //! - Listeners are TCP only. HTTP/3 is recorded as [`CaddyServer::http3`];
 //!   the UDP sockets it opens are not listed as [`ListenAddress`]es.
-//! - Values in modeled fields (paths, hosts, upstreams) are kept as written.
-//!   The Caddyfile adapter expands `{$VAR}` before this JSON exists, so an
-//!   expanded value cannot be told apart from a literal one here; whoever
-//!   collects the config knows its source and must judge that.
+//! - The Caddyfile adapter expands `{$VAR}` before this JSON exists, so an
+//!   expanded secret looks like any literal path, host or upstream. A
+//!   collector that knows the substituted values passes them as
+//!   [`Substitutions`] to [`parse_caddy_config_with`], which then leaves out
+//!   every modeled value containing one.
 
 use std::fmt;
 
@@ -28,6 +29,7 @@ mod location;
 mod matcher;
 mod project;
 mod raw;
+mod substitution;
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +39,10 @@ pub use error::{CaddyParseError, MAX_INPUT_BYTES};
 pub use handler::{Handler, Middleware, Responder, ReverseProxy};
 pub use listen::{ListenAddress, ListenHost, ListenNetwork, PortRange};
 pub use matcher::{HostMatcher, PathMatcher};
-pub use project::{MAX_ROUTE_DEPTH, MAX_UNCERTAINTIES, parse_caddy_config};
+pub use project::{
+    MAX_ROUTE_DEPTH, MAX_UNCERTAINTIES, REDACTED, parse_caddy_config, parse_caddy_config_with,
+};
+pub use substitution::{MIN_SUBSTITUTION_CHARS, Substitutions};
 
 /// Port Caddy uses for HTTP when the `http` app names none.
 pub const DEFAULT_HTTP_PORT: u16 = 80;
@@ -141,13 +146,13 @@ pub struct Route {
     pub terminal: bool,
 }
 
-/// A route `group`. Caddy applies a group within one route list only, so
-/// two routes of the same list are in the same group exactly when their
-/// `id`s are equal; ids of different lists are unrelated. The label is for
-/// display and may be cut short.
+/// A route `group`. Caddy keeps one set of applied groups per request,
+/// shared by a server's routes and all their subroutes, so two routes of
+/// one server are in the same group exactly when their `id`s are equal. The
+/// label is for display and may be cut short or redacted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteGroup {
-    /// Number assigned to the full group name, unique within one route list.
+    /// Number assigned to the full group name, unique within one server.
     pub id: usize,
     /// Sanitized, length-bounded group name.
     pub label: String,
@@ -201,7 +206,9 @@ pub enum UncertaintyKind {
     ImplicitListen,
     /// An app other than `http` that may accept connections, e.g. `layer4`.
     UnmodeledApp,
-    /// A server feature that can route requests: `errors` or `named_routes`.
+    /// A server or subroute feature that can route requests or change how
+    /// connections are accepted, e.g. `errors`, `named_routes`,
+    /// `listener_wrappers` or `listen_protocols`.
     UnmodeledServerFeature,
     /// An authentication provider other than `http_basic`.
     UnmodeledAuthProvider,
@@ -214,6 +221,8 @@ pub enum UncertaintyKind {
     ConditionalFallthrough,
     /// `handle_response` routes other than the `forward_auth` shape.
     ResponseHandling,
+    /// A value containing a known [`Substitutions`] value; it is left out.
+    SubstitutedValue,
     /// Subroutes nested deeper than [`MAX_ROUTE_DEPTH`].
     NestingTooDeep,
     /// A value of the wrong shape or an invalid address.
@@ -239,6 +248,7 @@ impl fmt::Display for UncertaintyKind {
             Self::ClientCertificateVerifier => "client certificate verifier",
             Self::ConditionalFallthrough => "conditional fall-through",
             Self::ResponseHandling => "proxy response handling",
+            Self::SubstitutedValue => "substituted value left out",
             Self::NestingTooDeep => "subroutes nested too deep",
             Self::Malformed => "malformed value",
         })

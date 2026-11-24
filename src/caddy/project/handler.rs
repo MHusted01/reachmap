@@ -5,7 +5,9 @@ use serde_json::Value;
 use super::{MAX_ROUTE_DEPTH, Projector};
 use crate::caddy::dial::DialTarget;
 use crate::caddy::location::JsonPath;
-use crate::caddy::raw::{RawAuthentication, RawHandler, RawReverseProxy, RawRoute, RawUpstream};
+use crate::caddy::raw::{
+    RawAuthentication, RawHandler, RawReverseProxy, RawStatusCode, RawSubroute, RawUpstream,
+};
 use crate::caddy::{Handler, Middleware, Responder, ReverseProxy, UncertaintyKind};
 
 /// The construct named when a handler has no readable `handler` field.
@@ -14,7 +16,11 @@ const UNNAMED_HANDLER: &str = "handler";
 /// The only `reverse_proxy` transport the model follows.
 const HTTP_TRANSPORT: &str = "http";
 
-impl Projector {
+/// Informational status codes, which Caddy sends before passing the request
+/// on to the next handler.
+const INFORMATIONAL: std::ops::RangeInclusive<u16> = 100..=199;
+
+impl Projector<'_> {
     /// Projects one element of a route's `handle` list. The handler name is
     /// read first so an unknown or malformed handler can still be named.
     pub(super) fn handler(&mut self, value: Value, at: &JsonPath, depth: usize) -> Handler {
@@ -31,13 +37,13 @@ impl Projector {
         let middleware = |middleware| Handler::Middleware { middleware };
         match raw {
             RawHandler::ReverseProxy(proxy) => Handler::ReverseProxy(self.reverse_proxy(proxy, at)),
-            RawHandler::Subroute(subroute) => self.subroute(subroute.routes, at, depth),
+            RawHandler::Subroute(subroute) => self.subroute(subroute, at, depth),
             RawHandler::Authentication(auth) => self.authentication(&auth, at),
             RawHandler::Rewrite {} | RawHandler::Uri {} | RawHandler::Map {} => {
                 self.note(UncertaintyKind::RoutingHandler, &name, at);
                 Handler::Unmodeled {}
             }
-            RawHandler::StaticResponse {} => respond(Responder::StaticResponse),
+            RawHandler::StaticResponse { status_code } => self.static_response(status_code, at),
             RawHandler::FileServer { pass_thru: false } => respond(Responder::FileServer),
             RawHandler::FileServer { pass_thru: true } => {
                 let kind = UncertaintyKind::ConditionalFallthrough;
@@ -60,13 +66,47 @@ impl Projector {
     }
 
     /// Follows a subroute unless it is nested deeper than [`MAX_ROUTE_DEPTH`].
-    fn subroute(&mut self, routes: Vec<RawRoute>, at: &JsonPath, depth: usize) -> Handler {
+    /// Its `errors` routes can proxy a failed request and are not modeled.
+    fn subroute(&mut self, raw: RawSubroute, at: &JsonPath, depth: usize) -> Handler {
         if depth >= MAX_ROUTE_DEPTH {
             self.note(UncertaintyKind::NestingTooDeep, "subroute", at);
             return Handler::Unmodeled {};
         }
+        if raw.errors.is_some() {
+            let kind = UncertaintyKind::UnmodeledServerFeature;
+            self.note(kind, "errors", &at.field("errors"));
+        }
         Handler::Subroute {
-            routes: self.routes(routes, &at.field("routes"), depth + 1),
+            routes: self.routes(raw.routes, &at.field("routes"), depth + 1),
+        }
+    }
+
+    /// A `static_response` ends the chain, except with a 1xx status, which
+    /// Caddy sends before passing the request on.
+    fn static_response(&mut self, status: Option<RawStatusCode>, at: &JsonPath) -> Handler {
+        let status_at = at.field("status_code");
+        let code = match status {
+            None => None,
+            Some(RawStatusCode::Number(code)) => Some(code),
+            Some(RawStatusCode::Text(text)) if text.contains('{') => {
+                self.note(UncertaintyKind::Placeholder, "status_code", &status_at);
+                return Handler::Unmodeled {};
+            }
+            Some(RawStatusCode::Text(text)) => {
+                let Ok(code) = text.trim().parse() else {
+                    self.note(UncertaintyKind::Malformed, "status_code", &status_at);
+                    return Handler::Unmodeled {};
+                };
+                Some(code)
+            }
+        };
+        match code {
+            Some(code) if INFORMATIONAL.contains(&code) => Handler::Middleware {
+                middleware: Middleware::InformationalResponse,
+            },
+            _ => Handler::Respond {
+                responder: Responder::StaticResponse,
+            },
         }
     }
 
@@ -75,11 +115,8 @@ impl Projector {
         let mut other_providers = false;
         for name in raw.providers.keys().filter(|name| *name != "http_basic") {
             other_providers = true;
-            self.note(
-                UncertaintyKind::UnmodeledAuthProvider,
-                name,
-                &providers_at.key(name),
-            );
+            let at = self.key(&providers_at, name);
+            self.note(UncertaintyKind::UnmodeledAuthProvider, name, &at);
         }
         Handler::Authentication {
             http_basic: raw.providers.contains_key("http_basic"),
@@ -150,6 +187,9 @@ impl Projector {
             self.note(UncertaintyKind::Malformed, "dial", &dial_at);
             return None;
         };
+        if self.substituted(text, "dial", &dial_at) {
+            return None;
+        }
         match DialTarget::parse(text) {
             Ok(target) => {
                 if matches!(target, DialTarget::Hostname { .. }) {

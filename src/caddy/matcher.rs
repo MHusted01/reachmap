@@ -8,6 +8,11 @@ use crate::sanitize::sanitize;
 /// Longest `host` pattern kept, in characters.
 const MAX_HOST_CHARS: usize = 255;
 
+/// Characters with a meaning in Caddy's path matching besides a trailing
+/// `*`: `%` escape matching, and the `?`, `[...]` and `\` glob syntax of
+/// Go's `path.Match`.
+const GLOB_SYNTAX: [char; 5] = ['%', '?', '[', ']', '\\'];
+
 /// Longest `path` pattern kept, in characters.
 const MAX_PATH_CHARS: usize = 2048;
 
@@ -72,12 +77,14 @@ pub enum PathMatcher {
 
 impl PathMatcher {
     /// Parses one `path` pattern, or says why it is not modeled. Suffix and
-    /// inner wildcards and `%` escape matching are not modeled.
+    /// inner wildcards, other glob syntax and `%` escape matching are not
+    /// modeled.
     pub(crate) fn parse(pattern: &str) -> Result<Self, PatternProblem> {
         if pattern.contains('{') {
             return Err(PatternProblem::Placeholder);
         }
-        if pattern.contains('%') || pattern.len() > MAX_PATH_CHARS || sanitize(pattern) != pattern {
+        let glob_syntax = pattern.contains(GLOB_SYNTAX);
+        if glob_syntax || pattern.len() > MAX_PATH_CHARS || sanitize(pattern) != pattern {
             return Err(PatternProblem::Unsupported);
         }
         let pattern = pattern.to_lowercase();
@@ -174,6 +181,10 @@ mod tests {
         assert_eq!(problem("*.php"), PatternProblem::Unsupported);
         assert_eq!(problem("/a/*/b"), PatternProblem::Unsupported);
         assert_eq!(problem("/a%2Fb"), PatternProblem::Unsupported);
+        assert_eq!(problem("/reports/[ab]"), PatternProblem::Unsupported);
+        assert_eq!(problem("/file?.txt"), PatternProblem::Unsupported);
+        assert_eq!(problem("/api/[v]*"), PatternProblem::Unsupported);
+        assert_eq!(problem("/a\\*b"), PatternProblem::Unsupported);
         assert_eq!(problem("/a\u{1b}[2Jb"), PatternProblem::Unsupported);
         assert_eq!(
             problem(&"/".repeat(MAX_PATH_CHARS + 1)),

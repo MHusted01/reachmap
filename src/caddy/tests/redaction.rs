@@ -84,3 +84,87 @@ fn secrets_never_reach_error_chains() {
         assert_clean(label, &chain.join("\n"));
     }
 }
+
+/// A config as `caddy adapt` would print it after expanding `{$VAR}`
+/// placeholders, with the expanded value in every modeled field.
+const ADAPTED_WITH_TOKEN: &str = r#"{"apps": {"http": {"servers": {
+    "srv-Synthetic-Token-5e1d": {
+        "listen": [":443", "synthetic-token-5e1d.example.test:80"],
+        "routes": [{
+            "group": "g-synthetic-token-5e1d",
+            "match": [{
+                "path": ["/download/synthetic-token-5e1d", "/public/*"],
+                "host": ["synthetic-token-5e1d.example.test"],
+                "synthetic-token-5e1d": {}
+            }],
+            "handle": [
+                {"handler": "synthetic-token-5e1d"},
+                {"handler": "reverse_proxy", "upstreams": [
+                    {"dial": "synthetic-token-5e1d.example.test:8080"},
+                    {"dial": "127.0.0.1:8080"}
+                ]}
+            ]
+        }]
+    }
+}}}}"#;
+
+#[test]
+fn known_substituted_values_never_reach_the_model() {
+    let substitutions = Substitutions::new(["SYNTHETIC-TOKEN-5E1D"]);
+    let config = parse_caddy_config_with(ADAPTED_WITH_TOKEN, &substitutions).expect("valid config");
+    let json = serde_json::to_string(&config).expect("serialize");
+    let printed: Vec<String> = config
+        .uncertainties
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    for (label, text) in [
+        ("Debug", format!("{config:?}")),
+        ("JSON", json),
+        ("Display", printed.join("\n")),
+    ] {
+        assert!(
+            !text.to_lowercase().contains("synthetic-token-5e1d"),
+            "{label} leaks the substituted value: {text}"
+        );
+    }
+
+    let server = &config.servers[0];
+    assert_eq!(server.name, REDACTED);
+    assert_eq!(
+        server.listen.len(),
+        1,
+        "the substituted listen address is left out"
+    );
+    let route = &server.routes[0];
+    assert_eq!(group_label(route), Some(REDACTED));
+    assert!(!route.matchers[0].complete);
+    assert_eq!(
+        route.matchers[0].paths,
+        Some(vec![PathMatcher::Prefix {
+            prefix: "/public/".into()
+        }])
+    );
+    assert_eq!(route.matchers[0].hosts, Some(Vec::new()));
+    let upstreams = &proxy(&route.handlers[1]).upstreams;
+    assert_eq!(upstreams, &[socket(Ipv4Addr::LOCALHOST, 8080)]);
+
+    let substituted: Vec<&str> = config
+        .uncertainties
+        .iter()
+        .filter(|u| u.kind == UncertaintyKind::SubstitutedValue)
+        .map(|u| u.construct.as_str())
+        .collect();
+    assert_eq!(substituted, ["listen", "host", "path", "dial"]);
+}
+
+#[test]
+fn without_substitutions_the_same_config_is_kept_as_written() {
+    let config = parse(ADAPTED_WITH_TOKEN);
+    let route = &config.servers[0].routes[0];
+    assert_eq!(
+        route.matchers[0].paths.as_ref().map(Vec::len),
+        Some(2),
+        "nothing marks a literal path as substituted"
+    );
+}
