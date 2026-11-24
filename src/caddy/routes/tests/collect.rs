@@ -6,8 +6,11 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use super::super::collect::{CADDY_PATHS, Program, locate, read_source};
+use std::path::Path;
+
+use super::super::collect::read_source;
 use super::super::error::classify_adapt_error;
+use super::super::program::{CADDY_PATHS, Program, locate, only_root_can_replace};
 use super::super::source::ConfigSource;
 use super::*;
 use crate::caddy::MAX_INPUT_BYTES;
@@ -71,6 +74,49 @@ fn a_caddyfile_is_adapted_and_checked_for_environment_placeholders() {
     })
     .expect("read");
     assert!(!plain.env_placeholders);
+    assert!(!plain.file_imports);
+
+    let imported = read_source(&caddyfile(), &file("import sites/*\n"), |_| {
+        Ok("{}".to_owned())
+    })
+    .expect("read");
+    assert!(imported.file_imports);
+}
+
+#[test]
+fn caddy_and_every_directory_above_it_must_be_root_owned_and_not_shared() {
+    let tree = |uid_of: fn(&Path) -> u32, mode_of: fn(&Path) -> u32| {
+        only_root_can_replace(Path::new("/usr/bin/caddy"), |part| {
+            Some((uid_of(part), mode_of(part)))
+        })
+    };
+    assert!(tree(|_| 0, |_| 0o755));
+    assert!(!tree(
+        |_| 0,
+        |part| if part == Path::new("/usr") {
+            0o777
+        } else {
+            0o755
+        }
+    ));
+    assert!(!tree(
+        |_| 0,
+        |part| if part == Path::new("/usr/bin") {
+            0o775
+        } else {
+            0o755
+        }
+    ));
+    assert!(!tree(
+        |part| u32::from(part == Path::new("/usr/bin/caddy")) * 1001,
+        |_| 0o755
+    ));
+    assert!(!only_root_can_replace(Path::new("/usr/bin/caddy"), |_| {
+        None
+    }));
+    assert!(!only_root_can_replace(Path::new("caddy"), |_| Some((
+        0, 0o755
+    ))));
 }
 
 #[test]
@@ -139,12 +185,12 @@ fn paths_in_errors_are_sanitized() {
 fn caddy_runs_only_from_a_trusted_fixed_path() {
     let found = locate(&CADDY_PATHS, |path| {
         if path == "/usr/local/bin/caddy" {
-            Program::Trusted
+            Program::Trusted("/opt/caddy/bin/caddy".to_owned())
         } else {
             Program::Missing
         }
     });
-    assert_eq!(found.expect("found"), "/usr/local/bin/caddy");
+    assert_eq!(found.expect("found"), "/opt/caddy/bin/caddy");
 
     let untrusted = locate(&CADDY_PATHS, |_| Program::Untrusted).expect_err("untrusted");
     assert!(

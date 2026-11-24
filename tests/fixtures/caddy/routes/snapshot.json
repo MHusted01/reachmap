@@ -61,6 +61,7 @@
             "hosts_skipped": false
           },
           "http3": true,
+          "tcp": true,
           "tls_policies": [
             {
               "scoped": false,

@@ -93,6 +93,10 @@ pub struct CaddyServer {
     /// Whether HTTP/3 is enabled (`protocols` unset or holding `h3`). Caddy
     /// then also listens on UDP on the ports where it serves TLS.
     pub http3: bool,
+    /// Whether Caddy opens TCP listeners for this server: `protocols` is
+    /// unset or empty, or holds `h1`, `h2` or `h2c`. An HTTP/3-only server
+    /// listens on UDP alone.
+    pub tcp: bool,
     /// One entry per `tls_connection_policies` item.
     pub tls_policies: Vec<TlsPolicy>,
     /// Top-level routes in configuration order.

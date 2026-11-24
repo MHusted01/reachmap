@@ -472,6 +472,10 @@ fn http3_defaults_apply_to_empty_protocols_and_listener_overrides_are_uncertain(
         config.servers[0].http3,
         "an empty list means the default set"
     );
+    assert!(
+        config.servers[0].tcp,
+        "the default set includes TCP protocols"
+    );
     let at = format!("{SERVER_AT}.listen_protocols");
     assert_eq!(
         listed(&config),
@@ -587,4 +591,18 @@ fn zero_app_ports_mean_the_defaults() {
         (config.http_port, config.https_port),
         (Some(DEFAULT_HTTP_PORT), Some(DEFAULT_HTTPS_PORT))
     );
+}
+
+#[test]
+fn only_an_http3_only_server_opens_no_tcp_listener() {
+    let tcp = |protocols: &str| {
+        let config = parse(&with_server(&format!(
+            r#"{{"listen": [":443"], "protocols": {protocols}}}"#
+        )));
+        config.servers[0].tcp
+    };
+    assert!(!tcp(r#"["h3"]"#));
+    assert!(tcp(r#"["h1", "h3"]"#));
+    assert!(tcp(r#"["h2c"]"#));
+    assert!(tcp(r#"["h4"]"#), "an unknown protocol never rules TCP out");
 }

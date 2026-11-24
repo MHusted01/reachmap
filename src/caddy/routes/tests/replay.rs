@@ -137,9 +137,35 @@ fn rejects_evidence_that_breaks_the_report_rules() {
     assert_invalid(|value| value["evidence"]["inventory"] = json!({"status": "unavailable"}));
     assert_invalid(|value| value["evidence"]["config"]["http_port"] = json!(0));
     assert_invalid(|value| {
+        value["evidence"]["inventory"] = json!({"status": "unavailable"});
+        value["evidence"]["collection"] =
+            json!({"status": "partial", "notes": [{"kind": "environment_placeholders"}]});
+        value["evidence"]["source"] = json!("caddyfile");
+    });
+    assert_invalid(|value| {
+        value["evidence"]["config"]["servers"][0]["listen"][3]["ports"] =
+            json!({"first": 9000, "last": 9100});
+    });
+    assert_invalid(|value| {
         value["evidence"]["config"]["servers"][0]["routes"][1]["handlers"][0]["upstreams"][0] =
             json!({"kind": "localhost", "port": 0});
     });
+}
+
+#[test]
+fn a_wide_range_replays_only_with_its_note() {
+    let mut value = fixture();
+    value["evidence"]["config"]["servers"][0]["listen"][3]["ports"] =
+        json!({"first": 9000, "last": 9100});
+    value["evidence"]["inventory"]["listeners"]
+        .as_array_mut()
+        .expect("listeners")
+        .retain(|listener| listener["address"] != "127.0.0.1:9000");
+    value["evidence"]["collection"] = json!({"status": "partial", "notes": [
+        {"kind": "port_range_not_linked", "first": 9000, "last": 9100}
+    ]});
+    let replayed = decode_value(&value).expect("valid");
+    assert!(!replayed.is_complete());
 }
 
 #[test]

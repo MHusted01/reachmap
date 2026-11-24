@@ -70,7 +70,15 @@ fn write_server(
         writeln!(f, "  listen: <none modeled>")?;
     }
     for listen in &server.listen {
-        write_listen(f, listen, inventory)?;
+        if server.tcp {
+            write_listen(f, listen, inventory)?;
+        } else {
+            writeln!(
+                f,
+                "  listen: {} (HTTP/3 only: UDP, not linked)",
+                ListenText(listen)
+            )?;
+        }
     }
     writeln!(
         f,

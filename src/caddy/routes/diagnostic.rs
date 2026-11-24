@@ -18,6 +18,9 @@ pub(super) enum Note {
     /// The Caddyfile uses `{$VAR}` placeholders, expanded with an empty
     /// environment instead of the one the Caddy service runs with.
     EnvironmentPlaceholders {},
+    /// The Caddyfile imports other files, whose `{$VAR}` placeholders were
+    /// not checked.
+    FileImportsNotChecked {},
     /// A listen port range too wide to link port by port.
     PortRangeNotLinked { first: u16, last: u16 },
 }
@@ -33,6 +36,9 @@ impl fmt::Display for Note {
             }
             Self::EnvironmentPlaceholders {} => f.write_str(
                 "the Caddyfile uses {$VAR} environment placeholders, which were adapted with an empty environment; the Caddy service may see other values",
+            ),
+            Self::FileImportsNotChecked {} => f.write_str(
+                "the Caddyfile imports other files, which were not checked for {$VAR} environment placeholders",
             ),
             Self::PortRangeNotLinked { first, last } => write!(
                 f,

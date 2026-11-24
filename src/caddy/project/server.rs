@@ -44,6 +44,7 @@ impl Projector<'_> {
                 .map(automatic_https)
                 .unwrap_or_default(),
             http3: http3(raw.protocols.as_deref()),
+            tcp: tcp(raw.protocols.as_deref()),
             tls_policies,
             routes: self.routes(raw.routes, &at.field("routes"), 0),
         }
@@ -139,6 +140,15 @@ fn automatic_https(raw: &RawAutomaticHttps) -> AutomaticHttps {
         redirects_disabled: raw.disable_redirects,
         hosts_skipped: raw.skip.is_some() || raw.skip_certificates.is_some(),
     }
+}
+
+/// Whether a TCP protocol is on. Caddy's default set includes HTTP/1.1 and
+/// HTTP/2; an unknown entry also counts, so a TCP listener is never ruled out
+/// by a guess.
+fn tcp(protocols: Option<&[String]>) -> bool {
+    protocols.is_none_or(|protocols| {
+        protocols.is_empty() || protocols.iter().any(|protocol| protocol != HTTP3)
+    })
 }
 
 /// Whether HTTP/3 is on: Caddy treats a missing or empty `protocols` list

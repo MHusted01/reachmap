@@ -22,11 +22,13 @@ use self::link::{
 use self::source::Adapted;
 
 mod auth;
+mod caddyfile;
 mod collect;
 mod diagnostic;
 mod error;
 mod format;
 mod link;
+mod program;
 pub mod snapshot;
 mod source;
 
@@ -82,20 +84,46 @@ impl CaddyRouteReport {
         {
             return Err("inconsistent Caddy route collection status");
         }
-        if let Collection::Partial { notes } = &self.collection {
-            if notes.is_empty() {
+        let notes = match &self.collection {
+            Collection::Complete => &[][..],
+            Collection::Partial { notes } if notes.is_empty() => {
                 return Err("expected a reason for the partial Caddy route collection");
             }
-            for note in notes {
-                self.validate_note(note)?;
-            }
+            Collection::Partial { notes } => notes.as_slice(),
+        };
+        for note in notes {
+            self.validate_note(note)?;
         }
+        self.validate_required_notes(notes)?;
         if let TcpEvidence::Collected { listeners } = &self.inventory
             && listeners.iter().any(|listener| {
                 listener.address.port() == 0 || !listener_is_relevant(listener, &self.config)
             })
         {
             return Err("unexpected TCP listener outside the captured Caddy route endpoints");
+        }
+        Ok(())
+    }
+
+    /// The notes live collection always records for this evidence.
+    fn validate_required_notes(&self, notes: &[Note]) -> Result<(), &'static str> {
+        let unavailable_noted = notes
+            .iter()
+            .any(|note| matches!(note, Note::SocketInventoryUnavailable { .. }));
+        if matches!(self.inventory, TcpEvidence::Unavailable) && !unavailable_noted {
+            return Err("expected a note for the unavailable TCP socket inventory");
+        }
+        let unnoted_range = listens(&self.config)
+            .map(|listen| listen.ports())
+            .filter(|ports| linked_ports(*ports).is_none())
+            .any(|ports| {
+                !notes.contains(&Note::PortRangeNotLinked {
+                    first: ports.first(),
+                    last: ports.last(),
+                })
+            });
+        if unnoted_range {
+            return Err("expected a note for each listen port range that is not linked");
         }
         Ok(())
     }
@@ -108,7 +136,9 @@ impl CaddyRouteReport {
             Note::SocketOptionsIncomplete { .. } => {
                 matches!(self.inventory, TcpEvidence::Collected { .. })
             }
-            Note::EnvironmentPlaceholders {} => self.source == SourceKind::Caddyfile,
+            Note::EnvironmentPlaceholders {} | Note::FileImportsNotChecked {} => {
+                self.source == SourceKind::Caddyfile
+            }
             Note::PortRangeNotLinked { first, last } => listens(&self.config).any(|listen| {
                 let ports = listen.ports();
                 (ports.first(), ports.last()) == (*first, *last) && linked_ports(ports).is_none()
@@ -177,6 +207,9 @@ fn collect_with(
     let mut notes = Vec::new();
     if adapted.env_placeholders {
         notes.push(Note::EnvironmentPlaceholders {});
+    }
+    if adapted.file_imports {
+        notes.push(Note::FileImportsNotChecked {});
     }
     notes.extend(
         listens(&config)

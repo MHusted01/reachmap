@@ -64,6 +64,7 @@ pub(super) fn json_source(json: &str) -> Result<Adapted, CaddyScanError> {
         kind: SourceKind::Json,
         json: json.to_owned(),
         env_placeholders: false,
+        file_imports: false,
     })
 }
 
@@ -330,11 +331,17 @@ fn caddyfile_environment_placeholders_make_the_report_partial() {
         kind: SourceKind::Caddyfile,
         json: "{}".to_owned(),
         env_placeholders: true,
+        file_imports: true,
     };
     let report = collect_with(Ok(adapted), || panic!("nothing to link")).expect("report");
     let text = report.to_string();
     assert!(text.starts_with("Caddy routes (Caddyfile on disk, adapted to JSON by `caddy adapt`"));
     assert!(text.contains("{$VAR} environment placeholders"), "{text}");
+    assert!(
+        text.contains("imports other files, which were not checked"),
+        "{text}"
+    );
+    assert_eq!(report.validate(), Ok(()));
     assert!(!report.is_complete());
     assert!(!text.contains("No configured Caddy HTTP servers found."));
 }
@@ -355,4 +362,72 @@ fn route_depth_counts_nested_route_lists() {
     let config = parse_caddy_config_with(&nested, &Substitutions::none()).expect("config");
     assert_eq!(link::route_depth(&config.servers[0].routes), 2);
     assert_eq!(link::route_depth(&[]), 0);
+}
+
+#[test]
+fn auth_of_a_terminal_site_never_reaches_a_later_site() {
+    let json = server(
+        r#"{"listen":[":443"],"routes":[
+              {"match":[{"host":["admin.example.test"]}],"terminal":true,
+               "handle":[{"handler":"subroute","routes":[{"handle":[
+                 {"handler":"authentication","providers":{"http_basic":{}}},
+                 {"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:3001"}]}]}]}]},
+              {"match":[{"host":["app.example.test"]}],"terminal":true,
+               "handle":[{"handler":"subroute","routes":[{"handle":[
+                 {"handler":"reverse_proxy","upstreams":[{"dial":"127.0.0.1:3002"}]}]}]}]}
+            ]}"#,
+    );
+    let text = report(&json, &[]).to_string();
+    let (admin, app) = text.split_once("host app.example.test").expect("two sites");
+    assert!(
+        admin.contains("proxy auth: http_basic; application auth"),
+        "{text}"
+    );
+    assert!(
+        app.contains("proxy auth: none configured; application auth"),
+        "{text}"
+    );
+}
+
+#[test]
+fn only_an_unscoped_first_tls_policy_applies_to_every_connection() {
+    let auth = |policies: &str| {
+        let json = server(&format!(
+            r#"{{"listen":[":443"],"tls_connection_policies":{policies},
+                "routes":[{{"handle":[{{"handler":"reverse_proxy","upstreams":[{{"dial":"127.0.0.1:3000"}}]}}]}}]}}"#
+        ));
+        let text = report(&json, &[]).to_string();
+        text.lines()
+            .find(|line| line.contains("proxy auth:"))
+            .expect("auth line")
+            .trim()
+            .to_owned()
+    };
+    let require = r#"{"client_authentication":{"mode":"require_and_verify"}}"#;
+    let open_sni = r#"{"match":{"sni":["open.example.test"]}}"#;
+    assert_eq!(
+        auth(&format!("[{require}]")),
+        "proxy auth: client certificate required and verified; application auth: unverified"
+    );
+    assert_eq!(
+        auth(&format!("[{open_sni},{require}]")),
+        "proxy auth: client certificate required and verified (some requests only); application auth: unverified"
+    );
+    assert_eq!(
+        auth(&format!("[{{}},{require}]")),
+        "proxy auth: none configured; application auth: unverified"
+    );
+}
+
+#[test]
+fn an_http3_only_server_links_no_tcp_listener() {
+    let json = server(r#"{"listen":[":443"],"protocols":["h3"]}"#);
+    let report = collect_with(json_source(&json), || panic!("nothing to link")).expect("report");
+    let text = report.to_string();
+    assert!(
+        text.contains("  listen: :443 (HTTP/3 only: UDP, not linked)"),
+        "{text}"
+    );
+    assert!(matches!(report.inventory, TcpEvidence::NotNeeded));
+    assert_eq!(report.validate(), Ok(()));
 }

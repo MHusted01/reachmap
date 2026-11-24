@@ -23,9 +23,14 @@ pub(super) fn linked_ports(range: PortRange) -> Option<std::ops::RangeInclusive<
     (range.last() - range.first() < MAX_LINKED_PORTS).then(|| range.first()..=range.last())
 }
 
-/// Every listen address of every server.
+/// Every listen address of every server that opens TCP listeners. The
+/// addresses of an HTTP/3-only server are UDP sockets, which are not linked.
 pub(super) fn listens(config: &CaddyConfig) -> impl Iterator<Item = &ListenAddress> {
-    config.servers.iter().flat_map(|server| &server.listen)
+    config
+        .servers
+        .iter()
+        .filter(|server| server.tcp)
+        .flat_map(|server| &server.listen)
 }
 
 /// Every `reverse_proxy` handler, subroutes included, in configuration order.

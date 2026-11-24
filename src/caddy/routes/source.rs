@@ -89,6 +89,9 @@ pub(in crate::caddy) struct Adapted {
     /// Whether the Caddyfile uses `{$VAR}` environment placeholders, which
     /// were expanded with an empty environment.
     pub(in crate::caddy) env_placeholders: bool,
+    /// Whether the Caddyfile imports other files, which were not checked
+    /// for `{$VAR}` placeholders.
+    pub(in crate::caddy) file_imports: bool,
 }
 
 #[cfg(test)]

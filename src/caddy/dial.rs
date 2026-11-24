@@ -1,7 +1,7 @@
 //! Validated `reverse_proxy` upstream dial targets.
 
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,11 +48,12 @@ impl DialTarget {
         let port = port.and_then(parse_port).ok_or(DialProblem::Invalid)?;
         match classify_host(host) {
             Host::Empty => Err(DialProblem::Invalid),
+            Host::Ip(ip) if !network_allows(network, ip) => Err(DialProblem::Invalid),
             Host::Ip(ip) => Ok(Self::Socket {
                 address: SocketAddr::new(ip, port),
             }),
             Host::Name(name) if name.eq_ignore_ascii_case("localhost") => {
-                Ok(Self::Localhost { port })
+                Ok(localhost(network, port))
             }
             Host::Name(name) => HostName::new(name)
                 .map(|host| Self::Hostname { host, port })
@@ -83,6 +84,30 @@ impl DialTarget {
             Self::Socket { address } => Some(address.ip()),
             Self::Localhost { .. } | Self::Hostname { .. } => None,
         }
+    }
+}
+
+/// Whether a dial on `network` can reach `ip`: `tcp4/` only dials IPv4 and
+/// `tcp6/` only IPv6.
+fn network_allows(network: Network, ip: IpAddr) -> bool {
+    match network {
+        Network::Tcp4 => ip.to_canonical().is_ipv4(),
+        Network::Tcp6 => ip.is_ipv6(),
+        Network::Default | Network::Tcp | Network::Other => true,
+    }
+}
+
+/// `localhost` resolves to the loopback address of the dialed family only.
+fn localhost(network: Network, port: u16) -> DialTarget {
+    let loopback = match network {
+        Network::Tcp4 => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        Network::Tcp6 => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        Network::Default | Network::Tcp | Network::Other => {
+            return DialTarget::Localhost { port };
+        }
+    };
+    DialTarget::Socket {
+        address: SocketAddr::new(loopback, port),
     }
 }
 
@@ -183,6 +208,19 @@ mod tests {
         let remote = dial("tcp/192.0.2.10:8443");
         assert!(!remote.is_loopback());
 
+        assert_eq!(
+            dial("tcp4/localhost:4000"),
+            DialTarget::Socket {
+                address: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 4000)
+            }
+        );
+        assert_eq!(
+            dial("tcp6/localhost:4000"),
+            DialTarget::Socket {
+                address: SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4000)
+            }
+        );
+
         let local = dial("LocalHost:4000");
         assert_eq!(local, DialTarget::Localhost { port: 4000 });
         assert!(local.is_loopback() && local.ip().is_none());
@@ -207,6 +245,8 @@ mod tests {
         assert_eq!(problem("127.0.0.1:8000-8001"), DialProblem::Invalid);
         assert_eq!(problem("\u{1b}[31mhost:80"), DialProblem::Invalid);
         assert_eq!(problem("a..b:80"), DialProblem::Invalid);
+        assert_eq!(problem("tcp4/[::1]:80"), DialProblem::Invalid);
+        assert_eq!(problem("tcp6/127.0.0.1:80"), DialProblem::Invalid);
     }
 
     #[test]
