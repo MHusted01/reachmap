@@ -747,12 +747,12 @@ fn ipv4_wildcard_udp_checks_limited_and_interface_broadcast_destinations() {
 fn populated_child_anchor_changes_verdict_and_names_anchor_in_reason() {
     let mut runner = StubRunner::enabled_default();
     runner.anchor_rules.insert(
-        "com.apple".to_owned(),
-        Ok("scrub in all fragment reassemble\n".to_owned()),
-    );
-    runner.anchor_rules.insert(
         "com.apple/250.ApplicationFirewall".to_owned(),
-        Ok("block drop in quick on en0 inet proto tcp from any to any port = 8080 flags S/SA keep state\n".to_owned()),
+        Ok(concat!(
+            "scrub in all fragment reassemble\n",
+            "block drop in quick on en0 inet proto tcp from any to any port = 8080 flags S/SA keep state\n",
+        )
+        .to_owned()),
     );
     let collected = collect_with(&mut runner).unwrap();
     let ifaces = parse_ifconfig(IFCONFIG_MACOS);
