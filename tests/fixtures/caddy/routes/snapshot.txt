@@ -1,0 +1,23 @@
+Captured Caddy route evidence for example-host at Unix time 1700000000 (seconds since epoch)
+Caddy routes (native JSON config file on disk and local TCP sockets only; whether a running Caddy loaded this configuration (it may not have been reloaded, or may have been changed through its admin API), TCP connectivity, HTTP responses, TLS certificates, and application authentication are unverified)
+HTTP port: 80; HTTPS port: 443
+Server public
+  listen: :443 (TCP listener [::]:443)
+  listen: tcp4/:80 (TCP listener 0.0.0.0:80)
+  listen: tcp6/[::]:8443 (TCP listener [::]:8443)
+  listen: 127.0.0.1:9000-9001
+    port 9000 (TCP listener 127.0.0.1:9000)
+    port 9001 (no matching TCP listener)
+  automatic HTTPS: enabled
+  HTTP/3: enabled (its UDP sockets are not linked)
+  route match all requests
+    authentication: http_basic
+  route match (host app.example.test path /api/*) [terminal]
+    reverse_proxy [upstreams incomplete]
+      upstream 127.0.0.1:3000 (TCP listener 127.0.0.1:3000)
+      upstream localhost:3001 (TCP listener [::1]:3001)
+      upstream 192.0.2.10:8080 (non-loopback upstream (no exact local TCP listener; may be remote))
+      upstream backend.example.test:9000 (host name requires DNS resolution; not linked)
+      proxy auth: client certificate required and verified, http_basic; application auth: unverified
+Configuration uncertainties:
+  host name requiring DNS resolution (`dial`) at apps.http.servers["public"].routes[1].handle[0].upstreams[3].dial

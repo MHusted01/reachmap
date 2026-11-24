@@ -29,6 +29,7 @@ mod location;
 mod matcher;
 mod project;
 mod raw;
+pub mod routes;
 mod substitution;
 
 #[cfg(test)]

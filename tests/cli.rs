@@ -126,6 +126,45 @@ fn scan_help_lists_the_nginx_routes_flag_and_enforces_conflicts() {
     }
 }
 
+#[test]
+fn scan_help_lists_the_caddy_flags_and_enforces_conflicts() {
+    let help = stdout(&run(&["scan", "--help"]));
+    assert!(help.contains("--caddy-routes") && help.contains("--caddy-config"));
+
+    for args in [
+        &["scan", "--caddy-routes", "--json"][..],
+        &["scan", "--caddy-routes", "--nginx-routes"][..],
+        &["scan", "--caddy-routes", "--tailscale-routes"][..],
+    ] {
+        let out = run(args);
+        assert_eq!(out.status.code(), Some(2));
+        assert!(stderr(&out).contains("cannot be used with"));
+    }
+    let out = run(&["scan", "--caddy-config", "/etc/caddy/Caddyfile"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("--caddy-routes"));
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn caddy_collection_and_capture_need_linux() {
+    for args in [
+        &["scan", "--caddy-routes"][..],
+        &[
+            "scan",
+            "--caddy-routes",
+            "--caddy-config",
+            "/srv/caddy.json",
+        ][..],
+        &["scan", "--caddy-routes", "--snapshot", "--host-ref", "test"][..],
+    ] {
+        let out = run(args);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(stderr(&out).contains("Linux"), "{}", stderr(&out));
+        assert!(stdout(&out).is_empty());
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 #[test]
 fn nginx_capture_accepts_snapshot_flags_but_needs_linux() {
@@ -442,6 +481,8 @@ fn scan_of(rows: &[String]) -> String {
     )
 }
 
+#[path = "cli/caddy_snapshot.rs"]
+mod caddy_snapshot;
 #[path = "cli/host_input_snapshot.rs"]
 mod host_input_snapshot;
 #[path = "cli/inbound_path.rs"]

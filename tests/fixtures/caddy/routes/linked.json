@@ -1,0 +1,43 @@
+{
+  "apps": {
+    "http": {
+      "servers": {
+        "public": {
+          "listen": [":443", "tcp4/:80", "tcp6/[::]:8443", "127.0.0.1:9000-9001"],
+          "tls_connection_policies": [
+            { "client_authentication": { "mode": "require_and_verify" } }
+          ],
+          "routes": [
+            {
+              "handle": [
+                {
+                  "handler": "authentication",
+                  "providers": {
+                    "http_basic": {
+                      "accounts": [{ "username": "admin", "password": "hash-value" }]
+                    }
+                  }
+                }
+              ]
+            },
+            {
+              "match": [{ "host": ["app.example.test"], "path": ["/api/*"] }],
+              "handle": [
+                {
+                  "handler": "reverse_proxy",
+                  "upstreams": [
+                    { "dial": "127.0.0.1:3000" },
+                    { "dial": "localhost:3001" },
+                    { "dial": "192.0.2.10:8080" },
+                    { "dial": "backend.example.test:9000" }
+                  ]
+                }
+              ],
+              "terminal": true
+            }
+          ]
+        }
+      }
+    }
+  }
+}

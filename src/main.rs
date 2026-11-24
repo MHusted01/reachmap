@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 use reachmap::baseline::{self, Snapshot};
+use reachmap::caddy::routes::ConfigSource;
 use reachmap::diff::report::{Report as DiffTable, render_json as render_diff_json};
 use reachmap::diff::{Diff, DiffError, IgnoreFilter, compare};
 use reachmap::egress::{self, ContainerRef, ObserverName};
@@ -25,6 +26,7 @@ use reachmap::scan::ScanReport;
 use reachmap::snapshot_replay;
 use reachmap::table::Report;
 
+mod caddy_cli;
 mod nginx_cli;
 mod path_cli;
 mod tailscale_cli;
@@ -63,7 +65,13 @@ enum Command {
         /// Explain configured Nginx reverse proxy routes on Linux
         #[arg(long, conflicts_with_all = ["json", "tailscale_routes"])]
         nginx_routes: bool,
-        /// On Linux, print host-input, Tailscale, or Nginx route evidence as JSON
+        /// Explain configured Caddy reverse proxy routes on Linux
+        #[arg(long, conflicts_with_all = ["json", "tailscale_routes", "nginx_routes"])]
+        caddy_routes: bool,
+        /// With --caddy-routes: a Caddyfile, or a native JSON config ending in .json [default: /etc/caddy/Caddyfile]
+        #[arg(long, value_name = "PATH", requires = "caddy_routes")]
+        caddy_config: Option<ConfigSource>,
+        /// On Linux, print host-input, Tailscale, Nginx, or Caddy route evidence as JSON
         #[arg(long, requires = "host_ref", conflicts_with = "json")]
         snapshot: bool,
         /// A label you choose for the host in the snapshot
@@ -157,6 +165,12 @@ fn main() -> ExitCode {
             host_ref,
             ..
         } => nginx_cli::run(host_ref),
+        Command::Scan {
+            caddy_routes: true,
+            caddy_config,
+            host_ref,
+            ..
+        } => caddy_cli::run(&caddy_config.unwrap_or_default(), host_ref),
         Command::Scan {
             host_ref: Some(host_ref),
             ..
@@ -350,6 +364,13 @@ fn run_replay(path: &Path, json: bool) -> ExitCode {
                 return ExitCode::from(BAD_ARGUMENTS);
             }
             return nginx_cli::write_report(&snapshot, snapshot.is_complete());
+        }
+        Ok(snapshot_replay::Report::CaddyRoutes(snapshot)) => {
+            if json {
+                eprintln!("error: --json is only supported for replaying host-input snapshots");
+                return ExitCode::from(BAD_ARGUMENTS);
+            }
+            return caddy_cli::write_report(&snapshot, snapshot.is_complete());
         }
         Err(error) => {
             let message = format!(
