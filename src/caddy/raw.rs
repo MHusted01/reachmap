@@ -143,13 +143,15 @@ pub(super) enum RawHandler {
     Map {},
     StaticResponse {
         status_code: Option<RawStatusCode>,
+        #[serde(default)]
+        abort: bool,
     },
     FileServer {
         #[serde(default)]
         pass_thru: bool,
     },
     Error {},
-    Headers {},
+    Headers(RawHeaders),
     Encode {},
     RequestBody {},
     Vars {},
@@ -158,6 +160,36 @@ pub(super) enum RawHandler {
     LogAppend {},
     #[serde(other)]
     Unknown,
+}
+
+/// `headers`: only which request headers it changes.
+#[derive(Deserialize)]
+pub(super) struct RawHeaders {
+    pub(super) request: Option<RawHeaderOps>,
+}
+
+/// Request header operations, reduced to the header names they touch.
+#[derive(Deserialize)]
+pub(super) struct RawHeaderOps {
+    #[serde(default)]
+    pub(super) set: BTreeMap<String, IgnoredAny>,
+    #[serde(default)]
+    pub(super) add: BTreeMap<String, IgnoredAny>,
+    #[serde(default)]
+    pub(super) delete: Vec<String>,
+    #[serde(default)]
+    pub(super) replace: BTreeMap<String, IgnoredAny>,
+}
+
+impl RawHeaderOps {
+    /// Whether the operations change `Host`, which later host matchers see.
+    pub(super) fn touches_host(&self) -> bool {
+        let is_host = |name: &str| name.eq_ignore_ascii_case("host");
+        self.set.keys().any(|name| is_host(name))
+            || self.add.keys().any(|name| is_host(name))
+            || self.replace.keys().any(|name| is_host(name))
+            || self.delete.iter().any(|name| is_host(name))
+    }
 }
 
 /// A `static_response` status: Caddy accepts a number or a string, which
@@ -183,25 +215,26 @@ pub(super) struct RawReverseProxy {
 
 impl RawReverseProxy {
     /// Whether the proxy has the shape Caddy's `forward_auth` directive
-    /// adapts to: the request is rewritten to a `GET` for the auth service,
-    /// and one response handler matches only 2xx answers with routes that
+    /// adapts to: the request is rewritten to a `GET` of the auth service's
+    /// URI, and one response handler matches only 2xx answers. Its routes
     /// start with a lone `vars` handler, which lets the original request
-    /// continue down the chain.
+    /// continue down the chain, and the rest only copy headers.
     pub(super) fn is_forward_auth(&self) -> bool {
-        let rewrites_to_get = self
-            .rewrite
-            .as_ref()
-            .is_some_and(|rewrite| rewrite.method.as_deref() == Some("GET"));
+        let rewrites_to_get = self.rewrite.as_ref().is_some_and(|rewrite| {
+            rewrite.method.as_deref() == Some("GET") && rewrite.uri.is_some()
+        });
         let [only] = self.handle_response.as_slice() else {
             return false;
         };
         let only_2xx = only.matcher.as_ref().is_some_and(|matcher| {
             matcher.headers.is_none() && matcher.status_code.as_deref() == Some(&[2])
         });
-        let falls_through = only.routes.first().is_some_and(|route| {
-            matches!(route.handle.as_slice(), [tag] if tag.handler.as_deref() == Some("vars"))
-        });
-        rewrites_to_get && only_2xx && falls_through
+        let Some((first, rest)) = only.routes.split_first() else {
+            return false;
+        };
+        let falls_through = first.handles_only("vars") && first.handle.len() == 1;
+        let copies_headers = rest.iter().all(|route| route.handles_only("headers"));
+        rewrites_to_get && only_2xx && falls_through && copies_headers
     }
 }
 
@@ -209,6 +242,7 @@ impl RawReverseProxy {
 #[derive(Deserialize)]
 pub(super) struct RawProxyRewrite {
     pub(super) method: Option<String>,
+    pub(super) uri: Option<IgnoredAny>,
 }
 
 /// One static upstream.
@@ -234,6 +268,17 @@ pub(super) struct RawResponseRoute {
     pub(super) handle: Vec<RawHandlerTag>,
 }
 
+impl RawResponseRoute {
+    /// Whether the route has handlers, all of type `handler`.
+    fn handles_only(&self, handler: &str) -> bool {
+        !self.handle.is_empty()
+            && self
+                .handle
+                .iter()
+                .all(|tag| tag.handler.as_deref() == Some(handler))
+    }
+}
+
 /// Only the `handler` field of a handler.
 #[derive(Deserialize)]
 pub(super) struct RawHandlerTag {
@@ -252,6 +297,8 @@ pub(super) struct RawResponseMatch {
 pub(super) struct RawTransport {
     pub(super) protocol: Option<String>,
     pub(super) tls: Option<IgnoredAny>,
+    pub(super) network_proxy: Option<IgnoredAny>,
+    pub(super) forward_proxy_url: Option<IgnoredAny>,
 }
 
 /// `subroute`.

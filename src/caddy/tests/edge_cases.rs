@@ -371,29 +371,34 @@ fn strict_sni_host_off_with_client_auth_is_uncertain() {
 }
 
 #[test]
-fn informational_static_responses_pass_the_request_on() {
+fn only_early_hints_without_abort_pass_the_request_on() {
     let config = parse(&with_server(
         r#"{"listen": [":80"], "routes": [{"handle": [
             {"handler": "static_response", "status_code": 103},
             {"handler": "static_response", "status_code": "103"},
+            {"handler": "static_response", "status_code": 103, "abort": true},
+            {"handler": "static_response", "status_code": 101},
             {"handler": "static_response", "status_code": "{http.vars.status}"},
             {"handler": "static_response", "status_code": "soon"},
             {"handler": "static_response", "status_code": 404},
-            {"handler": "static_response"}
+            {"handler": "static_response"},
+            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:3000"}]}
         ]}]}"#,
     ));
     let early = Handler::Middleware {
-        middleware: Middleware::InformationalResponse,
+        middleware: Middleware::EarlyHints,
     };
     let answer = Handler::Respond {
         responder: Responder::StaticResponse,
     };
     let unmodeled = Handler::Unmodeled {};
     assert_eq!(
-        config.servers[0].routes[0].handlers,
+        config.servers[0].routes[0].handlers[..8],
         [
             early.clone(),
             early,
+            answer.clone(),
+            answer.clone(),
             unmodeled.clone(),
             unmodeled,
             answer.clone(),
@@ -401,8 +406,8 @@ fn informational_static_responses_pass_the_request_on() {
         ]
     );
     let handle = format!("{SERVER_AT}.routes[0].handle");
-    let placeholder = format!("{handle}[2].status_code");
-    let malformed = format!("{handle}[3].status_code");
+    let placeholder = format!("{handle}[4].status_code");
+    let malformed = format!("{handle}[5].status_code");
     assert_eq!(
         listed(&config),
         [
@@ -475,5 +480,111 @@ fn http3_defaults_apply_to_empty_protocols_and_listener_overrides_are_uncertain(
             "listen_protocols",
             at.as_str()
         )]
+    );
+}
+
+#[test]
+fn forward_auth_response_routes_may_only_copy_headers() {
+    let config = parse(&with_server(
+        r#"{"listen": [":80"], "routes": [{"handle": [
+            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:1"}],
+             "rewrite": {"method": "GET", "uri": "/verify"},
+             "handle_response": [{"match": {"status_code": [2]}, "routes": [
+                 {"handle": [{"handler": "vars"}]},
+                 {"handle": [{"handler": "reverse_proxy",
+                              "upstreams": [{"dial": "127.0.0.1:2"}]}]}
+             ]}]},
+            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:3"}],
+             "rewrite": {"method": "GET"},
+             "handle_response": [{"match": {"status_code": [2]}, "routes": [
+                 {"handle": [{"handler": "vars"}]}
+             ]}]}
+        ]}]}"#,
+    ));
+    let handlers = &config.servers[0].routes[0].handlers;
+    assert!(handlers.iter().all(|handler| !proxy(handler).forward_auth));
+    assert!(handlers.iter().all(|handler| !proxy(handler).complete));
+}
+
+#[test]
+fn host_rewrites_before_later_routes_are_uncertain() {
+    let config = parse(&with_server(
+        r#"{"listen": [":80"], "routes": [
+            {"handle": [
+                {"handler": "headers", "request": {"set": {"HOST": ["admin.example.test"]}}},
+                {"handler": "headers", "request": {"set": {"X-Trace": ["1"]}}},
+                {"handler": "headers", "response": {"set": {"Host": ["x"]}}},
+                {"handler": "headers", "request": {"delete": ["host"]}}
+            ]},
+            {"match": [{"host": ["admin.example.test"]}], "handle": [
+                {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:9000"}]}
+            ]}
+        ]}"#,
+    ));
+    let handle = format!("{SERVER_AT}.routes[0].handle");
+    let set = format!("{handle}[0].request");
+    let delete = format!("{handle}[3].request");
+    assert_eq!(
+        listed(&config),
+        [
+            (UncertaintyKind::RoutingHandler, "request", set.as_str()),
+            (UncertaintyKind::RoutingHandler, "request", delete.as_str()),
+        ]
+    );
+}
+
+#[test]
+fn proxies_reached_through_an_intermediary_are_incomplete() {
+    let config = parse(&with_server(
+        r#"{"listen": [":80"], "routes": [{"handle": [
+            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:1"}],
+             "transport": {"protocol": "http", "network_proxy": {"from": "url", "url": "http://proxy.example.test:3128"}}},
+            {"handler": "reverse_proxy", "upstreams": [{"dial": "127.0.0.1:2"}],
+             "transport": {"protocol": "http", "forward_proxy_url": "http://proxy.example.test:3128"}}
+        ]}]}"#,
+    ));
+    let handlers = &config.servers[0].routes[0].handlers;
+    assert!(handlers.iter().all(|handler| !proxy(handler).complete));
+    let handle = format!("{SERVER_AT}.routes[0].handle");
+    let network = format!("{handle}[0].transport.network_proxy");
+    let forward = format!("{handle}[1].transport.forward_proxy_url");
+    assert_eq!(
+        listed(&config),
+        [
+            (
+                UncertaintyKind::UnsupportedTransport,
+                "network_proxy",
+                network.as_str()
+            ),
+            (
+                UncertaintyKind::UnsupportedTransport,
+                "forward_proxy_url",
+                forward.as_str()
+            ),
+        ]
+    );
+    let shown = format!("{config:?}");
+    assert!(!shown.contains("proxy.example.test"));
+}
+
+#[test]
+fn empty_group_names_are_ungrouped() {
+    let config = parse(&with_server(
+        r#"{"listen": [":80"], "routes": [{"group": ""}, {"group": ""}]}"#,
+    ));
+    assert!(
+        config.servers[0]
+            .routes
+            .iter()
+            .all(|route| route.group.is_none())
+    );
+}
+
+#[test]
+fn zero_app_ports_mean_the_defaults() {
+    let config = parse(r#"{"apps": {"http": {"http_port": 0, "https_port": 0}}}"#);
+    assert_eq!(
+        (config.http_port, config.https_port),
+        (Some(DEFAULT_HTTP_PORT), Some(DEFAULT_HTTPS_PORT))
     );
 }

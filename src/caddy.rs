@@ -53,10 +53,12 @@ pub const DEFAULT_HTTPS_PORT: u16 = 443;
 /// Routes, listeners and uncertainties extracted from one Caddy JSON config.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaddyConfig {
-    /// Port of the HTTP-to-HTTPS redirects that automatic HTTPS adds.
-    pub http_port: u16,
-    /// Port automatic HTTPS treats as the HTTPS port.
-    pub https_port: u16,
+    /// Port of the HTTP-to-HTTPS redirects that automatic HTTPS adds; `None`
+    /// when the configured value was left out as a known substitution.
+    pub http_port: Option<u16>,
+    /// Port automatic HTTPS treats as the HTTPS port; `None` when the
+    /// configured value was left out as a known substitution.
+    pub https_port: Option<u16>,
     /// Servers of the `http` app, ordered by their configuration key.
     pub servers: Vec<CaddyServer>,
     /// Constructs that could change routing or exposure but are not modeled,
@@ -69,8 +71,8 @@ pub struct CaddyConfig {
 impl Default for CaddyConfig {
     fn default() -> Self {
         Self {
-            http_port: DEFAULT_HTTP_PORT,
-            https_port: DEFAULT_HTTPS_PORT,
+            http_port: Some(DEFAULT_HTTP_PORT),
+            https_port: Some(DEFAULT_HTTPS_PORT),
             servers: Vec::new(),
             uncertainties: Vec::new(),
             uncertainties_omitted: 0,

@@ -168,3 +168,33 @@ fn without_substitutions_the_same_config_is_kept_as_written() {
         "nothing marks a literal path as substituted"
     );
 }
+
+#[test]
+fn substituted_ports_and_short_values_are_left_out() {
+    let json = r#"{"apps": {"http": {"http_port": 48217, "https_port": 8443, "servers": {
+        "s": {"listen": [":443"], "routes": [{"match": [{"path": ["ABC", "/x/abc"]}]}]}
+    }}}}"#;
+    let config =
+        parse_caddy_config_with(json, &Substitutions::new(["48217", "abc"])).expect("valid config");
+    assert_eq!((config.http_port, config.https_port), (None, Some(8443)));
+    let json = serde_json::to_string(&config).expect("serialize");
+    assert!(!json.contains("48217"));
+    assert_eq!(
+        config.servers[0].routes[0].matchers[0].paths,
+        Some(vec![PathMatcher::Exact {
+            path: "/x/abc".into()
+        }]),
+        "a short value only taints a value it equals"
+    );
+    let substituted: Vec<(&str, &str)> = config
+        .uncertainties
+        .iter()
+        .filter(|u| u.kind == UncertaintyKind::SubstitutedValue)
+        .map(|u| (u.construct.as_str(), u.location.as_str()))
+        .collect();
+    let path_at = r#"apps.http.servers["s"].routes[0].match[0].path[0]"#;
+    assert_eq!(
+        substituted,
+        [("path", path_at), ("http_port", "apps.http.http_port")]
+    );
+}

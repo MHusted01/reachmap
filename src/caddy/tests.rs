@@ -54,7 +54,10 @@ fn listed(config: &CaddyConfig) -> Vec<(UncertaintyKind, &str, &str)> {
 #[test]
 fn parses_servers_listeners_and_tls_policies() {
     let config = parse(SERVERS);
-    assert_eq!((config.http_port, config.https_port), (8080, 8443));
+    assert_eq!(
+        (config.http_port, config.https_port),
+        (Some(8080), Some(8443))
+    );
     let names: Vec<_> = config.servers.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["edge", "internal"]);
 
@@ -357,4 +360,54 @@ fn serialized_model_matches_the_pinned_contract() {
     let pinned: serde_json::Value = serde_json::from_str(SERVERS_MODEL).expect("pinned JSON");
     let actual = serde_json::to_value(parse(SERVERS)).expect("serialize");
     assert_eq!(actual, pinned);
+}
+
+#[test]
+fn enum_tags_are_pinned() {
+    use serde_json::json;
+    let pinned = [
+        (
+            serde_json::to_value(Handler::Middleware {
+                middleware: Middleware::EarlyHints,
+            }),
+            json!({"kind": "middleware", "middleware": "early_hints"}),
+        ),
+        (
+            serde_json::to_value(Uncertainty {
+                kind: UncertaintyKind::SubstitutedValue,
+                construct: "dial".into(),
+                location: "apps".into(),
+            }),
+            json!({"kind": "substituted_value", "construct": "dial", "location": "apps"}),
+        ),
+    ];
+    for (actual, expected) in pinned {
+        assert_eq!(actual.expect("serialize"), expected);
+    }
+    use UncertaintyKind::*;
+    let kinds = [
+        (Placeholder, "placeholder"),
+        (UnmodeledMatcher, "unmodeled_matcher"),
+        (UnsupportedPattern, "unsupported_pattern"),
+        (RoutingHandler, "routing_handler"),
+        (UnknownHandler, "unknown_handler"),
+        (DynamicUpstreams, "dynamic_upstreams"),
+        (UnsupportedTransport, "unsupported_transport"),
+        (UnresolvedHost, "unresolved_host"),
+        (ImplicitListen, "implicit_listen"),
+        (UnmodeledApp, "unmodeled_app"),
+        (UnmodeledServerFeature, "unmodeled_server_feature"),
+        (UnmodeledAuthProvider, "unmodeled_auth_provider"),
+        (UnknownClientAuthMode, "unknown_client_auth_mode"),
+        (ClientCertificateVerifier, "client_certificate_verifier"),
+        (ConditionalFallthrough, "conditional_fallthrough"),
+        (ResponseHandling, "response_handling"),
+        (SubstitutedValue, "substituted_value"),
+        (NestingTooDeep, "nesting_too_deep"),
+        (Malformed, "malformed"),
+    ];
+    for (kind, tag) in kinds {
+        assert_eq!(serde_json::to_value(kind).expect("serialize"), json!(tag));
+        assert!(!kind.to_string().is_empty());
+    }
 }

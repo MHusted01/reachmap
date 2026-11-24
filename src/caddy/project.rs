@@ -151,7 +151,8 @@ impl Projector<'_> {
             self.note(UncertaintyKind::UnmodeledApp, name, &at);
         }
         let http = http.unwrap_or_default();
-        let servers_at = apps_at.field("http").field("servers");
+        let http_at = apps_at.field("http");
+        let servers_at = http_at.field("servers");
         let servers = http
             .servers
             .into_iter()
@@ -161,12 +162,23 @@ impl Projector<'_> {
             })
             .collect();
         CaddyConfig {
-            http_port: http.http_port.unwrap_or(DEFAULT_HTTP_PORT),
-            https_port: http.https_port.unwrap_or(DEFAULT_HTTPS_PORT),
+            http_port: self.port(http.http_port, DEFAULT_HTTP_PORT, "http_port", &http_at),
+            https_port: self.port(http.https_port, DEFAULT_HTTPS_PORT, "https_port", &http_at),
             servers,
             uncertainties: self.uncertainties,
             uncertainties_omitted: self.omitted,
         }
+    }
+
+    /// An app-level port: Caddy treats 0 like a missing value. A port that
+    /// is a known substitution is left out.
+    fn port(&mut self, raw: Option<u16>, default: u16, field: &str, app: &JsonPath) -> Option<u16> {
+        let port = raw.filter(|&port| port != 0);
+        if port.is_some_and(|port| self.substitutions.taints_number(port)) {
+            self.note(UncertaintyKind::SubstitutedValue, field, &app.field(field));
+            return None;
+        }
+        Some(port.unwrap_or(default))
     }
 
     fn routes(&mut self, raw: Vec<RawRoute>, at: &JsonPath, depth: usize) -> Vec<Route> {
@@ -192,7 +204,11 @@ impl Projector<'_> {
             .map(|(index, handler)| self.handler(handler, &handle_at.index(index), depth))
             .collect();
         Route {
-            group: raw.group.as_deref().map(|name| self.group(name)),
+            group: raw
+                .group
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .map(|name| self.group(name)),
             matchers,
             handlers,
             terminal: raw.terminal,

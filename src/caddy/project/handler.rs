@@ -6,7 +6,8 @@ use super::{MAX_ROUTE_DEPTH, Projector};
 use crate::caddy::dial::DialTarget;
 use crate::caddy::location::JsonPath;
 use crate::caddy::raw::{
-    RawAuthentication, RawHandler, RawReverseProxy, RawStatusCode, RawSubroute, RawUpstream,
+    RawAuthentication, RawHandler, RawReverseProxy, RawStatusCode, RawSubroute, RawTransport,
+    RawUpstream,
 };
 use crate::caddy::{Handler, Middleware, Responder, ReverseProxy, UncertaintyKind};
 
@@ -16,9 +17,9 @@ const UNNAMED_HANDLER: &str = "handler";
 /// The only `reverse_proxy` transport the model follows.
 const HTTP_TRANSPORT: &str = "http";
 
-/// Informational status codes, which Caddy sends before passing the request
-/// on to the next handler.
-const INFORMATIONAL: std::ops::RangeInclusive<u16> = 100..=199;
+/// `103 Early Hints`, the only status Caddy sends before passing the
+/// request on to the next handler.
+const EARLY_HINTS: u16 = 103;
 
 impl Projector<'_> {
     /// Projects one element of a route's `handle` list. The handler name is
@@ -43,7 +44,9 @@ impl Projector<'_> {
                 self.note(UncertaintyKind::RoutingHandler, &name, at);
                 Handler::Unmodeled {}
             }
-            RawHandler::StaticResponse { status_code } => self.static_response(status_code, at),
+            RawHandler::StaticResponse { status_code, abort } => {
+                self.static_response(status_code, abort, at)
+            }
             RawHandler::FileServer { pass_thru: false } => respond(Responder::FileServer),
             RawHandler::FileServer { pass_thru: true } => {
                 let kind = UncertaintyKind::ConditionalFallthrough;
@@ -51,7 +54,13 @@ impl Projector<'_> {
                 Handler::Unmodeled {}
             }
             RawHandler::Error {} => respond(Responder::Error),
-            RawHandler::Headers {} => middleware(Middleware::Headers),
+            RawHandler::Headers(headers) => {
+                if headers.request.is_some_and(|ops| ops.touches_host()) {
+                    let kind = UncertaintyKind::RoutingHandler;
+                    self.note(kind, "request", &at.field("request"));
+                }
+                middleware(Middleware::Headers)
+            }
             RawHandler::Encode {} => middleware(Middleware::Encode),
             RawHandler::RequestBody {} => middleware(Middleware::RequestBody),
             RawHandler::Vars {} => middleware(Middleware::Vars),
@@ -81,9 +90,14 @@ impl Projector<'_> {
         }
     }
 
-    /// A `static_response` ends the chain, except with a 1xx status, which
-    /// Caddy sends before passing the request on.
-    fn static_response(&mut self, status: Option<RawStatusCode>, at: &JsonPath) -> Handler {
+    /// A `static_response` ends the chain, except `103 Early Hints` without
+    /// `abort`, which Caddy sends before passing the request on.
+    fn static_response(
+        &mut self,
+        status: Option<RawStatusCode>,
+        abort: bool,
+        at: &JsonPath,
+    ) -> Handler {
         let status_at = at.field("status_code");
         let code = match status {
             None => None,
@@ -101,8 +115,8 @@ impl Projector<'_> {
             }
         };
         match code {
-            Some(code) if INFORMATIONAL.contains(&code) => Handler::Middleware {
-                middleware: Middleware::InformationalResponse,
+            Some(EARLY_HINTS) if !abort => Handler::Middleware {
+                middleware: Middleware::EarlyHints,
             },
             _ => Handler::Respond {
                 responder: Responder::StaticResponse,
@@ -145,20 +159,7 @@ impl Projector<'_> {
         let tls = raw
             .transport
             .as_ref()
-            .is_some_and(|transport| transport.tls.is_some());
-        let other_protocol = raw
-            .transport
-            .as_ref()
-            .and_then(|transport| transport.protocol.as_deref())
-            .is_some_and(|protocol| protocol != HTTP_TRANSPORT);
-        if other_protocol {
-            let protocol_at = at.field("transport").field("protocol");
-            self.note(
-                UncertaintyKind::UnsupportedTransport,
-                "protocol",
-                &protocol_at,
-            );
-        }
+            .is_some_and(|transport| self.transport(transport, &at.field("transport")));
         let upstreams_at = at.field("upstreams");
         let upstreams = raw
             .upstreams
@@ -172,6 +173,34 @@ impl Projector<'_> {
             tls,
             forward_auth,
         }
+    }
+
+    /// Notes what makes the transport differ from a direct HTTP connection to
+    /// the upstream, and says whether it speaks TLS.
+    fn transport(&mut self, raw: &RawTransport, at: &JsonPath) -> bool {
+        if raw
+            .protocol
+            .as_deref()
+            .is_some_and(|protocol| protocol != HTTP_TRANSPORT)
+        {
+            self.note(
+                UncertaintyKind::UnsupportedTransport,
+                "protocol",
+                &at.field("protocol"),
+            );
+        }
+        let proxies = [
+            ("network_proxy", raw.network_proxy.is_some()),
+            ("forward_proxy_url", raw.forward_proxy_url.is_some()),
+        ];
+        for (field, _) in proxies.into_iter().filter(|(_, present)| *present) {
+            self.note(
+                UncertaintyKind::UnsupportedTransport,
+                field,
+                &at.field(field),
+            );
+        }
+        raw.tls.is_some()
     }
 
     /// A static upstream; a host name is kept but noted, as it needs DNS.

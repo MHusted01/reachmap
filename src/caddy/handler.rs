@@ -82,7 +82,7 @@ pub enum Middleware {
     Tracing,
     /// `log_append`.
     LogAppend,
-    /// `static_response` with a 1xx status such as `103 Early Hints`, which
+    /// `static_response` with status `103 Early Hints` and no `abort`, which
     /// Caddy sends before passing the request on.
-    InformationalResponse,
+    EarlyHints,
 }
