@@ -33,6 +33,7 @@ pub mod nginx;
 pub mod parse;
 pub mod pf;
 pub mod probe;
+pub mod proxy_audit;
 pub mod reach;
 pub mod sanitize;
 pub mod scan;

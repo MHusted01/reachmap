@@ -1,10 +1,8 @@
 //! Scoped offline correlation across configured Nginx routes, TCP connectivity,
 //! HTTP observations, local backend listeners, and proxy-layer authentication.
 
-use std::num::NonZeroU64;
-
 use crate::nginx::AuthSignals;
-use crate::probe::Outcome;
+use crate::proxy_audit::{ProxyAuth, check_provenance, correlate_layers, tcp_layer};
 
 use self::backend::{evaluate_backend, evaluate_frontend_listener};
 use self::match_route::{RouteMatchError, resolve_location, resolve_server};
@@ -18,12 +16,12 @@ mod tests;
 mod tests_matching;
 mod types;
 
-pub use self::backend::{BackendEvidence, BackendUncertainty, ListenerEvidence};
+pub use self::backend::{BackendEvidence, BackendUncertainty};
 pub use self::outcome::{Comparison, Gap};
-pub use self::types::{
-    ApplicationAuthStatus, AuthEvidence, Capture, ConfiguredRouteEvidence, HttpObservation,
-    HttpOutcome, InboundTcpVerdict, ProxyAuthIndicator, Report, Scope, TcpLayerEvidence,
-    TcpLayerState, TcpObservation, TlsStatus,
+pub use self::types::{AuthEvidence, Capture, ConfiguredRouteEvidence, Report};
+pub use crate::proxy_audit::{
+    ApplicationAuthStatus, HttpObservation, HttpOutcome, InboundTcpVerdict, ListenerEvidence,
+    ProxyAuthIndicator, Scope, TcpLayerEvidence, TcpLayerState, TcpObservation, TlsStatus,
 };
 
 /// Correlates one captured Nginx route snapshot with one scoped client HTTP observation.
@@ -94,7 +92,7 @@ pub fn correlate<'a>(
         }
     }
 
-    let tcp = build_tcp_layer(observation.and_then(|obs| obs.tcp));
+    let tcp = tcp_layer(observation.and_then(|obs| obs.tcp));
     let comparison = compare(
         capture,
         valid_capture.is_some(),
@@ -143,39 +141,6 @@ fn proxy_auth_configured(auth: AuthSignals) -> bool {
         || auth.access_control
 }
 
-fn build_tcp_layer(tcp: Option<TcpObservation<'_>>) -> TcpLayerEvidence<'_> {
-    let state = match tcp {
-        Some(obs) if matches!(obs.handshake, Some(Outcome::Failed { .. })) => {
-            TcpLayerState::ProbeFailed
-        }
-        Some(obs)
-            if matches!(
-                obs.handshake,
-                Some(Outcome::Closed | Outcome::NoAnswer | Outcome::Unreachable)
-            ) || matches!(
-                obs.inbound_path_verdict,
-                Some(InboundTcpVerdict::Blocked | InboundTcpVerdict::NoListener)
-            ) =>
-        {
-            TcpLayerState::BlockedOrClosed
-        }
-        Some(obs)
-            if matches!(obs.handshake, Some(Outcome::Open))
-                || matches!(
-                    obs.inbound_path_verdict,
-                    Some(InboundTcpVerdict::ListenerReachable)
-                ) =>
-        {
-            TcpLayerState::ReachableObservedOrPredicted
-        }
-        _ => TcpLayerState::NotSeparatelyObserved,
-    };
-    TcpLayerEvidence {
-        observation: tcp,
-        state,
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn compare(
     capture: Option<Capture<'_>>,
@@ -196,10 +161,10 @@ fn compare(
     if !observation_valid {
         return Err(Gap::InvalidObservation);
     }
-    match_scope(capture.scope, observation.scope)?;
-    check_age(
-        capture.snapshot.captured_at_unix_seconds(),
+    check_provenance(
+        capture.scope,
         &observation,
+        capture.snapshot.captured_at_unix_seconds(),
         max_age,
     )?;
 
@@ -223,158 +188,15 @@ fn compare(
     let backend = backend.ok_or(Gap::BackendUnverified)?;
     let auth = auth.ok_or(Gap::UnverifiedApplicationPolicy)?;
 
-    if observation.tls_status == TlsStatus::HandshakeFailed {
-        return Err(Gap::TlsHandshakeFailed);
-    }
-    if let Some(tcp) = observation.tcp
-        && matches!(tcp.handshake, Some(Outcome::Failed { .. }))
-    {
-        return Err(Gap::TcpProbeFailed);
-    }
-    match route.frontend_listener {
-        ListenerEvidence::Matched { .. } => {}
-        ListenerEvidence::Missing {} => {
-            if observation.outcome.received_response() {
-                return Ok(Comparison::Disagrees {});
-            }
-            return Err(Gap::NoResponseInconclusive);
-        }
-        ListenerEvidence::Ambiguous {}
-        | ListenerEvidence::UncertainOptions {}
-        | ListenerEvidence::InventoryUnavailable {} => {
-            return Err(Gap::FrontendListenerUncertain);
-        }
-    }
-
-    if !observation.outcome.received_response() {
-        return Err(Gap::NoResponseInconclusive);
-    }
-
-    if let Some(tcp) = observation.tcp
-        && (matches!(
-            tcp.handshake,
-            Some(Outcome::Closed | Outcome::NoAnswer | Outcome::Unreachable)
-        ) || matches!(
-            tcp.inbound_path_verdict,
-            Some(InboundTcpVerdict::Blocked | InboundTcpVerdict::NoListener)
-        ))
-    {
-        return Ok(Comparison::Disagrees {});
-    }
-
-    correlate_http_layer(&observation, backend, auth)
-}
-
-fn correlate_http_layer(
-    observation: &HttpObservation<'_>,
-    backend: &BackendEvidence,
-    auth: &AuthEvidence,
-) -> Result<Comparison, Gap> {
-    let proxy_auth = auth.indicator;
-    match (observation.outcome, backend, proxy_auth) {
-        (HttpOutcome::NoResponse {}, _, _) => Err(Gap::NoResponseInconclusive),
-        (HttpOutcome::AuthRejected { .. }, _, ProxyAuthIndicator::Configured) => {
-            Ok(Comparison::Consistent {})
-        }
-        (
-            HttpOutcome::AuthRejected { .. },
-            BackendEvidence::LocalTcpAbsent {},
-            ProxyAuthIndicator::NoneConfigured,
-        ) => Ok(Comparison::Disagrees {}),
-        (HttpOutcome::AuthRejected { .. }, _, ProxyAuthIndicator::NoneConfigured) => {
-            Err(Gap::UnverifiedApplicationPolicy)
-        }
-        (HttpOutcome::GatewayError { .. }, BackendEvidence::LocalTcpAbsent {}, _) => {
-            Ok(Comparison::Consistent {})
-        }
-        (HttpOutcome::GatewayError { .. }, BackendEvidence::LocalTcpPresent { .. }, _) => {
-            Err(Gap::BackendApplicationErrorUnverified)
-        }
-        (HttpOutcome::GatewayError { .. }, BackendEvidence::NoProxyTarget {}, _) => {
-            Ok(Comparison::Disagrees {})
-        }
-        (
-            HttpOutcome::GatewayError { .. },
-            BackendEvidence::NonLocalOrRemote {}
-            | BackendEvidence::UnresolvedHostname {}
-            | BackendEvidence::LocalTcpUncertain { .. }
-            | BackendEvidence::UnsupportedTarget { .. },
-            _,
-        ) => Err(Gap::BackendUnverified),
-        (HttpOutcome::Success2xx { .. } | HttpOutcome::Redirect3xx { .. }, _, _) => {
-            if auth.proxy_auth.auth_basic == Some(true) {
-                match observation.credentials_presented {
-                    Some(false) => return Ok(Comparison::Disagrees {}),
-                    None => return Err(Gap::ProxyAuthStateUnverified),
-                    Some(true) => {}
-                }
-            }
-            match backend {
-                BackendEvidence::LocalTcpAbsent {} => {
-                    if matches!(observation.outcome, HttpOutcome::Success2xx { .. }) {
-                        Ok(Comparison::Disagrees {})
-                    } else {
-                        Err(Gap::HttpStatusInconclusive)
-                    }
-                }
-                BackendEvidence::LocalTcpPresent { .. } | BackendEvidence::NoProxyTarget {} => {
-                    Ok(Comparison::Consistent {})
-                }
-                BackendEvidence::NonLocalOrRemote {}
-                | BackendEvidence::UnresolvedHostname {}
-                | BackendEvidence::LocalTcpUncertain { .. }
-                | BackendEvidence::UnsupportedTarget { .. } => Err(Gap::BackendUnverified),
-            }
-        }
-        (HttpOutcome::NotFound404 {}, BackendEvidence::LocalTcpAbsent {}, _) => {
-            Ok(Comparison::Disagrees {})
-        }
-        (
-            HttpOutcome::NotFound404 {},
-            BackendEvidence::LocalTcpPresent { .. } | BackendEvidence::NoProxyTarget {},
-            _,
-        ) => Ok(Comparison::Consistent {}),
-        (
-            HttpOutcome::NotFound404 {},
-            BackendEvidence::NonLocalOrRemote {}
-            | BackendEvidence::UnresolvedHostname {}
-            | BackendEvidence::LocalTcpUncertain { .. }
-            | BackendEvidence::UnsupportedTarget { .. },
-            _,
-        ) => Err(Gap::BackendUnverified),
-        (HttpOutcome::OtherStatus { .. }, _, _) => Err(Gap::HttpStatusInconclusive),
-    }
-}
-
-fn match_scope(capture: Option<Scope<'_>>, observation: Option<Scope<'_>>) -> Result<(), Gap> {
-    let capture = capture
-        .filter(Scope::is_known)
-        .ok_or(Gap::CaptureScopeMissing)?;
-    let observation = observation
-        .filter(Scope::is_known)
-        .ok_or(Gap::ObservationScopeMissing)?;
-    if capture.collector_identity != observation.collector_identity {
-        return Err(Gap::CollectorMismatch);
-    }
-    if capture.network_context != observation.network_context {
-        return Err(Gap::NetworkMismatch);
-    }
-    Ok(())
-}
-
-fn check_age(captured_at: u64, observation: &HttpObservation<'_>, max_age: u64) -> Result<(), Gap> {
-    let missing = Gap::CaptureOrProbeTimeMissing;
-    let captured_at = NonZeroU64::new(captured_at).ok_or(missing)?.get();
-    let started_at = observation.started_at_unix_seconds.ok_or(missing)?.get();
-    let finished_at = observation.finished_at_unix_seconds.ok_or(missing)?.get();
-    if captured_at > started_at {
-        return Err(Gap::CaptureAfterProbe);
-    }
-    if started_at > finished_at {
-        return Err(Gap::ProbeTimeReversed);
-    }
-    if finished_at - captured_at > max_age {
-        return Err(Gap::CaptureStale);
-    }
-    Ok(())
+    let proxy_auth = ProxyAuth {
+        indicator: auth.indicator,
+        basic_credentials_required: auth.proxy_auth.auth_basic == Some(true),
+    };
+    correlate_layers(
+        &observation,
+        route.frontend_listener,
+        backend.state(),
+        proxy_auth,
+    )
+    .map_err(Gap::from)
 }

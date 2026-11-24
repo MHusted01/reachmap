@@ -3,20 +3,10 @@
 use serde::Serialize;
 use thiserror::Error;
 
-/// How the five evidence layers correlate within the audited scope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum Comparison {
-    /// The HTTP observation, configured route, TCP evidence, backend listener, and proxy auth agree within scope.
-    Consistent {},
-    /// One or more evidence layers directly disagree (for example, HTTP succeeded when no backend listener exists).
-    Disagrees {},
-    /// Insufficient, stale, mismatched, or uncertain evidence prevents a conclusive correlation.
-    Unavailable {
-        /// First evidence gap preventing correlation.
-        reason: Gap,
-    },
-}
+use crate::proxy_audit::CommonGap;
+
+/// How the five evidence layers correlate within the audited Nginx scope.
+pub type Comparison = crate::proxy_audit::Comparison<Gap>;
 
 /// The first evidence gap preventing a conclusive Nginx route correlation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Error)]
@@ -116,4 +106,28 @@ pub enum Gap {
         "inspect the backend response directly; the observed HTTP status does not establish route consistency"
     )]
     HttpStatusInconclusive,
+}
+
+impl From<CommonGap> for Gap {
+    fn from(gap: CommonGap) -> Self {
+        match gap {
+            CommonGap::CaptureScopeMissing => Self::CaptureScopeMissing,
+            CommonGap::ObservationScopeMissing => Self::ObservationScopeMissing,
+            CommonGap::CollectorMismatch => Self::CollectorMismatch,
+            CommonGap::NetworkMismatch => Self::NetworkMismatch,
+            CommonGap::CaptureOrProbeTimeMissing => Self::CaptureOrProbeTimeMissing,
+            CommonGap::CaptureAfterProbe => Self::CaptureAfterProbe,
+            CommonGap::ProbeTimeReversed => Self::ProbeTimeReversed,
+            CommonGap::CaptureStale => Self::CaptureStale,
+            CommonGap::TlsHandshakeFailed => Self::TlsHandshakeFailed,
+            CommonGap::TcpProbeFailed => Self::TcpProbeFailed,
+            CommonGap::FrontendListenerUncertain => Self::FrontendListenerUncertain,
+            CommonGap::NoResponseInconclusive => Self::NoResponseInconclusive,
+            CommonGap::ProxyAuthStateUnverified => Self::ProxyAuthStateUnverified,
+            CommonGap::UnverifiedApplicationPolicy => Self::UnverifiedApplicationPolicy,
+            CommonGap::BackendApplicationErrorUnverified => Self::BackendApplicationErrorUnverified,
+            CommonGap::BackendUnverified => Self::BackendUnverified,
+            CommonGap::HttpStatusInconclusive => Self::HttpStatusInconclusive,
+        }
+    }
 }

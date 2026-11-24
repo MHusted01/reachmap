@@ -7,25 +7,7 @@ use serde::Serialize;
 use crate::local_tcp::{TargetMatch, TcpEvidence, match_listeners};
 use crate::nginx::routes::{backend_candidate, listen_candidate};
 use crate::nginx::{ListenEndpoint, NginxConfig, ProxyTarget, UnsupportedProxyReason};
-
-/// Local TCP listener evidence for the matched Nginx frontend `listen` directive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum ListenerEvidence {
-    /// A single local TCP listener can accept traffic for the configured `listen` directive.
-    Matched {
-        /// Bound socket address of the matching local TCP listener.
-        address: SocketAddr,
-    },
-    /// No local TCP listener matched the configured `listen` directive.
-    Missing {},
-    /// Multiple local TCP listeners could accept traffic for the configured `listen` directive.
-    Ambiguous {},
-    /// Socket options (`SO_BINDTODEVICE` or `IPV6_V6ONLY`) were unavailable to confirm the match.
-    UncertainOptions {},
-    /// Local TCP socket inventory was unavailable during capture.
-    InventoryUnavailable {},
-}
+use crate::proxy_audit::{BackendState, ListenerEvidence};
 
 /// Reason local TCP backend listener correlation remained uncertain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -76,6 +58,21 @@ pub enum BackendEvidence {
         /// Why the `proxy_pass` target could not be statically resolved.
         reason: UnsupportedProxyReason,
     },
+}
+
+impl BackendEvidence {
+    /// The backend layer reduced to what the shared decision table needs.
+    pub(super) fn state(&self) -> BackendState {
+        match self {
+            Self::NoProxyTarget {} => BackendState::NoTarget,
+            Self::LocalTcpPresent { .. } => BackendState::Present,
+            Self::LocalTcpAbsent {} => BackendState::Absent,
+            Self::LocalTcpUncertain { .. }
+            | Self::NonLocalOrRemote {}
+            | Self::UnresolvedHostname {}
+            | Self::UnsupportedTarget { .. } => BackendState::Unverified,
+        }
+    }
 }
 
 pub(super) fn evaluate_frontend_listener(
