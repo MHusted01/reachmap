@@ -23,13 +23,14 @@ pub(super) fn linked_ports(range: PortRange) -> Option<std::ops::RangeInclusive<
     (range.last() - range.first() < MAX_LINKED_PORTS).then(|| range.first()..=range.last())
 }
 
-/// Every listen address of every server that opens TCP listeners. The
-/// addresses of an HTTP/3-only server are UDP sockets, which are not linked.
+/// Every listen address of every server whose TCP listeners are known.
+/// Others are not linked: their configuration leaves open whether Caddy
+/// opens a TCP socket there.
 pub(super) fn listens(config: &CaddyConfig) -> impl Iterator<Item = &ListenAddress> {
     config
         .servers
         .iter()
-        .filter(|server| server.tcp)
+        .filter(|server| server.tcp_known)
         .flat_map(|server| &server.listen)
 }
 

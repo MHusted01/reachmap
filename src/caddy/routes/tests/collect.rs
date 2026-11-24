@@ -6,11 +6,12 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::time::Duration;
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use super::super::collect::read_source;
 use super::super::error::classify_adapt_error;
-use super::super::program::{CADDY_PATHS, Program, locate, only_root_can_replace};
+use super::super::program::{CADDY_PATHS, Entry, Program, locate, resolve_trusted};
 use super::super::source::ConfigSource;
 use super::*;
 use crate::caddy::MAX_INPUT_BYTES;
@@ -83,40 +84,99 @@ fn a_caddyfile_is_adapted_and_checked_for_environment_placeholders() {
     assert!(imported.file_imports);
 }
 
-#[test]
-fn caddy_and_every_directory_above_it_must_be_root_owned_and_not_shared() {
-    let tree = |uid_of: fn(&Path) -> u32, mode_of: fn(&Path) -> u32| {
-        only_root_can_replace(Path::new("/usr/bin/caddy"), |part| {
-            Some((uid_of(part), mode_of(part)))
+/// A filesystem of `(path, uid, mode, symlink target)` entries.
+fn tree(entries: &[(&str, u32, u32, Option<&str>)]) -> impl Fn(&Path) -> Option<Entry> {
+    let entries: HashMap<PathBuf, Entry> = entries
+        .iter()
+        .map(|&(path, uid, mode, link)| {
+            let entry = Entry {
+                uid,
+                mode,
+                link: link.map(PathBuf::from),
+            };
+            (PathBuf::from(path), entry)
         })
-    };
-    assert!(tree(|_| 0, |_| 0o755));
-    assert!(!tree(
-        |_| 0,
-        |part| if part == Path::new("/usr") {
-            0o777
-        } else {
-            0o755
-        }
-    ));
-    assert!(!tree(
-        |_| 0,
-        |part| if part == Path::new("/usr/bin") {
-            0o775
-        } else {
-            0o755
-        }
-    ));
-    assert!(!tree(
-        |part| u32::from(part == Path::new("/usr/bin/caddy")) * 1001,
-        |_| 0o755
-    ));
-    assert!(!only_root_can_replace(Path::new("/usr/bin/caddy"), |_| {
-        None
-    }));
-    assert!(!only_root_can_replace(Path::new("caddy"), |_| Some((
-        0, 0o755
-    ))));
+        .collect();
+    move |path| entries.get(path).cloned()
+}
+
+const DIR: u32 = 0o755;
+const LINK: u32 = 0o777;
+
+fn system(
+    extra: &[(&'static str, u32, u32, Option<&'static str>)],
+) -> Vec<(&'static str, u32, u32, Option<&'static str>)> {
+    let mut entries = vec![
+        ("/", 0, DIR, None),
+        ("/usr", 0, DIR, None),
+        ("/usr/bin", 0, DIR, None),
+        ("/usr/bin/caddy", 0, DIR, None),
+        ("/bin", 0, LINK, Some("usr/bin")),
+    ];
+    entries.extend_from_slice(extra);
+    entries
+}
+
+fn resolved(entries: &[(&str, u32, u32, Option<&str>)], path: &str) -> Option<PathBuf> {
+    resolve_trusted(Path::new(path), &tree(entries))
+}
+
+#[test]
+fn caddy_resolves_only_through_paths_only_root_can_change() {
+    let usr_bin = Some(PathBuf::from("/usr/bin/caddy"));
+    assert_eq!(resolved(&system(&[]), "/usr/bin/caddy"), usr_bin);
+    assert_eq!(resolved(&system(&[]), "/bin/caddy"), usr_bin, "merged /usr");
+
+    let shared_dir = system(&[
+        ("/usr/local", 0, DIR, None),
+        ("/usr/local/bin", 0, 0o775, None),
+        ("/usr/local/bin/caddy", 0, LINK, Some("/usr/bin/caddy")),
+    ]);
+    assert_eq!(
+        resolved(&shared_dir, "/usr/local/bin/caddy"),
+        None,
+        "a group-writable directory picks the target"
+    );
+
+    let foreign_link = system(&[
+        ("/usr/local", 0, DIR, None),
+        ("/usr/local/bin", 0, DIR, None),
+        ("/usr/local/bin/caddy", 1001, LINK, Some("/usr/bin/caddy")),
+    ]);
+    assert_eq!(
+        resolved(&foreign_link, "/usr/local/bin/caddy"),
+        None,
+        "a symlink owned by another user"
+    );
+
+    let via_tmp = system(&[
+        ("/usr/local", 0, DIR, None),
+        ("/usr/local/bin", 0, DIR, None),
+        ("/usr/local/bin/caddy", 0, LINK, Some("/tmp/caddy")),
+        ("/tmp", 0, 0o1777, None),
+        ("/tmp/caddy", 0, DIR, None),
+    ]);
+    assert_eq!(
+        resolved(&via_tmp, "/usr/local/bin/caddy"),
+        None,
+        "a hop through a shared directory"
+    );
+
+    let foreign_file = vec![
+        ("/", 0, DIR, None),
+        ("/usr", 0, DIR, None),
+        ("/usr/bin", 0, DIR, None),
+        ("/usr/bin/caddy", 1001, DIR, None),
+    ];
+    assert_eq!(resolved(&foreign_file, "/usr/bin/caddy"), None);
+
+    let looping = system(&[
+        ("/usr/bin/a", 0, LINK, Some("b")),
+        ("/usr/bin/b", 0, LINK, Some("a")),
+    ]);
+    assert_eq!(resolved(&looping, "/usr/bin/a"), None, "symlink loops end");
+    assert_eq!(resolved(&system(&[]), "/usr/bin/missing"), None);
+    assert_eq!(resolved(&system(&[]), "usr/bin/caddy"), None);
 }
 
 #[test]

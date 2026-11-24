@@ -17,15 +17,16 @@ use crate::caddy::{CaddyServer, ClientAuthMode, Handler, Route};
 pub(super) struct AuthContext(BTreeMap<&'static str, bool>);
 
 impl AuthContext {
-    /// The client certificate policies of `server`. Caddy uses the first
-    /// policy that matches a connection, so only an unscoped first policy
-    /// applies to every TLS connection; any other applies to some, and
-    /// policies after an unscoped one are never used.
+    /// The client certificate policies of `server`, in Caddy's first-match
+    /// order: policies after an unscoped one are never used. A policy only
+    /// covers TLS connections, and a server can also take cleartext HTTP on
+    /// some listeners, so a client certificate never counts as covering
+    /// every request.
     pub(super) fn for_server(server: &CaddyServer) -> Self {
         let mut context = Self::default();
-        for (index, policy) in server.tls_policies.iter().enumerate() {
+        for policy in &server.tls_policies {
             if let Some(mode) = policy.client_auth {
-                context.add(client_auth_label(mode), index == 0 && !policy.scoped);
+                context.add(client_auth_label(mode), false);
             }
             if !policy.scoped {
                 break;
@@ -121,10 +122,10 @@ fn always_runs(route: &Route) -> bool {
 
 fn client_auth_label(mode: ClientAuthMode) -> &'static str {
     match mode {
-        ClientAuthMode::Request => "client certificate requested",
-        ClientAuthMode::Require => "client certificate required (not verified)",
-        ClientAuthMode::VerifyIfGiven => "client certificate verified if given",
-        ClientAuthMode::RequireAndVerify => "client certificate required and verified",
-        ClientAuthMode::Implicit => "client certificate (mode chosen by Caddy)",
+        ClientAuthMode::Request => "TLS client certificate requested",
+        ClientAuthMode::Require => "TLS client certificate required (not verified)",
+        ClientAuthMode::VerifyIfGiven => "TLS client certificate verified if given",
+        ClientAuthMode::RequireAndVerify => "TLS client certificate required and verified",
+        ClientAuthMode::Implicit => "TLS client certificate (mode chosen by Caddy)",
     }
 }

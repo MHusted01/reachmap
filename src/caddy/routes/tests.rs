@@ -112,7 +112,7 @@ fn links_frontends_and_upstreams_and_keeps_auth_layers_apart() {
         "      upstream localhost:3001 (TCP listener [::1]:3001)",
         "      upstream 192.0.2.10:8080 (non-loopback upstream (no exact local TCP listener; may be remote))",
         "      upstream backend.example.test:9000 (host name requires DNS resolution; not linked)",
-        "      proxy auth: client certificate required and verified, http_basic; application auth: unverified",
+        "      proxy auth: TLS client certificate required and verified (some requests only), http_basic; application auth: unverified",
         "Configuration uncertainties:",
     ] {
         assert!(text.contains(line), "missing {line:?} in:\n{text}");
@@ -229,7 +229,7 @@ fn auth_from_earlier_routes_and_scoped_policies_is_conditional() {
             ]}"#,
     );
     let text = report(&json, &[]).to_string();
-    let conditional = "client certificate requested (some requests only)";
+    let conditional = "TLS client certificate requested (some requests only)";
     assert!(
         text.contains(&format!(
             "    reverse_proxy [forward_auth]\n      upstream 127.0.0.1:9091 (no matching TCP listener)\n      proxy auth: {conditional}, http_basic (some requests only); application auth: unverified"
@@ -390,7 +390,7 @@ fn auth_of_a_terminal_site_never_reaches_a_later_site() {
 }
 
 #[test]
-fn only_an_unscoped_first_tls_policy_applies_to_every_connection() {
+fn tls_client_certificates_follow_first_match_order_and_never_cover_every_request() {
     let auth = |policies: &str| {
         let json = server(&format!(
             r#"{{"listen":[":443"],"tls_connection_policies":{policies},
@@ -405,29 +405,37 @@ fn only_an_unscoped_first_tls_policy_applies_to_every_connection() {
     };
     let require = r#"{"client_authentication":{"mode":"require_and_verify"}}"#;
     let open_sni = r#"{"match":{"sni":["open.example.test"]}}"#;
+    let conditional = "proxy auth: TLS client certificate required and verified (some requests only); application auth: unverified";
     assert_eq!(
         auth(&format!("[{require}]")),
-        "proxy auth: client certificate required and verified; application auth: unverified"
+        conditional,
+        "cleartext listeners are possible"
     );
-    assert_eq!(
-        auth(&format!("[{open_sni},{require}]")),
-        "proxy auth: client certificate required and verified (some requests only); application auth: unverified"
-    );
+    assert_eq!(auth(&format!("[{open_sni},{require}]")), conditional);
     assert_eq!(
         auth(&format!("[{{}},{require}]")),
-        "proxy auth: none configured; application auth: unverified"
+        "proxy auth: none configured; application auth: unverified",
+        "a policy after an unscoped one is never used"
     );
 }
 
 #[test]
-fn an_http3_only_server_links_no_tcp_listener() {
-    let json = server(r#"{"listen":[":443"],"protocols":["h3"]}"#);
-    let report = collect_with(json_source(&json), || panic!("nothing to link")).expect("report");
-    let text = report.to_string();
-    assert!(
-        text.contains("  listen: :443 (HTTP/3 only: UDP, not linked)"),
-        "{text}"
-    );
-    assert!(matches!(report.inventory, TcpEvidence::NotNeeded));
-    assert_eq!(report.validate(), Ok(()));
+fn listens_with_unknown_tcp_state_are_not_linked() {
+    for body in [
+        r#"{"listen":[":443"],"protocols":["h3"]}"#,
+        r#"{"listen":[":443"],"listen_protocols":[["h3"]]}"#,
+    ] {
+        let report =
+            collect_with(json_source(&server(body)), || panic!("nothing to link")).expect("report");
+        let text = report.to_string();
+        assert!(
+            text.contains(
+                "  listen: :443 (not linked: the protocols leave its TCP listener unknown)"
+            ),
+            "{text}"
+        );
+        assert!(matches!(report.inventory, TcpEvidence::NotNeeded));
+        assert!(!report.is_complete(), "an uncertainty names the field");
+        assert_eq!(report.validate(), Ok(()));
+    }
 }

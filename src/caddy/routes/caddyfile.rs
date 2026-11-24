@@ -8,6 +8,7 @@ use std::collections::HashSet;
 /// Anything that is not clearly a snippet import counts as a file import.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) fn imports_files(text: &str) -> bool {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let tokens: Vec<&str> = text
         .lines()
         .flat_map(|line| {
@@ -46,5 +47,9 @@ mod tests {
         assert!(imports_files("(a) {\n}\n:80 {\n\timport \"b\"\n}\n"));
         assert!(imports_files(":80 {\n\timport\n}\n"));
         assert!(imports_files(":80 { import extra.caddy }"));
+        assert!(
+            imports_files("\u{feff}import sites/*\n"),
+            "Caddy strips a byte-order mark"
+        );
     }
 }

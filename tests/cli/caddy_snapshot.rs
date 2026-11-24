@@ -39,7 +39,7 @@ fn replays_captured_caddy_routes_with_frontend_upstream_and_auth_apart() {
         "native JSON config file on disk and local TCP sockets only",
         "  listen: :443 (TCP listener [::]:443)",
         "      upstream 127.0.0.1:3000 (TCP listener 127.0.0.1:3000)",
-        "      proxy auth: client certificate required and verified, http_basic; application auth: unverified",
+        "      proxy auth: TLS client certificate required and verified (some requests only), http_basic; application auth: unverified",
     ] {
         assert!(text.contains(line), "missing {line:?} in:\n{text}");
     }

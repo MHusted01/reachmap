@@ -473,8 +473,8 @@ fn http3_defaults_apply_to_empty_protocols_and_listener_overrides_are_uncertain(
         "an empty list means the default set"
     );
     assert!(
-        config.servers[0].tcp,
-        "the default set includes TCP protocols"
+        !config.servers[0].tcp_known,
+        "listen_protocols may override TCP for some addresses"
     );
     let at = format!("{SERVER_AT}.listen_protocols");
     assert_eq!(
@@ -594,15 +594,20 @@ fn zero_app_ports_mean_the_defaults() {
 }
 
 #[test]
-fn only_an_http3_only_server_opens_no_tcp_listener() {
-    let tcp = |protocols: &str| {
+fn tcp_listeners_are_known_unless_protocols_leave_them_open() {
+    let known = |protocols: &str| {
         let config = parse(&with_server(&format!(
             r#"{{"listen": [":443"], "protocols": {protocols}}}"#
         )));
-        config.servers[0].tcp
+        let noted = config
+            .uncertainties
+            .iter()
+            .any(|uncertainty| uncertainty.construct == "protocols");
+        (config.servers[0].tcp_known, noted)
     };
-    assert!(!tcp(r#"["h3"]"#));
-    assert!(tcp(r#"["h1", "h3"]"#));
-    assert!(tcp(r#"["h2c"]"#));
-    assert!(tcp(r#"["h4"]"#), "an unknown protocol never rules TCP out");
+    assert_eq!(known(r#"["h3"]"#), (false, true));
+    assert_eq!(known(r#"["h1", "h3"]"#), (true, false));
+    assert_eq!(known(r#"["h2c"]"#), (true, false));
+    assert_eq!(known(r#"["h4"]"#), (true, false));
+    assert_eq!(known("[]"), (true, false));
 }

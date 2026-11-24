@@ -1,7 +1,7 @@
 //! Validated `reverse_proxy` upstream dial targets.
 
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 use serde::{Deserialize, Serialize};
 
@@ -52,8 +52,11 @@ impl DialTarget {
             Host::Ip(ip) => Ok(Self::Socket {
                 address: SocketAddr::new(ip, port),
             }),
-            Host::Name(name) if name.eq_ignore_ascii_case("localhost") => {
-                Ok(localhost(network, port))
+            Host::Name(name)
+                if name.eq_ignore_ascii_case("localhost")
+                    && matches!(network, Network::Default | Network::Tcp) =>
+            {
+                Ok(Self::Localhost { port })
             }
             Host::Name(name) => HostName::new(name)
                 .map(|host| Self::Hostname { host, port })
@@ -94,20 +97,6 @@ fn network_allows(network: Network, ip: IpAddr) -> bool {
         Network::Tcp4 => ip.to_canonical().is_ipv4(),
         Network::Tcp6 => ip.is_ipv6(),
         Network::Default | Network::Tcp | Network::Other => true,
-    }
-}
-
-/// `localhost` resolves to the loopback address of the dialed family only.
-fn localhost(network: Network, port: u16) -> DialTarget {
-    let loopback = match network {
-        Network::Tcp4 => IpAddr::V4(Ipv4Addr::LOCALHOST),
-        Network::Tcp6 => IpAddr::V6(Ipv6Addr::LOCALHOST),
-        Network::Default | Network::Tcp | Network::Other => {
-            return DialTarget::Localhost { port };
-        }
-    };
-    DialTarget::Socket {
-        address: SocketAddr::new(loopback, port),
     }
 }
 
@@ -208,18 +197,15 @@ mod tests {
         let remote = dial("tcp/192.0.2.10:8443");
         assert!(!remote.is_loopback());
 
-        assert_eq!(
-            dial("tcp4/localhost:4000"),
-            DialTarget::Socket {
-                address: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 4000)
-            }
-        );
-        assert_eq!(
-            dial("tcp6/localhost:4000"),
-            DialTarget::Socket {
-                address: SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 4000)
-            }
-        );
+        // Caddy versions differ in whether `tcp4/` and `tcp6/` limit which
+        // addresses `localhost` dials, so such a target is not linked.
+        for family in ["tcp4", "tcp6"] {
+            let qualified = dial(&format!("{family}/localhost:4000"));
+            assert!(
+                matches!(&qualified, DialTarget::Hostname { host, port: 4000 } if host.as_str() == "localhost"),
+                "{qualified:?}"
+            );
+        }
 
         let local = dial("LocalHost:4000");
         assert_eq!(local, DialTarget::Localhost { port: 4000 });

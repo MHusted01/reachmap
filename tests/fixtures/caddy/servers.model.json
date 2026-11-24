@@ -33,7 +33,7 @@
         "hosts_skipped": false
       },
       "http3": true,
-      "tcp": true,
+      "tcp_known": true,
       "tls_policies": [
         {
           "scoped": true,
@@ -188,7 +188,7 @@
         "hosts_skipped": false
       },
       "http3": false,
-      "tcp": true,
+      "tcp_known": true,
       "tls_policies": [],
       "routes": [
         {

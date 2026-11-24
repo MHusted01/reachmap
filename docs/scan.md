@@ -744,7 +744,8 @@ Server srv0
   Caddyfile itself contains `{$`, the report is partial and says so. Caddy also
   expands placeholders in files the Caddyfile imports, which reachmap does not
   read, so an `import` of anything other than a snippet defined in the
-  Caddyfile also makes the report partial. Runtime
+  Caddyfile also makes the report partial (a leading byte-order mark is
+  ignored, as Caddy does). Runtime
   placeholders such as `{env.VAR}` stay in the JSON and are reported as
   configuration uncertainties.
 - **Separate layers.** Frontend listener state (each `listen` address),
@@ -753,10 +754,11 @@ Server srv0
   client certificate policies) and unverified application authentication are
   reported separately. Auth from an earlier route that has matchers or a
   group is marked `(some requests only)`; a terminal route, such as one
-  Caddyfile site, passes no auth to the routes after it. Caddy uses the first
-  TLS connection policy that matches, so a client certificate requirement
-  applies to every TLS connection only when it is on an unscoped first
-  policy.
+  Caddyfile site, passes no auth to the routes after it. A TLS client
+  certificate policy only covers TLS connections, and a server can also take
+  cleartext HTTP, so it is always marked `(some requests only)`. Caddy uses
+  the first policy that matches, so policies after an unscoped one are
+  ignored.
 - **Linking rules.** Caddy listens through Go: a wildcard `tcp` address
   (`:443`, `0.0.0.0:443` or `[::]:443`) is one dual-stack `[::]` socket, or
   `0.0.0.0` on a host without IPv6; `tcp4/` is `0.0.0.0` and `tcp6/` an
@@ -765,18 +767,22 @@ Server srv0
   the report partial. Loopback upstreams also match wildcard listeners; any
   other IP needs a listener bound to exactly that address, so a wildcard
   socket cannot make a remote upstream look local. `localhost` is checked
-  against `127.0.0.1` and `::1` (only one of them with `tcp4/` or `tcp6/`).
-  Host names are not resolved and not linked.
+  against `127.0.0.1` and `::1`. Caddy versions differ in whether `tcp4/` or
+  `tcp6/` limits the family it dials, so `tcp4/localhost` and
+  `tcp6/localhost` are treated like other host names, which are not resolved
+  and not linked.
   A listener reports as matched, missing, ambiguous (several could serve it),
   or uncertain (socket options unknown). HTTP/3 UDP sockets and the HTTP
-  redirect listener that automatic HTTPS adds are not linked, and a server
-  whose `protocols` hold only `h3` has no TCP listener to link.
+  redirect listener that automatic HTTPS adds are not linked. When a server's
+  `protocols` hold only `h3` (older Caddy versions still open a TCP socket),
+  or `listen_protocols` overrides them for some addresses, its listen
+  addresses are not linked and the configuration is uncertain.
 - **Privileges and binary lookup.** reachmap runs only `caddy adapt` (never
   `--validate`, which would start Caddy's modules), from `/usr/bin/caddy`,
-  `/usr/local/bin/caddy` or `/bin/caddy`, never through `PATH`. Symlinks are
-  resolved first, and the resolved binary and every directory above it must
-  be owned by root and not writable by group or others; the resolved path is
-  what runs. It runs with an
+  `/usr/local/bin/caddy` or `/bin/caddy`, never through `PATH`. The path is
+  resolved one component at a time: every directory on the way and the binary
+  must be owned by root and not writable by group or others, and every
+  symlink must be owned by root. The resolved path is what runs. It runs with an
   isolated environment (`LC_ALL=C`), a 10-second timeout, and output limits
   of 8 MiB for the JSON and 64 KiB for diagnostics. Reading `/etc/caddy/` and
   the files it imports can need `sudo`. A native JSON file needs no `caddy`

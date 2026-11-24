@@ -1,6 +1,6 @@
 //! Finding a `caddy` binary that only root can have put in place.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use super::error::CaddyScanError;
 use crate::sanitize::sanitize;
@@ -43,44 +43,111 @@ pub(super) fn locate(
     Err(CaddyScanError::MissingCommand)
 }
 
-/// Whether `path` and every directory above it are owned by root and not
-/// writable by group or others, so no other user can replace the file.
-/// `owner_mode` gives a path's owner and mode, or `None` when unknown.
+/// Most symlinks followed while resolving the `caddy` path, as the kernel's
+/// own limit.
+const MAX_SYMLINKS: usize = 40;
+
+/// What `lstat` reports for one path, without following a final symlink.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(super) fn only_root_can_replace(
-    path: &Path,
-    owner_mode: impl Fn(&Path) -> Option<(u32, u32)>,
-) -> bool {
-    path.is_absolute()
-        && path
-            .ancestors()
-            .all(|part| owner_mode(part).is_some_and(|(uid, mode)| uid == 0 && mode & 0o022 == 0))
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Entry {
+    /// Owner user ID.
+    pub(super) uid: u32,
+    /// Permission bits.
+    pub(super) mode: u32,
+    /// The link's target, when the entry is a symlink.
+    pub(super) link: Option<PathBuf>,
 }
 
-/// Resolves every symlink first, so a packaged `/usr/bin/caddy` link to an
-/// alternatives target is judged, and later run, by the file it points to.
+/// Resolves `path` one component at a time, the way the kernel does, and
+/// returns the symlink-free path only if no user but root can change where
+/// it leads: every directory traversed and the final file are owned by root
+/// and not writable by group or others, and every symlink on the way is
+/// owned by root (a symlink's own mode bits mean nothing on Linux).
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(super) fn resolve_trusted(
+    path: &Path,
+    lookup: &impl Fn(&Path) -> Option<Entry>,
+) -> Option<PathBuf> {
+    let mut budget = MAX_SYMLINKS;
+    resolve(path, lookup, &mut budget)
+}
+
+fn resolve(
+    path: &Path,
+    lookup: &impl Fn(&Path) -> Option<Entry>,
+    budget: &mut usize,
+) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let root = PathBuf::from("/");
+    trusted_entry(&lookup(&root)?)?;
+    let mut resolved = root;
+    for component in path.components() {
+        match component {
+            Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+            }
+            Component::Prefix(_) => return None,
+            Component::Normal(name) => {
+                let next = resolved.join(name);
+                let entry = lookup(&next)?;
+                if entry.uid != 0 {
+                    return None;
+                }
+                match entry.link {
+                    Some(target) => {
+                        *budget = budget.checked_sub(1)?;
+                        resolved = resolve(&resolved.join(target), lookup, budget)?;
+                    }
+                    None => {
+                        trusted_entry(&entry)?;
+                        resolved = next;
+                    }
+                }
+            }
+        }
+    }
+    Some(resolved)
+}
+
+/// A file or directory owned by root that group and others cannot write.
+fn trusted_entry(entry: &Entry) -> Option<()> {
+    (entry.uid == 0 && entry.mode & 0o022 == 0).then_some(())
+}
+
+/// Checks the whole way to the binary, then runs it by its resolved path so
+/// nothing can be swapped in between.
 #[cfg(target_os = "linux")]
 pub(super) fn inspect_program(path: &str) -> Program {
-    use std::io::ErrorKind;
     use std::os::unix::fs::MetadataExt;
 
-    let resolved = match std::fs::canonicalize(path) {
-        Ok(resolved) => resolved,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Program::Missing,
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Program::Missing,
         Err(_) => return Program::Untrusted,
-    };
-    if !resolved.is_file() {
-        return Program::Missing;
+        Ok(_) => {}
     }
-    let owner_mode = |part: &Path| {
-        std::fs::metadata(part)
-            .ok()
-            .map(|metadata| (metadata.uid(), metadata.mode()))
+    let lookup = |part: &Path| {
+        let metadata = std::fs::symlink_metadata(part).ok()?;
+        let link = if metadata.file_type().is_symlink() {
+            Some(std::fs::read_link(part).ok()?)
+        } else {
+            None
+        };
+        Some(Entry {
+            uid: metadata.uid(),
+            mode: metadata.mode(),
+            link,
+        })
+    };
+    let Some(resolved) = resolve_trusted(Path::new(path), &lookup) else {
+        return Program::Untrusted;
     };
     match resolved.to_str() {
-        Some(text) if only_root_can_replace(&resolved, owner_mode) => {
-            Program::Trusted(text.to_owned())
-        }
-        _ => Program::Untrusted,
+        Some(text) if resolved.is_file() => Program::Trusted(text.to_owned()),
+        Some(_) => Program::Missing,
+        None => Program::Untrusted,
     }
 }

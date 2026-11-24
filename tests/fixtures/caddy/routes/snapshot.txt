@@ -18,6 +18,6 @@ Server public
       upstream localhost:3001 (TCP listener [::1]:3001)
       upstream 192.0.2.10:8080 (non-loopback upstream (no exact local TCP listener; may be remote))
       upstream backend.example.test:9000 (host name requires DNS resolution; not linked)
-      proxy auth: client certificate required and verified, http_basic; application auth: unverified
+      proxy auth: TLS client certificate required and verified (some requests only), http_basic; application auth: unverified
 Configuration uncertainties:
   host name requiring DNS resolution (`dial`) at apps.http.servers["public"].routes[1].handle[0].upstreams[3].dial

@@ -169,6 +169,27 @@ fn a_wide_range_replays_only_with_its_note() {
 }
 
 #[test]
+fn caddyfile_note_tags_are_pinned_and_replay_as_partial() {
+    for (kind, text) in [
+        (
+            "environment_placeholders",
+            "{$VAR} environment placeholders",
+        ),
+        (
+            "file_imports_not_checked",
+            "imports other files, which were not checked",
+        ),
+    ] {
+        let mut value = fixture();
+        value["evidence"]["source"] = json!("caddyfile");
+        value["evidence"]["collection"] = json!({"status": "partial", "notes": [{"kind": kind}]});
+        let replayed = decode_value(&value).expect(kind);
+        assert!(!replayed.is_complete());
+        assert!(replayed.to_string().contains(text), "{kind}");
+    }
+}
+
+#[test]
 fn an_environment_note_is_valid_for_a_caddyfile_source() {
     let mut value = fixture();
     value["evidence"]["source"] = json!("caddyfile");
