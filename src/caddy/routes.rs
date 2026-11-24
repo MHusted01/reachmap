@@ -156,6 +156,16 @@ fn validate_config(config: &CaddyConfig) -> Result<(), &'static str> {
     if config.uncertainties.len() > MAX_UNCERTAINTIES {
         return Err("too many configuration uncertainties");
     }
+    let protocols_noted = config.uncertainties_omitted > 0
+        || config.uncertainties.iter().any(|uncertainty| {
+            matches!(
+                uncertainty.construct.as_str(),
+                "protocols" | "listen_protocols"
+            )
+        });
+    if config.servers.iter().any(|server| !server.tcp_known) && !protocols_noted {
+        return Err("expected an uncertainty for each server whose TCP listeners are unknown");
+    }
     if config.http_port == Some(0) || config.https_port == Some(0) {
         return Err("expected nonzero HTTP and HTTPS ports");
     }

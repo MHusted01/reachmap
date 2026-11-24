@@ -59,6 +59,17 @@ pub(super) struct Entry {
     pub(super) link: Option<PathBuf>,
 }
 
+/// Why a path does not lead to a binary that is safe to run.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Refusal {
+    /// A component, or a symlink's target, does not exist.
+    Missing,
+    /// Someone other than root could change where the path leads, or it
+    /// cannot be checked.
+    Untrusted,
+}
+
 /// Resolves `path` one component at a time, the way the kernel does, and
 /// returns the symlink-free path only if no user but root can change where
 /// it leads: every directory traversed and the final file are owned by root
@@ -67,19 +78,19 @@ pub(super) struct Entry {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(super) fn resolve_trusted(
     path: &Path,
-    lookup: &impl Fn(&Path) -> Option<Entry>,
-) -> Option<PathBuf> {
+    lookup: &impl Fn(&Path) -> Result<Entry, Refusal>,
+) -> Result<PathBuf, Refusal> {
     let mut budget = MAX_SYMLINKS;
     resolve(path, lookup, &mut budget)
 }
 
 fn resolve(
     path: &Path,
-    lookup: &impl Fn(&Path) -> Option<Entry>,
+    lookup: &impl Fn(&Path) -> Result<Entry, Refusal>,
     budget: &mut usize,
-) -> Option<PathBuf> {
+) -> Result<PathBuf, Refusal> {
     if !path.is_absolute() {
-        return None;
+        return Err(Refusal::Untrusted);
     }
     let root = PathBuf::from("/");
     trusted_entry(&lookup(&root)?)?;
@@ -90,16 +101,16 @@ fn resolve(
             Component::ParentDir => {
                 resolved.pop();
             }
-            Component::Prefix(_) => return None,
+            Component::Prefix(_) => return Err(Refusal::Untrusted),
             Component::Normal(name) => {
                 let next = resolved.join(name);
                 let entry = lookup(&next)?;
                 if entry.uid != 0 {
-                    return None;
+                    return Err(Refusal::Untrusted);
                 }
                 match entry.link {
                     Some(target) => {
-                        *budget = budget.checked_sub(1)?;
+                        *budget = budget.checked_sub(1).ok_or(Refusal::Untrusted)?;
                         resolved = resolve(&resolved.join(target), lookup, budget)?;
                     }
                     None => {
@@ -110,12 +121,16 @@ fn resolve(
             }
         }
     }
-    Some(resolved)
+    Ok(resolved)
 }
 
 /// A file or directory owned by root that group and others cannot write.
-fn trusted_entry(entry: &Entry) -> Option<()> {
-    (entry.uid == 0 && entry.mode & 0o022 == 0).then_some(())
+fn trusted_entry(entry: &Entry) -> Result<(), Refusal> {
+    if entry.uid == 0 && entry.mode & 0o022 == 0 {
+        Ok(())
+    } else {
+        Err(Refusal::Untrusted)
+    }
 }
 
 /// Checks the whole way to the binary, then runs it by its resolved path so
@@ -124,26 +139,30 @@ fn trusted_entry(entry: &Entry) -> Option<()> {
 pub(super) fn inspect_program(path: &str) -> Program {
     use std::os::unix::fs::MetadataExt;
 
-    match std::fs::symlink_metadata(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Program::Missing,
-        Err(_) => return Program::Untrusted,
-        Ok(_) => {}
-    }
+    let refusal = |error: std::io::Error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            Refusal::Missing
+        } else {
+            Refusal::Untrusted
+        }
+    };
     let lookup = |part: &Path| {
-        let metadata = std::fs::symlink_metadata(part).ok()?;
+        let metadata = std::fs::symlink_metadata(part).map_err(refusal)?;
         let link = if metadata.file_type().is_symlink() {
-            Some(std::fs::read_link(part).ok()?)
+            Some(std::fs::read_link(part).map_err(refusal)?)
         } else {
             None
         };
-        Some(Entry {
+        Ok(Entry {
             uid: metadata.uid(),
             mode: metadata.mode(),
             link,
         })
     };
-    let Some(resolved) = resolve_trusted(Path::new(path), &lookup) else {
-        return Program::Untrusted;
+    let resolved = match resolve_trusted(Path::new(path), &lookup) {
+        Ok(resolved) => resolved,
+        Err(Refusal::Missing) => return Program::Missing,
+        Err(Refusal::Untrusted) => return Program::Untrusted,
     };
     match resolved.to_str() {
         Some(text) if resolved.is_file() => Program::Trusted(text.to_owned()),

@@ -27,6 +27,17 @@ fn fixture() -> Value {
     serde_json::from_str(SNAPSHOT).expect("fixture")
 }
 
+/// The fixture without its host name upstream, so it replays as complete.
+fn complete_fixture() -> Value {
+    let mut value = fixture();
+    let proxy = &mut value["evidence"]["config"]["servers"][0]["routes"][1]["handlers"][0];
+    proxy["upstreams"].as_array_mut().expect("upstreams").pop();
+    proxy["complete"] = json!(true);
+    value["evidence"]["config"]["uncertainties"] = json!([]);
+    assert!(decode_value(&value).expect("complete").is_complete());
+    value
+}
+
 #[test]
 fn snapshots_hold_only_the_minimized_evidence_and_match_the_pinned_shape() {
     let json = capture(report(LINKED, &linked_sockets()));
@@ -180,13 +191,41 @@ fn caddyfile_note_tags_are_pinned_and_replay_as_partial() {
             "imports other files, which were not checked",
         ),
     ] {
-        let mut value = fixture();
+        let mut value = complete_fixture();
         value["evidence"]["source"] = json!("caddyfile");
         value["evidence"]["collection"] = json!({"status": "partial", "notes": [{"kind": kind}]});
         let replayed = decode_value(&value).expect(kind);
         assert!(!replayed.is_complete());
         assert!(replayed.to_string().contains(text), "{kind}");
     }
+}
+
+#[test]
+fn unknown_tcp_state_replays_only_with_its_uncertainty() {
+    let mut value = complete_fixture();
+    value["evidence"]["config"]["servers"][0]["tcp_known"] = json!(false);
+    value["evidence"]["inventory"] = json!({"status": "collected", "listeners": [
+        {"address": "127.0.0.1:3000", "options": {"bound_to_device": false, "ipv6_only": false}},
+        {"address": "[::1]:3001", "options": {"bound_to_device": false, "ipv6_only": true}}
+    ]});
+    let error = decode_value(&value).expect_err("missing uncertainty");
+    assert!(
+        matches!(error, snapshot::ReplayError::Invalid(_)),
+        "{error:?}"
+    );
+
+    value["evidence"]["config"]["uncertainties"] = json!([{
+        "kind": "unmodeled_server_feature",
+        "construct": "protocols",
+        "location": "apps.http.servers[\"public\"].protocols"
+    }]);
+    let replayed = decode_value(&value).expect("valid");
+    assert!(!replayed.is_complete());
+    assert!(
+        replayed
+            .to_string()
+            .contains("not linked: the protocols leave its TCP listener unknown")
+    );
 }
 
 #[test]

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use super::super::collect::read_source;
 use super::super::error::classify_adapt_error;
-use super::super::program::{CADDY_PATHS, Entry, Program, locate, resolve_trusted};
+use super::super::program::{CADDY_PATHS, Entry, Program, Refusal, locate, resolve_trusted};
 use super::super::source::ConfigSource;
 use super::*;
 use crate::caddy::MAX_INPUT_BYTES;
@@ -85,7 +85,7 @@ fn a_caddyfile_is_adapted_and_checked_for_environment_placeholders() {
 }
 
 /// A filesystem of `(path, uid, mode, symlink target)` entries.
-fn tree(entries: &[(&str, u32, u32, Option<&str>)]) -> impl Fn(&Path) -> Option<Entry> {
+fn tree(entries: &[(&str, u32, u32, Option<&str>)]) -> impl Fn(&Path) -> Result<Entry, Refusal> {
     let entries: HashMap<PathBuf, Entry> = entries
         .iter()
         .map(|&(path, uid, mode, link)| {
@@ -97,7 +97,7 @@ fn tree(entries: &[(&str, u32, u32, Option<&str>)]) -> impl Fn(&Path) -> Option<
             (PathBuf::from(path), entry)
         })
         .collect();
-    move |path| entries.get(path).cloned()
+    move |path| entries.get(path).cloned().ok_or(Refusal::Missing)
 }
 
 const DIR: u32 = 0o755;
@@ -117,13 +117,13 @@ fn system(
     entries
 }
 
-fn resolved(entries: &[(&str, u32, u32, Option<&str>)], path: &str) -> Option<PathBuf> {
+fn resolved(entries: &[(&str, u32, u32, Option<&str>)], path: &str) -> Result<PathBuf, Refusal> {
     resolve_trusted(Path::new(path), &tree(entries))
 }
 
 #[test]
 fn caddy_resolves_only_through_paths_only_root_can_change() {
-    let usr_bin = Some(PathBuf::from("/usr/bin/caddy"));
+    let usr_bin = Ok(PathBuf::from("/usr/bin/caddy"));
     assert_eq!(resolved(&system(&[]), "/usr/bin/caddy"), usr_bin);
     assert_eq!(resolved(&system(&[]), "/bin/caddy"), usr_bin, "merged /usr");
 
@@ -134,7 +134,7 @@ fn caddy_resolves_only_through_paths_only_root_can_change() {
     ]);
     assert_eq!(
         resolved(&shared_dir, "/usr/local/bin/caddy"),
-        None,
+        Err(Refusal::Untrusted),
         "a group-writable directory picks the target"
     );
 
@@ -145,7 +145,7 @@ fn caddy_resolves_only_through_paths_only_root_can_change() {
     ]);
     assert_eq!(
         resolved(&foreign_link, "/usr/local/bin/caddy"),
-        None,
+        Err(Refusal::Untrusted),
         "a symlink owned by another user"
     );
 
@@ -158,7 +158,7 @@ fn caddy_resolves_only_through_paths_only_root_can_change() {
     ]);
     assert_eq!(
         resolved(&via_tmp, "/usr/local/bin/caddy"),
-        None,
+        Err(Refusal::Untrusted),
         "a hop through a shared directory"
     );
 
@@ -168,15 +168,34 @@ fn caddy_resolves_only_through_paths_only_root_can_change() {
         ("/usr/bin", 0, DIR, None),
         ("/usr/bin/caddy", 1001, DIR, None),
     ];
-    assert_eq!(resolved(&foreign_file, "/usr/bin/caddy"), None);
+    assert_eq!(
+        resolved(&foreign_file, "/usr/bin/caddy"),
+        Err(Refusal::Untrusted)
+    );
 
     let looping = system(&[
         ("/usr/bin/a", 0, LINK, Some("b")),
         ("/usr/bin/b", 0, LINK, Some("a")),
     ]);
-    assert_eq!(resolved(&looping, "/usr/bin/a"), None, "symlink loops end");
-    assert_eq!(resolved(&system(&[]), "/usr/bin/missing"), None);
-    assert_eq!(resolved(&system(&[]), "usr/bin/caddy"), None);
+    assert_eq!(
+        resolved(&looping, "/usr/bin/a"),
+        Err(Refusal::Untrusted),
+        "symlink loops end"
+    );
+    assert_eq!(
+        resolved(&system(&[]), "/usr/bin/missing"),
+        Err(Refusal::Missing)
+    );
+    let dangling = system(&[("/usr/bin/stale", 0, LINK, Some("/opt/gone/caddy"))]);
+    assert_eq!(
+        resolved(&dangling, "/usr/bin/stale"),
+        Err(Refusal::Missing),
+        "a stale alternatives link lets the search go on"
+    );
+    assert_eq!(
+        resolved(&system(&[]), "usr/bin/caddy"),
+        Err(Refusal::Untrusted)
+    );
 }
 
 #[test]
