@@ -123,6 +123,7 @@ listener_pid=""
 added_alias=false
 initial_enabled=false
 pf_state_recorded=false
+pf_token=""
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -136,26 +137,57 @@ pf_is_enabled() {
   run_priv /sbin/pfctl -s info 2>/dev/null | grep -Eq '^Status:[[:space:]]*Enabled'
 }
 
-pf_enable() {
-  if ! pf_is_enabled; then
-    run_priv /sbin/pfctl -e >/dev/null 2>&1
+pf_acquire_enable() {
+  if [[ -n $pf_token ]]; then
+    return 0
+  fi
+  local out
+  if ! out=$(run_priv /sbin/pfctl -E 2>&1); then
+    printf 'error: pfctl -E failed: %s\n' "$out" >&2
+    return 1
+  fi
+  if [[ $out =~ Token[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
+    pf_token=${BASH_REMATCH[1]}
+  else
+    printf 'error: pfctl -E did not return an enable reference token: %s\n' "$out" >&2
+    return 1
   fi
 }
 
+pf_release_enable() {
+  if [[ -z $pf_token ]]; then
+    return 0
+  fi
+  local out
+  if ! out=$(run_priv /sbin/pfctl -X "$pf_token" 2>&1); then
+    printf 'error: pfctl -X %s failed: %s\n' "$pf_token" "$out" >&2
+    return 1
+  fi
+  pf_token=""
+}
+
 pf_disable() {
+  pf_release_enable
   if pf_is_enabled; then
     run_priv /sbin/pfctl -d >/dev/null 2>&1
   fi
 }
 
 flush_lab_states() {
-  run_priv /sbin/pfctl -k "$test_ip" >/dev/null 2>&1 &&
-    run_priv /sbin/pfctl -k 0.0.0.0/0 -k "$test_ip" >/dev/null 2>&1
+  local rc=0
+  run_priv /sbin/pfctl -k "$test_ip" >/dev/null 2>&1 || rc=1
+  run_priv /sbin/pfctl -k 0.0.0.0/0 -k "$test_ip" >/dev/null 2>&1 || rc=1
+  return "$rc"
 }
 
 verify_stock_baseline() {
-  local anchors rules ifaces line trimmed
+  local anchors rules nat_rules ifaces refs line trimmed
   [[ -r /etc/pf.conf ]] || fail "missing readable /etc/pf.conf; refusing to modify pf without a restorable stock baseline"
+
+  refs=$(run_priv /sbin/pfctl -s References 2>/dev/null) || fail "failed to inspect pfctl -s References before test run"
+  if [[ -n $(tr -d '[:space:]' <<<"$refs") ]]; then
+    fail "active pf enable references exist before test run; refusing to disturb another service's pf token" "$refs"
+  fi
 
   anchors=$(run_priv /sbin/pfctl -sA 2>/dev/null) || fail "failed to inspect pfctl -sA before test run"
   while IFS= read -r line; do
@@ -179,6 +211,18 @@ verify_stock_baseline() {
     esac
   done <<<"$rules"
 
+  nat_rules=$(run_priv /sbin/pfctl -s nat 2>/dev/null) || fail "failed to inspect pfctl -s nat before test run"
+  while IFS= read -r line; do
+    trimmed=${line#"${line%%[![:space:]]*}"}
+    [[ -z $trimmed || $trimmed == \#* ]] && continue
+    case "$trimmed" in
+      'nat-anchor "com.apple/*"'*|'rdr-anchor "com.apple/*"'*) ;;
+      *)
+        fail "non-stock NAT/rdr rule detected: '$trimmed'; refusing to overwrite custom pf state" "$nat_rules"
+        ;;
+    esac
+  done <<<"$nat_rules"
+
   ifaces=$(run_priv /sbin/pfctl -v -s Interfaces 2>/dev/null) || fail "failed to inspect pfctl -v -s Interfaces before test run"
   if grep -Fq '(skip)' <<<"$ifaces"; then
     fail "pf already has skipped interfaces before test run; refusing to overwrite custom pf state" "$ifaces"
@@ -186,7 +230,7 @@ verify_stock_baseline() {
 }
 
 cleanup() {
-  local rc=$? cleanup_failed=0
+  local rc=$? cleanup_failed=0 refs
   trap - EXIT INT TERM
   set +e
   if [[ -n $listener_pid ]]; then
@@ -206,18 +250,30 @@ cleanup() {
       printf 'cleanup error: failed to reload /etc/pf.conf\n' >&2
       cleanup_failed=1
     fi
+    if ! pf_release_enable; then
+      cleanup_failed=1
+    fi
     if [[ $initial_enabled == true ]]; then
-      pf_enable || cleanup_failed=1
-      if ! pf_is_enabled; then
+      if ! pf_is_enabled && ! run_priv /sbin/pfctl -e >/dev/null 2>&1; then
         printf 'cleanup error: failed to restore pf enabled state\n' >&2
+        cleanup_failed=1
+      elif ! pf_is_enabled; then
+        printf 'cleanup error: pf is disabled after restore (expected enabled)\n' >&2
         cleanup_failed=1
       fi
     else
-      pf_disable || cleanup_failed=1
-      if pf_is_enabled; then
+      if pf_is_enabled && ! run_priv /sbin/pfctl -d >/dev/null 2>&1; then
         printf 'cleanup error: failed to restore pf disabled state\n' >&2
         cleanup_failed=1
+      elif pf_is_enabled; then
+        printf 'cleanup error: pf is still enabled after restore (expected disabled)\n' >&2
+        cleanup_failed=1
       fi
+    fi
+    refs=$(run_priv /sbin/pfctl -s References 2>/dev/null || true)
+    if [[ -n $(tr -d '[:space:]' <<<"$refs") ]]; then
+      printf 'cleanup error: pf enable references remain after cleanup:\n%s\n' "$refs" >&2
+      cleanup_failed=1
     fi
   fi
   if [[ $added_alias == true ]]; then
@@ -326,7 +382,7 @@ try:
         sock.sendall(b"ping\n")
         reply = sock.recv(16)
         print("open" if reply == b"ping\n" else "error:unexpected_reply")
-except TimeoutError:
+except (TimeoutError, socket.timeout):
     print("blocked")
 except OSError as exc:
     print(f"error:{type(exc).__name__}:{exc.errno}")
@@ -348,7 +404,7 @@ try:
     sock.send(b"ping")
     reply = sock.recv(16)
     print("open" if reply == b"ping" else "error:unexpected_reply")
-except TimeoutError:
+except (TimeoutError, socket.timeout):
     print("blocked")
 except OSError as exc:
     print(f"error:{type(exc).__name__}:{exc.errno}")
@@ -391,22 +447,17 @@ anchor_block_packets() {
   ' <<<"$out"
 }
 
-probe_with_drop_check() {
-  local case_name=$1 proto=$2 port=$3 expected_obs=$4
+probe_and_record_drops() {
+  local proto=$1 port=$2 check_drops=$3
   local before_drops=0 after_drops=0 obs
-  if [[ $expected_obs == blocked ]]; then
+  if [[ $check_drops == true ]]; then
     before_drops=$(anchor_block_packets "$proto")
   fi
   obs=$(probe_proto "$proto" "$port")
-  if [[ $expected_obs == blocked ]]; then
+  if [[ $check_drops == true ]]; then
     after_drops=$(anchor_block_packets "$proto")
-    if ((after_drops <= before_drops)); then
-      local counters
-      counters=$(run_priv /sbin/pfctl -a "$anchor_name" -v -sr 2>/dev/null || true)
-      fail "$case_name ($proto/$port): probe returned '$obs' without incrementing pf block packet counters (before=$before_drops, after=$after_drops)" "$counters"
-    fi
   fi
-  printf '%s\n' "$obs"
+  printf '%s:%s:%s\n' "$obs" "$before_drops" "$after_drops"
 }
 
 load_ruleset() {
@@ -417,8 +468,8 @@ load_ruleset() {
   else
     run_priv /sbin/pfctl -a "$anchor_name" -F all >/dev/null 2>&1 || true
   fi
-  pf_enable
-  flush_lab_states
+  pf_acquire_enable || fail "failed to enable pf with pfctl -E"
+  flush_lab_states || fail "failed to flush pf states for $test_ip"
 }
 
 write_main_conf() {
@@ -484,18 +535,27 @@ pf_port_reason() {
 
 assert_case_port() {
   local case_name=$1 json=$2 proto=$3 port=$4 expected_verdict=$5 expected_obs=$6 reason_substr=${7:-}
-  local actual_verdict actual_reason actual_obs
+  local actual_verdict actual_reason probe_summary actual_obs before_drops after_drops check_drops=false
   actual_verdict=$(pf_port_verdict "$json" "$port" "$proto") ||
     fail "$case_name ($proto/$port): missing lo0 pf verdict in scan JSON" "$json"
   actual_reason=$(pf_port_reason "$json" "$port" "$proto") ||
     fail "$case_name ($proto/$port): missing lo0 pf reason in scan JSON" "$json"
-  actual_obs=$(probe_with_drop_check "$case_name" "$proto" "$port" "$expected_obs")
+  if [[ $expected_obs == blocked ]]; then
+    check_drops=true
+  fi
+  probe_summary=$(probe_and_record_drops "$proto" "$port" "$check_drops")
+  IFS=: read -r actual_obs before_drops after_drops <<<"$probe_summary"
 
   if [[ $actual_verdict != "$expected_verdict" ]]; then
-    fail "$case_name ($proto/$port): reachmap verdict='$actual_verdict' (reason='$actual_reason'), expected='$expected_verdict', observed='$actual_obs'"
+    fail "$case_name ($proto/$port): reachmap verdict='$actual_verdict' (reason='$actual_reason'), expected='$expected_verdict', observed='$actual_obs' (pf_drops=${before_drops}->${after_drops})"
   fi
   if [[ $actual_obs != "$expected_obs" ]]; then
-    fail "$case_name ($proto/$port): observed connection='$actual_obs', expected='$expected_obs', reachmap verdict='$actual_verdict' (reason='$actual_reason')"
+    fail "$case_name ($proto/$port): observed connection='$actual_obs', expected='$expected_obs', reachmap verdict='$actual_verdict' (reason='$actual_reason', pf_drops=${before_drops}->${after_drops})"
+  fi
+  if [[ $check_drops == true ]] && ((after_drops <= before_drops)); then
+    local counters
+    counters=$(run_priv /sbin/pfctl -a "$anchor_name" -v -sr 2>/dev/null || true)
+    fail "$case_name ($proto/$port): reachmap verdict='$actual_verdict' (reason='$actual_reason'), observed='$actual_obs', but pf block packet counters did not increment (before=$before_drops, after=$after_drops)" "$counters"
   fi
   if [[ -n $reason_substr && $actual_reason != *"$reason_substr"* ]]; then
     fail "$case_name ($proto/$port): reachmap reason='$actual_reason' did not contain '$reason_substr' (verdict='$actual_verdict', observed='$actual_obs')"
@@ -543,8 +603,8 @@ done
 printf 'Case 2: pf enabled with default anchors\n'
 run_priv /sbin/pfctl -a "$anchor_name" -F all >/dev/null 2>&1 || true
 run_priv /sbin/pfctl -f /etc/pf.conf >/dev/null 2>&1
-pf_enable
-flush_lab_states
+pf_acquire_enable || fail "Case 2: failed to enable pf with pfctl -E"
+flush_lab_states || fail "Case 2: failed to flush pf states for $test_ip"
 json=$(scan_priv_json)
 status=$(pf_status "$json")
 [[ $status == enabled ]] || fail "Case 2: expected pf status=enabled, got status='$status'" "$json"
@@ -627,18 +687,24 @@ json=$(scan_unpriv_json)
 status=$(pf_status "$json")
 reason=$(jq -er '.macos.pf.reason' <<<"$json") ||
   fail "Case 7: missing .macos.pf.reason in unprivileged scan JSON" "$json"
-obs_tcp_a=$(probe_with_drop_check "no_sudo" tcp "$port_a" open)
-obs_udp_a=$(probe_with_drop_check "no_sudo" udp "$port_a" open)
-obs_tcp_b=$(probe_with_drop_check "no_sudo" tcp "$port_b" blocked)
-obs_udp_b=$(probe_with_drop_check "no_sudo" udp "$port_b" blocked)
+obs_tcp_a=$(probe_proto tcp "$port_a")
+obs_udp_a=$(probe_proto udp "$port_a")
+sum_tcp_b=$(probe_and_record_drops tcp "$port_b" true)
+IFS=: read -r obs_tcp_b before_tcp_b after_tcp_b <<<"$sum_tcp_b"
+sum_udp_b=$(probe_and_record_drops udp "$port_b" true)
+IFS=: read -r obs_udp_b before_udp_b after_udp_b <<<"$sum_udp_b"
 [[ $status == unknown ]] ||
   fail "Case 7: reachmap pf status='$status' (reason='$reason', expected unknown); observed probes tcp/$port_a=$obs_tcp_a udp/$port_a=$obs_udp_a tcp/$port_b=$obs_tcp_b udp/$port_b=$obs_udp_b" "$json"
 [[ $reason == *sudo* || $reason == *"root privileges"* ]] ||
   fail "Case 7: reachmap pf reason='$reason' did not mention sudo/root privileges; observed probes tcp/$port_a=$obs_tcp_a udp/$port_a=$obs_udp_a tcp/$port_b=$obs_tcp_b udp/$port_b=$obs_udp_b" "$json"
-for pair in "tcp:$port_a:$obs_tcp_a:open" "udp:$port_a:$obs_udp_a:open" "tcp:$port_b:$obs_tcp_b:blocked" "udp:$port_b:$obs_udp_b:blocked"; do
-  IFS=: read -r proto port obs expected <<<"$pair"
+for pair in "tcp:$port_a:$obs_tcp_a:open:0:0" "udp:$port_a:$obs_udp_a:open:0:0" "tcp:$port_b:$obs_tcp_b:blocked:$before_tcp_b:$after_tcp_b" "udp:$port_b:$obs_udp_b:blocked:$before_udp_b:$after_udp_b"; do
+  IFS=: read -r proto port obs expected before_drops after_drops <<<"$pair"
   [[ $obs == "$expected" ]] ||
     fail "Case 7 ($proto/$port): reachmap pf status='$status' (reason='$reason'), observed='$obs' (expected $expected)"
+  if [[ $expected == blocked ]] && ((after_drops <= before_drops)); then
+    counters=$(run_priv /sbin/pfctl -a "$anchor_name" -v -sr 2>/dev/null || true)
+    fail "Case 7 ($proto/$port): reachmap pf status='$status' (reason='$reason'), observed='$obs', but pf block packet counters did not increment (before=$before_drops, after=$after_drops)" "$counters"
+  fi
   printf '  ok: no_sudo %s/%d -> reachmap=%s (%s), observed=%s\n' "$proto" "$port" "$status" "$reason" "$obs"
 done
 
