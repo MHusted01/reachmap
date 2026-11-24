@@ -1,0 +1,50 @@
+{
+  "apps": {
+    "layer4": { "servers": { "relay": { "listen": [":5432"] } } },
+    "http": {
+      "servers": {
+        "dynamic": {
+          "listen": ["{env.LISTEN_ADDR}", "udp/:443", ":", "app.example.test:80", "unix//run/caddy.sock"],
+          "errors": { "routes": [] },
+          "routes": [
+            {
+              "match": [
+                {
+                  "host": ["{http.request.host}", "app.*"],
+                  "path": ["{http.vars.prefix}/*", "*.php"],
+                  "expression": "{http.request.uri}.startsWith('/x')",
+                  "remote_ip": { "ranges": ["192.0.2.0/24"] },
+                  "header": { "X-Probe": ["1"] },
+                  "query": { "q": ["1"] },
+                  "not": [{ "path": ["/private"] }]
+                }
+              ],
+              "handle": [
+                { "handler": "rewrite", "uri": "/internal" },
+                { "handler": "uri", "strip_prefix": "/x" },
+                { "handler": "map", "source": "{http.request.host}", "destinations": ["{backend}"] },
+                { "handler": "custom_plugin", "option": "value" },
+                {
+                  "handler": "reverse_proxy",
+                  "dynamic_upstreams": { "source": "srv", "name": "backend.example.test" }
+                },
+                {
+                  "handler": "reverse_proxy",
+                  "transport": { "protocol": "fastcgi" },
+                  "upstreams": [
+                    { "dial": "{http.request.host}:80" },
+                    { "dial": "unix//run/php.sock" },
+                    { "dial": "127.0.0.1" },
+                    {}
+                  ]
+                },
+                { "handler": "reverse_proxy", "upstreams": "not-a-list" }
+              ]
+            }
+          ]
+        },
+        "silent": { "routes": [] }
+      }
+    }
+  }
+}

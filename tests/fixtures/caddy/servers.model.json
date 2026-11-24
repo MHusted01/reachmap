@@ -1,0 +1,280 @@
+{
+  "http_port": 8080,
+  "https_port": 8443,
+  "servers": [
+    {
+      "name": "edge",
+      "listen": [
+        {
+          "network": "tcp",
+          "host": {
+            "kind": "any"
+          },
+          "ports": {
+            "first": 443,
+            "last": 443
+          }
+        },
+        {
+          "network": "tcp6",
+          "host": {
+            "kind": "ipv6",
+            "ip": "::"
+          },
+          "ports": {
+            "first": 8443,
+            "last": 8445
+          }
+        }
+      ],
+      "automatic_https": {
+        "disabled": false,
+        "redirects_disabled": false,
+        "hosts_skipped": false
+      },
+      "http3": true,
+      "tls_policies": [
+        {
+          "scoped": true,
+          "client_auth": "require_and_verify"
+        },
+        {
+          "scoped": false,
+          "client_auth": null
+        }
+      ],
+      "routes": [
+        {
+          "group": null,
+          "matchers": [
+            {
+              "hosts": [
+                {
+                  "kind": "exact",
+                  "host": "app.example.test"
+                },
+                {
+                  "kind": "leading_wildcard",
+                  "suffix": "apps.example.test"
+                }
+              ],
+              "paths": null,
+              "complete": true
+            }
+          ],
+          "handlers": [
+            {
+              "kind": "subroute",
+              "routes": [
+                {
+                  "group": {
+                    "id": 0,
+                    "label": "group0"
+                  },
+                  "matchers": [
+                    {
+                      "hosts": null,
+                      "paths": [
+                        {
+                          "kind": "prefix",
+                          "prefix": "/api/"
+                        }
+                      ],
+                      "complete": true
+                    }
+                  ],
+                  "handlers": [
+                    {
+                      "kind": "reverse_proxy",
+                      "upstreams": [
+                        {
+                          "kind": "socket",
+                          "address": "127.0.0.1:3000"
+                        },
+                        {
+                          "kind": "socket",
+                          "address": "[::1]:3001"
+                        }
+                      ],
+                      "complete": true,
+                      "tls": false,
+                      "forward_auth": false
+                    }
+                  ],
+                  "terminal": false
+                },
+                {
+                  "group": {
+                    "id": 0,
+                    "label": "group0"
+                  },
+                  "matchers": [],
+                  "handlers": [
+                    {
+                      "kind": "subroute",
+                      "routes": [
+                        {
+                          "group": null,
+                          "matchers": [
+                            {
+                              "hosts": null,
+                              "paths": [
+                                {
+                                  "kind": "exact",
+                                  "path": "/health"
+                                }
+                              ],
+                              "complete": true
+                            }
+                          ],
+                          "handlers": [
+                            {
+                              "kind": "respond",
+                              "responder": "static_response"
+                            }
+                          ],
+                          "terminal": true
+                        },
+                        {
+                          "group": null,
+                          "matchers": [],
+                          "handlers": [
+                            {
+                              "kind": "reverse_proxy",
+                              "upstreams": [
+                                {
+                                  "kind": "socket",
+                                  "address": "192.0.2.10:8443"
+                                }
+                              ],
+                              "complete": true,
+                              "tls": true,
+                              "forward_auth": false
+                            }
+                          ],
+                          "terminal": false
+                        }
+                      ]
+                    }
+                  ],
+                  "terminal": false
+                }
+              ]
+            }
+          ],
+          "terminal": true
+        }
+      ]
+    },
+    {
+      "name": "internal",
+      "listen": [
+        {
+          "network": "tcp",
+          "host": {
+            "kind": "ipv4",
+            "ip": "127.0.0.1"
+          },
+          "ports": {
+            "first": 9080,
+            "last": 9080
+          }
+        }
+      ],
+      "automatic_https": {
+        "disabled": true,
+        "redirects_disabled": false,
+        "hosts_skipped": false
+      },
+      "http3": false,
+      "tls_policies": [],
+      "routes": [
+        {
+          "group": null,
+          "matchers": [
+            {
+              "hosts": null,
+              "paths": [
+                {
+                  "kind": "prefix",
+                  "prefix": "/admin"
+                }
+              ],
+              "complete": true
+            },
+            {
+              "hosts": [
+                {
+                  "kind": "exact",
+                  "host": "admin.example.test"
+                }
+              ],
+              "paths": null,
+              "complete": true
+            }
+          ],
+          "handlers": [
+            {
+              "kind": "authentication",
+              "http_basic": true,
+              "other_providers": false
+            },
+            {
+              "kind": "reverse_proxy",
+              "upstreams": [
+                {
+                  "kind": "localhost",
+                  "port": 4000
+                }
+              ],
+              "complete": true,
+              "tls": false,
+              "forward_auth": false
+            }
+          ],
+          "terminal": false
+        },
+        {
+          "group": null,
+          "matchers": [],
+          "handlers": [
+            {
+              "kind": "reverse_proxy",
+              "upstreams": [
+                {
+                  "kind": "hostname",
+                  "host": "auth.example.test",
+                  "port": 9091
+                }
+              ],
+              "complete": false,
+              "tls": false,
+              "forward_auth": true
+            },
+            {
+              "kind": "reverse_proxy",
+              "upstreams": [
+                {
+                  "kind": "socket",
+                  "address": "198.51.100.7:8000"
+                }
+              ],
+              "complete": true,
+              "tls": false,
+              "forward_auth": false
+            }
+          ],
+          "terminal": false
+        }
+      ]
+    }
+  ],
+  "uncertainties": [
+    {
+      "kind": "unresolved_host",
+      "construct": "dial",
+      "location": "apps.http.servers[\"internal\"].routes[1].handle[0].upstreams[0].dial"
+    }
+  ],
+  "uncertainties_omitted": 0
+}
