@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "ports": [
+    {
+      "port": 8080,
+      "protocol": "tcp",
+      "address": "127.0.0.1",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 42,
+        "name": "worker"
+      },
+      "reach": {
+        "kind": "from",
+        "networks": [
+          "this_host"
+        ]
+      },
+      "reason": {
+        "kind": "loopback"
+      },
+      "warning": null
+    },
+    {
+      "port": 8443,
+      "protocol": "tcp",
+      "address": "192.0.2.10",
+      "listener": "host_socket",
+      "service": {
+        "kind": "process",
+        "pid": 42,
+        "name": "worker"
+      },
+      "reach": {
+        "kind": "unknown"
+      },
+      "reason": {
+        "kind": "macos_inventory"
+      },
+      "warning": null
+    }
+  ],
+  "warnings": [],
+  "collector_errors": [],
+  "macos": {
+    "socket_visibility": "Inventory covers processes lsof can inspect. Other listeners may be missing.",
+    "application_firewall": {
+      "state": "enabled"
+    },
+    "pf": {
+      "status": "disabled"
+    }
+  }
+}

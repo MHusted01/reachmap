@@ -37,10 +37,34 @@ those rows with a diagnostic. IPv6 scopes distinguish sockets during collection.
 Two sockets on different scopes may display the same IP address.
 
 Loopback binds show `this host`. For other binds the scan shows the address
-and reports remote reachability as unknown. The application firewall's global
-setting appears below the table as enabled, disabled or unknown. App-specific
-rules, pf, Docker publishes and Tailscale shares are outside the macOS scan
-scope.
+and reports remote reachability as unknown. Below the table, the scan keeps
+three macOS signals separate:
+
+- **Application firewall.** The global setting appears as `enabled`, `disabled`
+  or `unknown` via `/usr/libexec/ApplicationFirewall/socketfilterfw`. Per-app
+  application firewall rules are outside the macOS scan scope.
+- **pf status and input verdicts.** `reachmap scan` runs `/sbin/pfctl` with an
+  isolated environment, explicit timeouts and bounded output limits (`pfctl -s info`,
+  `pfctl -sr`, `pfctl -v -s Interfaces`, and `pfctl -sA` / `pfctl -a <anchor> -sr`
+  up to 64 anchors and depth 8), plus `/sbin/ifconfig -a` for interface
+  addresses. Rules are parsed in memory and raw `pfctl` output is discarded.
+  - Reading `/dev/pf` requires `sudo`. Without `sudo`, or when `pfctl` fails,
+    times out or exceeds its output, anchor-count or depth bounds, pf is
+    reported as `unknown` with the reason, never as `pass`.
+  - When pf is disabled, reachmap reports that pf does not filter inbound
+    traffic while keeping the application firewall setting separate.
+  - When pf is enabled, each listening socket gets a per-interface `pass`,
+    `block` or `unknown` verdict with its deciding rule or reason. Wildcard `::`
+    sockets are checked for both IPv4 and IPv6 because `lsof` does not report
+    `IPV6_V6ONLY`.
+  - **What pf evidence does not cover:** application firewall per-app rules,
+    `rdr`/`nat`/`binat` translation rules (`pfctl -sn` is not collected, though
+    any `rdr`/`nat`/`binat` lines seen in `pfctl -sr` make matching targets
+    `unknown`), pf tables (`<name>`), source address or port restrictions, user,
+    group, OS fingerprint, state limits, dynamic `(iface)` addresses, interface
+    groups, multicast destinations, Docker publishes and Tailscale shares.
+- **Socket visibility.** The lsof note under the footer records that unprivileged
+  scans can miss sockets owned by other users.
 
 ## Columns
 

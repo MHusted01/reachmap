@@ -1,0 +1,9 @@
+Status: Disabled                              Debug: Urgent
+
+State Table                          Total             Rate
+  current entries                        0               
+  searches                               0            0.0/s
+  inserts                                0            0.0/s
+  removals                               0            0.0/s
+Counters
+  match                                  0            0.0/s

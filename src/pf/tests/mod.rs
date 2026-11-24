@@ -6,6 +6,7 @@ use crate::socket::Protocol;
 
 use super::{AnchorRulesets, Ruleset, Traffic, Verdict};
 
+mod collector;
 mod edge_cases;
 mod regressions;
 

@@ -15,20 +15,31 @@
 //! unknown unless [`Traffic::source`] names one.
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::net::IpAddr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::socket::Protocol;
 
+mod collect;
 mod eval;
 mod fields;
 mod lex;
 mod matching;
 mod model;
 mod parse;
+mod report;
 
+pub use collect::{CollectedPf, PfCollectError, PfCommand, PfRunner, collect_with};
+#[cfg(target_os = "macos")]
+pub(crate) use collect::{
+    PFCTL_ANCHORS_LIMIT, PFCTL_IFACES_LIMIT, PFCTL_INFO_LIMIT, PFCTL_RULES_LIMIT,
+};
 pub use model::Ruleset;
+pub use report::{
+    MacosInterfaces, PfInterfaceVerdict, PfPort, PfReport, SocketTarget, parse_ifconfig,
+};
 
 #[cfg(test)]
 mod tests;
@@ -63,7 +74,7 @@ pub struct Traffic<'a> {
 }
 
 /// What pf does with the traffic, and why.
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum Verdict {
     /// pf lets the traffic in.
@@ -83,12 +94,29 @@ pub enum Verdict {
     },
 }
 
+impl fmt::Display for Verdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (verdict, reason) = match self {
+            Self::Pass { reason } => ("pass", reason),
+            Self::Block { reason } => ("block", reason),
+            Self::Unknown { reason } => ("unknown", reason),
+        };
+        write!(f, "{verdict} ({reason})")
+    }
+}
+
 impl Ruleset {
     /// Reads `pfctl -sr` output, with optional `set skip on` lines. Never
     /// fails: a line that cannot be read makes verdicts that reach it unknown.
     #[must_use]
     pub fn parse(text: &str) -> Self {
         parse::parse(text)
+    }
+
+    /// Adds concrete skipped interface names reported by `pfctl -v -s Interfaces`.
+    pub(crate) fn add_skipped_interfaces(&mut self, names: impl IntoIterator<Item = String>) {
+        self.skip
+            .extend(names.into_iter().map(|name| model::Skip { line: 1, name }));
     }
 
     /// Evaluates the rules for `traffic`. An `anchor` line is replaced by the

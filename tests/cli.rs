@@ -330,11 +330,16 @@ fn macos_scan_reports_ipv4_and_ipv6_sockets_and_their_owner() {
         report["macos"]["application_firewall"]["state"].as_str(),
         Some("enabled" | "disabled" | "unknown")
     ));
+    assert!(matches!(
+        report["macos"]["pf"]["status"].as_str(),
+        Some("enabled" | "disabled" | "unknown")
+    ));
     assert!(report["macos"]["socket_visibility"].is_string());
     let out = run(&["scan"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     let table = stdout(&out);
     assert!(table.contains("macOS application firewall"));
+    assert!(table.contains("macOS pf:"));
     assert!(table.contains("processes lsof can inspect"));
     for (address, protocol, table_protocol) in sockets {
         let row = ports.iter().find(|row| {

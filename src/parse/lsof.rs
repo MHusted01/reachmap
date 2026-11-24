@@ -11,7 +11,17 @@ pub(crate) struct ParseError {
     pub(crate) record: usize,
 }
 
+#[cfg(test)]
 pub(crate) fn parse(text: &str) -> Result<Vec<(Endpoint, Process)>, ParseError> {
+    Ok(parse_with_zones(text)?
+        .into_iter()
+        .map(|(endpoint, process, _)| (endpoint, process))
+        .collect())
+}
+
+pub(crate) fn parse_with_zones(
+    text: &str,
+) -> Result<Vec<(Endpoint, Process, Option<String>)>, ParseError> {
     if text.is_empty() {
         return Ok(Vec::new());
     }
@@ -43,11 +53,15 @@ pub(crate) fn parse(text: &str) -> Result<Vec<(Endpoint, Process)>, ParseError> 
             return Err(error());
         }
     }
-    sockets.sort_by_key(|(endpoint, process, zone)| (*endpoint, process.pid, *zone));
-    sockets.dedup_by_key(|(endpoint, process, zone)| (*endpoint, process.pid, *zone));
+    sockets.sort_by_key(|(endpoint, process, zone)| {
+        (*endpoint, process.pid, zone.map(ToOwned::to_owned))
+    });
+    sockets.dedup_by_key(|(endpoint, process, zone)| {
+        (*endpoint, process.pid, zone.map(ToOwned::to_owned))
+    });
     Ok(sockets
         .into_iter()
-        .map(|(endpoint, process, _)| (endpoint, process))
+        .map(|(endpoint, process, zone)| (endpoint, process, zone.map(ToOwned::to_owned)))
         .collect())
 }
 

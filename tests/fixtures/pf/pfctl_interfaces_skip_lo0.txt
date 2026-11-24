@@ -1,0 +1,7 @@
+en0
+	Cleared:     Thu Nov 20 10:00:00 2026
+	References:  0
+lo
+lo0 (skip)
+	Cleared:     Thu Nov 20 10:00:00 2026
+	References:  0

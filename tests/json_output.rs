@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::process::ExitStatus;
+use std::time::Duration;
 
 use reachmap::baseline::parse;
 use reachmap::collect::{CollectError, ProcessFds, RawProcess, RawTable};
@@ -22,8 +23,11 @@ use reachmap::parse::ip_addr::parse_ip_addr;
 use reachmap::parse::iptables::parse_docker_user;
 use reachmap::parse::tailscale::parse_serve_status;
 use reachmap::parse::ufw::parse_ufw_conf;
-use reachmap::scan::{InterfacesError, join, parse_tables};
-use reachmap::socket::{AddressFamily, ListeningSocket, Protocol, SocketOptions};
+use reachmap::pf::{PfCommand, PfReport, PfRunner, SocketTarget, collect_with, parse_ifconfig};
+use reachmap::probe::claims;
+use reachmap::scan::{ApplicationFirewall, InterfacesError, MacosReport, join, parse_tables};
+use reachmap::service::Process;
+use reachmap::socket::{AddressFamily, Endpoint, ListeningSocket, Protocol, SocketOptions};
 use reachmap::socket_options::{OptionsReport, SocketOptionsError};
 use reachmap::tailscale::TailscaleError;
 
@@ -211,4 +215,133 @@ fn a_scan_with_missing_collectors_matches_the_snapshot() {
         render(&report).unwrap(),
         include_str!("fixtures/scan_report_degraded.json")
     );
+}
+
+enum MacosFixtureMode {
+    Disabled,
+    Enabled,
+    Denied,
+}
+
+struct MacosPfFixtureRunner {
+    mode: MacosFixtureMode,
+}
+
+fn exit_status_one() -> ExitStatus {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        ExitStatus::from_raw(1 << 8)
+    }
+    #[cfg(not(unix))]
+    {
+        ExitStatus::default()
+    }
+}
+
+impl PfRunner for MacosPfFixtureRunner {
+    fn run(&mut self, command: PfCommand<'_>, _timeout: Duration) -> Result<String, CollectError> {
+        match (&self.mode, command) {
+            (MacosFixtureMode::Denied, PfCommand::Info) => Err(CollectError::CommandFailed {
+                command: "/sbin/pfctl -s info".to_owned(),
+                status: exit_status_one(),
+                stderr: "pfctl: /dev/pf: Operation not permitted".to_owned(),
+            }),
+            (MacosFixtureMode::Disabled, PfCommand::Info) => {
+                Ok(include_str!("fixtures/pf/pfctl_info_disabled.txt").to_owned())
+            }
+            (_, PfCommand::Info) => {
+                Ok(include_str!("fixtures/pf/pfctl_info_enabled.txt").to_owned())
+            }
+            (_, PfCommand::MainRules) => {
+                Ok(include_str!("fixtures/pf/default_block.txt").to_owned())
+            }
+            (_, PfCommand::Interfaces) => {
+                Ok(include_str!("fixtures/pf/pfctl_interfaces_skip_lo0.txt").to_owned())
+            }
+            (_, PfCommand::RootAnchors) => {
+                Ok(include_str!("fixtures/pf/pfctl_anchors_default.txt").to_owned())
+            }
+            (_, PfCommand::AnchorRules(_)) => Ok(String::new()),
+            (_, PfCommand::AnchorChildren("com.apple")) => {
+                Ok(include_str!("fixtures/pf/pfctl_anchors_com_apple.txt").to_owned())
+            }
+            (_, PfCommand::AnchorChildren(_)) => Ok(String::new()),
+        }
+    }
+}
+
+fn macos_fixture_sockets() -> Vec<(Endpoint, Process)> {
+    let worker = Process {
+        pid: 42,
+        name: "worker".to_owned(),
+    };
+    vec![
+        (
+            Endpoint {
+                port: 8080,
+                protocol: Protocol::Tcp,
+                address: "127.0.0.1".parse().unwrap(),
+            },
+            worker.clone(),
+        ),
+        (
+            Endpoint {
+                port: 8443,
+                protocol: Protocol::Tcp,
+                address: "192.0.2.10".parse().unwrap(),
+            },
+            worker,
+        ),
+    ]
+}
+
+fn macos_pf_report(mode: MacosFixtureMode, sockets: &[(Endpoint, Process)]) -> PfReport {
+    let targets: Vec<SocketTarget> = sockets
+        .iter()
+        .map(|(endpoint, _)| SocketTarget {
+            endpoint: *endpoint,
+            zone: None,
+        })
+        .collect();
+    let ifaces = parse_ifconfig(include_str!("fixtures/pf/ifconfig_macos.txt"));
+    let collected = collect_with(&mut MacosPfFixtureRunner { mode });
+    PfReport::evaluate(collected, &targets, Ok(&ifaces))
+}
+
+#[test]
+fn macos_pf_reports_match_snapshots_and_stay_compatible_with_diff_and_probe() {
+    let sockets = macos_fixture_sockets();
+    let cases = [
+        (
+            MacosFixtureMode::Disabled,
+            ApplicationFirewall::Enabled,
+            include_str!("fixtures/pf/scan_report_macos_disabled.json"),
+        ),
+        (
+            MacosFixtureMode::Enabled,
+            ApplicationFirewall::Disabled,
+            include_str!("fixtures/pf/scan_report_macos_enabled.json"),
+        ),
+        (
+            MacosFixtureMode::Denied,
+            ApplicationFirewall::Enabled,
+            include_str!("fixtures/pf/scan_report_macos_unknown.json"),
+        ),
+    ];
+    for (mode, firewall, expected) in cases {
+        let pf = macos_pf_report(mode, &sockets);
+        let report = MacosReport::scan_report(sockets.clone(), firewall, Some(pf), None);
+        let json = render(&report).unwrap();
+        assert_eq!(json, expected);
+        assert!(parse(&json).is_ok());
+        assert!(claims::parse(&json).is_ok());
+    }
+
+    let legacy = include_str!("fixtures/pf/scan_report_macos_legacy.json");
+    assert!(parse(legacy).is_ok());
+    assert!(claims::parse(legacy).is_ok());
+    let legacy_doc: serde_json::Value = serde_json::from_str(legacy).unwrap();
+    let macos: MacosReport = serde_json::from_value(legacy_doc["macos"].clone()).unwrap();
+    assert_eq!(macos.pf, None);
 }
