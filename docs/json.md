@@ -37,6 +37,17 @@ diagnostic. Its `application_firewall`
 object has a `state` of `enabled`, `disabled` or `unknown`. An unknown state
 also has a `reason` string. The state describes the global setting.
 
+When present, `macos.pf` holds packet filter (`pf`) evidence independently of
+`application_firewall` and `ports` (older macOS scans omit `pf`):
+
+- `status: "disabled"`: pf is off and does not filter inbound traffic.
+- `status: "unknown"`, with `reason` (string): pf status or rules could not be
+  collected (for example, run without `sudo`, timed out, or exceeded bounds).
+- `status: "enabled"`, with `ports` (array): one entry per listening socket and
+  packet IP family (`port`, `protocol`, `address`, `family`, and `interfaces`).
+  Each entry in `interfaces` has an optional `interface` name (omitted when
+  no interface applies), `verdict` (`pass`, `block` or `unknown`) and `reason`.
+
 ## Exit status
 
 The same as without `--json` (see [the scan page](scan.md#exit-status)):

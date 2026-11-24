@@ -31,10 +31,39 @@ enum Parsed {
 
 pub(super) fn parse(text: &str) -> Ruleset {
     let mut ruleset = Ruleset::default();
+    let mut brace_depth: usize = 0;
     for (index, raw) in text.lines().enumerate() {
         let line = index + 1;
         let trimmed = raw.trim();
+        if brace_depth > 0 {
+            let (opens, closes) = brace_counts(raw);
+            brace_depth = brace_depth.saturating_add(opens).saturating_sub(closes);
+            continue;
+        }
         if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let (opens, closes) = brace_counts(trimmed);
+        if opens > closes {
+            brace_depth = opens - closes;
+            let entry = match trimmed.split_whitespace().next() {
+                Some("table") => None,
+                Some("rdr-anchor" | "nat-anchor" | "binat-anchor") => Some(Kind::Translation {
+                    criteria: Criteria::default(),
+                    target: TranslationTarget::Any,
+                }),
+                _ => Some(Kind::Unparseable),
+            };
+            if let Some(kind) = entry {
+                ruleset.entries.push(Entry { line, kind });
+            }
+            continue;
+        }
+        if closes > opens {
+            ruleset.entries.push(Entry {
+                line,
+                kind: Kind::Unparseable,
+            });
             continue;
         }
         match parse_line(trimmed) {
@@ -44,6 +73,22 @@ pub(super) fn parse(text: &str) -> Ruleset {
         }
     }
     ruleset
+}
+
+fn brace_counts(line: &str) -> (usize, usize) {
+    let mut opens = 0usize;
+    let mut closes = 0usize;
+    let mut in_quotes = false;
+    for ch in line.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '#' if !in_quotes => break,
+            '{' if !in_quotes => opens += 1,
+            '}' if !in_quotes => closes += 1,
+            _ => {}
+        }
+    }
+    (opens, closes)
 }
 
 fn record_skip(ruleset: &mut Ruleset, line: usize, names: Vec<String>) {

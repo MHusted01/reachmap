@@ -103,6 +103,9 @@ impl fmt::Display for Report<'_> {
                 "\nmacOS application firewall: {}",
                 macos.application_firewall
             )?;
+            if let Some(pf) = &macos.pf {
+                write!(f, "{pf}")?;
+            }
             writeln!(f, "note: {}", macos.socket_visibility)?;
         }
         Ok(())
