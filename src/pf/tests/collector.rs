@@ -421,7 +421,9 @@ fn skipped_interface_group_turns_block_unknown_but_keeps_pass() {
     runner.main_rules = Some(Ok(
         "block drop in on en0 all\npass in on lo0 all\n".to_owned()
     ));
-    runner.interfaces = Some(Ok("egress (skip)\nen0\nlo0 (skip)\n".to_owned()));
+    runner.interfaces = Some(Ok(
+        "egress (skip)\n\u{2003}en0 (skip)\nen0\nlo0 (skip)\n".to_owned()
+    ));
     let collected = collect_with(&mut runner).unwrap();
     let ifaces = parse_ifconfig(IFCONFIG_MACOS);
     let sockets = [
@@ -700,11 +702,66 @@ fn link_local_zone_scopes_to_one_interface_and_unzoned_duplicate_is_unknown() {
     ));
 
     let numeric = ports.iter().find(|p| p.port == 5355).unwrap();
-    assert_eq!(numeric.interfaces[0].interface, None);
+    assert_eq!(numeric.interfaces[0].interface.as_deref(), Some("en0"));
     assert!(matches!(
-        &numeric.interfaces[0].outcome,
-        Verdict::Unknown { reason } if reason.contains("numeric IPv6 zone")
+        numeric.interfaces[0].outcome,
+        Verdict::Block { .. }
     ));
+
+    // Unresolvable embedded scope and unresolvable numeric zone both become Unknown.
+    let mut runner2 = StubRunner::enabled_default();
+    let collected2 = collect_with(&mut runner2).unwrap();
+    let unresolved = [
+        target_with_zone(5356, Protocol::Udp, "fe80:63::1234", None),
+        target_with_zone(5357, Protocol::Udp, "fe80::1234", Some("99")),
+    ];
+    let PfReport::Enabled {
+        ports: unresolved_ports,
+    } = PfReport::evaluate(Ok(collected2), &unresolved, Ok(&ifaces))
+    else {
+        panic!("expected enabled pf report");
+    };
+    for port in unresolved_ports {
+        assert_eq!(port.interfaces[0].interface, None);
+        assert!(matches!(
+            &port.interfaces[0].outcome,
+            Verdict::Unknown { reason } if reason.contains("scope id 99")
+        ));
+    }
+}
+
+#[test]
+fn point_to_point_interface_checks_limited_broadcast_for_wildcard_udp() {
+    let ifconfig_p2p = concat!(
+        "utun0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 1380\n",
+        "\tinet 100.64.0.1 --> 100.64.0.1 netmask 0xffffffff\n",
+    );
+    let mut runner = StubRunner::enabled_default();
+    runner.main_rules = Some(Ok(concat!(
+        "scrub in all fragment reassemble\n",
+        "block drop in all\n",
+        "pass in on utun0 inet proto udp from any to 255.255.255.255 port = 5353 keep state\n",
+    )
+    .to_owned()));
+    let collected = collect_with(&mut runner).unwrap();
+    let ifaces = parse_ifconfig(ifconfig_p2p);
+    let sockets = [
+        target(5353, Protocol::Udp, "0.0.0.0"),
+        target(5353, Protocol::Tcp, "0.0.0.0"),
+    ];
+    let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
+    else {
+        panic!("expected enabled pf report");
+    };
+    let udp = ports.iter().find(|p| p.protocol == Protocol::Udp).unwrap();
+    assert_eq!(udp.interfaces[0].interface.as_deref(), Some("utun0"));
+    assert!(matches!(
+        &udp.interfaces[0].outcome,
+        Verdict::Unknown { reason } if reason.contains("differ across addresses")
+    ));
+    let tcp = ports.iter().find(|p| p.protocol == Protocol::Tcp).unwrap();
+    assert_eq!(tcp.interfaces[0].interface.as_deref(), Some("utun0"));
+    assert!(matches!(tcp.interfaces[0].outcome, Verdict::Block { .. }));
 }
 
 #[test]

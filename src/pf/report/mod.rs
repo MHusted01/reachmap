@@ -16,6 +16,7 @@ use super::{CollectedPf, PfCollectError, Verdict};
 
 mod eval;
 mod ifconfig;
+mod wildcard;
 
 use eval::EvalContext;
 pub use ifconfig::{MacosInterfaces, parse_ifconfig};

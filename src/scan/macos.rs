@@ -534,4 +534,69 @@ mod tests {
             Verdict::Block { .. }
         ));
     }
+
+    #[test]
+    fn assemble_scan_decodes_embedded_lsof_ipv6_scope_against_ifconfig_scopeid() {
+        use std::time::Duration;
+
+        use crate::collect::CollectError;
+        use crate::pf::{PfCommand, PfRunner, collect_with};
+
+        struct RuleRunner;
+        impl PfRunner for RuleRunner {
+            fn run(
+                &mut self,
+                command: PfCommand<'_>,
+                _timeout: Duration,
+            ) -> Result<String, CollectError> {
+                match command {
+                    PfCommand::Info => Ok(include_str!(
+                        "../../tests/fixtures/pf/pfctl_info_enabled.txt"
+                    )
+                    .to_owned()),
+                    PfCommand::MainRules => Ok(concat!(
+                        "scrub in all fragment reassemble\n",
+                        "block drop in all\n",
+                        "pass in on en0 inet6 proto udp from any to fe80::1234 port = 5353 keep state\n",
+                    )
+                    .to_owned()),
+                    PfCommand::Interfaces => Ok("en0\nen1\n".to_owned()),
+                    PfCommand::RootAnchors => Ok(String::new()),
+                    PfCommand::AnchorRules(_) | PfCommand::AnchorChildren(_) => Ok(String::new()),
+                }
+            }
+        }
+
+        let lsof_text = concat!(
+            "p42\0cworker\0\n",
+            "f3\0tIPv6\0PUDP\0n[fe80:4::1234]:5353\0\n",
+        );
+        let ifconfig_both = concat!(
+            "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+            "\tinet6 fe80::1234%en0 prefixlen 64 scopeid 0x4\n",
+            "\tstatus: active\n",
+            "en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+            "\tinet6 fe80::1234%en1 prefixlen 64 scopeid 0x5\n",
+            "\tstatus: active\n",
+        );
+        let report = assemble_scan(
+            lsof_text,
+            None,
+            Ok("Firewall is disabled. (State = 0)\n".to_owned()),
+            collect_with(&mut RuleRunner),
+            || Ok(ifconfig_both.to_owned()),
+        )
+        .unwrap();
+        let PfReport::Enabled { ports } = report.macos.as_ref().unwrap().pf.as_ref().unwrap()
+        else {
+            panic!("expected enabled pf report");
+        };
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].interfaces.len(), 1);
+        assert_eq!(ports[0].interfaces[0].interface.as_deref(), Some("en0"));
+        assert!(matches!(
+            ports[0].interfaces[0].outcome,
+            Verdict::Pass { .. }
+        ));
+    }
 }

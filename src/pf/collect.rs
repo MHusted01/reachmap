@@ -307,7 +307,7 @@ fn parse_interfaces(text: &str) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet
     let mut skipped_concrete = BTreeSet::new();
     let mut skipped_groups = BTreeSet::new();
     for line in text.lines() {
-        if line.is_empty() || line.starts_with(|ch: char| ch.is_ascii_whitespace()) {
+        if line.is_empty() || line.starts_with(char::is_whitespace) {
             continue;
         }
         let Some(name) = line.split_whitespace().next() else {
@@ -317,7 +317,7 @@ fn parse_interfaces(text: &str) -> (BTreeSet<String>, BTreeSet<String>, BTreeSet
             continue;
         }
         listed.insert(name.to_owned());
-        let rest = &line[name.len()..];
+        let rest = line.trim_start().strip_prefix(name).unwrap_or_default();
         let is_skipped = rest
             .split(['(', ')', ',', ' ', '\t'])
             .any(|token| token == "skip");

@@ -58,11 +58,14 @@ three macOS signals separate:
     macOS's weak-host input model, non-loopback, non-link-local destinations are
     evaluated across every active (`UP`, not `inactive`) interface, while
     loopback binds stay on loopback interfaces and link-local binds stay scoped
-    to their zone interface (or `unknown` if multiple interfaces share an
-    un-zoned link-local address). IPv4 wildcard UDP checks also cover limited
-    (`255.255.255.255`) and per-interface broadcast destinations. Wildcard `::`
-    sockets report their IPv4 verdict as `unknown` because `lsof` does not
-    report `IPV6_V6ONLY`.
+    to their zone interface (matching `%zone`, numeric zones, or embedded
+    `fe80:<scope>::...` scope IDs against `ifconfig -a` `scopeid`, or
+    `unknown` if multiple interfaces share an un-zoned link-local address).
+    IPv4 wildcard UDP checks also cover limited (`255.255.255.255`) broadcast on
+    every active non-loopback interface (including point-to-point) and
+    per-interface directed broadcast destinations. Wildcard `::` sockets report
+    their IPv4 verdict as `unknown` because `lsof` does not report
+    `IPV6_V6ONLY`.
   - **What pf evidence does not cover:** application firewall per-app rules,
     `rdr`/`nat`/`binat` translation rules (`pfctl -sn` is not collected, though
     any `rdr`/`nat`/`binat` lines seen in `pfctl -sr` make matching targets

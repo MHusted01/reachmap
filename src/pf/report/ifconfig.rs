@@ -12,6 +12,7 @@ pub(super) struct InterfaceInfo {
     pub(super) is_loopback: bool,
     pub(super) is_broadcast: bool,
     pub(super) is_inactive: bool,
+    pub(super) scope_id: Option<u16>,
     pub(super) addresses: BTreeSet<IpAddr>,
     pub(super) broadcasts: BTreeSet<IpAddr>,
 }
@@ -23,6 +24,7 @@ impl Default for InterfaceInfo {
             is_loopback: false,
             is_broadcast: false,
             is_inactive: false,
+            scope_id: None,
             addresses: BTreeSet::new(),
             broadcasts: BTreeSet::new(),
         }
@@ -42,6 +44,30 @@ impl MacosInterfaces {
             .filter(|(_, info)| info.is_up && !info.is_inactive)
             .collect()
     }
+
+    pub(super) fn interface_for_scope_id(&self, scope_id: u16) -> Option<&str> {
+        let mut matches = self
+            .interfaces
+            .iter()
+            .filter(|(_, info)| info.scope_id == Some(scope_id))
+            .map(|(name, _)| name.as_str());
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+}
+
+/// Decodes XNU's KAME-style embedded link-local interface index (`fe80:4::...`),
+/// returning the canonical IPv6 address and extracted scope ID if present.
+pub(super) fn decode_embedded_scope(ip: IpAddr) -> (IpAddr, Option<u16>) {
+    if let IpAddr::V6(v6) = ip {
+        let mut segs = v6.segments();
+        if (segs[0] & 0xffc0) == 0xfe80 && segs[1] != 0 {
+            let scope_id = segs[1];
+            segs[1] = 0;
+            return (IpAddr::V6(Ipv6Addr::from(segs)), Some(scope_id));
+        }
+    }
+    (ip, None)
 }
 
 /// Parses `ifconfig -a` output into interface addresses and link states.
@@ -78,16 +104,7 @@ pub fn parse_ifconfig(text: &str) -> MacosInterfaces {
         if let Some(rest) = trimmed.strip_prefix("inet ") {
             parse_inet(rest, info);
         } else if let Some(rest) = trimmed.strip_prefix("inet6 ") {
-            if let Some(token) = rest.split_whitespace().next() {
-                let ip_part = token.split('%').next().unwrap_or(token);
-                if let Ok(ip) = ip_part.parse::<Ipv6Addr>() {
-                    let addr = IpAddr::V6(ip);
-                    if addr.is_loopback() {
-                        info.is_loopback = true;
-                    }
-                    info.addresses.insert(addr);
-                }
-            }
+            parse_inet6(rest, info);
         } else if let Some(rest) = trimmed.strip_prefix("status:") {
             let status = rest.trim();
             if status.eq_ignore_ascii_case("inactive") {
@@ -147,6 +164,38 @@ fn parse_inet(rest: &str, info: &mut InterfaceInfo) {
         info.broadcasts
             .insert(IpAddr::V4(Ipv4Addr::from(u32::from(ip) | !mask)));
     }
+}
+
+fn parse_inet6(rest: &str, info: &mut InterfaceInfo) {
+    let mut tokens = rest.split_whitespace();
+    let Some(token) = tokens.next() else {
+        return;
+    };
+    let ip_part = token.split('%').next().unwrap_or(token);
+    if let Ok(ip) = ip_part.parse::<Ipv6Addr>() {
+        let addr = IpAddr::V6(ip);
+        if addr.is_loopback() {
+            info.is_loopback = true;
+        }
+        info.addresses.insert(addr);
+    }
+    while let Some(key) = tokens.next() {
+        if key == "scopeid"
+            && let Some(val) = tokens.next()
+            && let Some(parsed) = parse_scope_id(val)
+        {
+            info.scope_id = Some(parsed);
+        }
+    }
+}
+
+fn parse_scope_id(val: &str) -> Option<u16> {
+    let parsed = if let Some(hex) = val.strip_prefix("0x").or_else(|| val.strip_prefix("0X")) {
+        u16::from_str_radix(hex, 16).ok()
+    } else {
+        val.parse::<u16>().ok()
+    };
+    parsed.filter(|id| *id != 0)
 }
 
 fn parse_flags(rest: &str) -> (bool, bool, bool) {
