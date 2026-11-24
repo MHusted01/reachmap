@@ -4,10 +4,13 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 
 use crate::sanitize::sanitize;
-use crate::socket::{AddressFamily, Protocol};
+use crate::socket::{AddressFamily, Endpoint, Protocol};
 
 use super::super::{AnchorRulesets, Ruleset, Traffic, Verdict};
-use super::{MacosInterfaces, PfInterfaceVerdict, SocketTarget};
+use super::{MacosInterfaces, PfInterfaceVerdict};
+
+const UNVERIFIED_V6ONLY_REASON: &str = "dual-stack acceptance of IPv4 on this IPv6 wildcard socket is not verified \
+     (lsof does not report IPV6_V6ONLY)";
 
 pub(super) struct EvalContext<'a> {
     pub(super) rules: &'a Ruleset,
@@ -20,9 +23,8 @@ pub(super) struct EvalContext<'a> {
 impl EvalContext<'_> {
     pub(super) fn evaluate_socket(
         &self,
-        socket: &SocketTarget,
+        endpoint: Endpoint,
     ) -> Vec<(AddressFamily, Vec<PfInterfaceVerdict>)> {
-        let endpoint = socket.endpoint;
         let canonical = endpoint.address.to_canonical();
         if canonical.is_multicast() {
             return vec![(
@@ -44,11 +46,12 @@ impl EvalContext<'_> {
                 IpAddr::V6(_) => vec![
                     (
                         AddressFamily::Ipv4,
-                        self.evaluate_wildcard(
-                            AddressFamily::Ipv4,
-                            endpoint.protocol,
-                            endpoint.port,
-                        ),
+                        vec![PfInterfaceVerdict {
+                            interface: None,
+                            outcome: Verdict::Unknown {
+                                reason: UNVERIFIED_V6ONLY_REASON.to_owned(),
+                            },
+                        }],
                     ),
                     (
                         AddressFamily::Ipv6,
@@ -64,12 +67,6 @@ impl EvalContext<'_> {
         let family = family_of(canonical);
         let verdicts = if canonical.is_loopback() {
             self.evaluate_loopback(endpoint.protocol, canonical, endpoint.port)
-        } else if let Some(zone) = socket.zone.as_deref().filter(|zone| !zone.is_empty()) {
-            let iface = sanitize(zone);
-            vec![PfInterfaceVerdict {
-                interface: Some(iface.clone()),
-                outcome: self.eval_one(&iface, endpoint.protocol, canonical, endpoint.port),
-            }]
         } else {
             self.evaluate_specific(endpoint.protocol, canonical, endpoint.port)
         };
@@ -85,16 +82,16 @@ impl EvalContext<'_> {
         let ifaces = match self.interfaces {
             Ok(map) => {
                 let mut exact: Vec<String> = map
-                    .addresses
+                    .interfaces
                     .iter()
-                    .filter(|(_, ips)| ips.contains(&destination))
+                    .filter(|(_, info)| info.addresses.contains(&destination))
                     .map(|(name, _)| name.clone())
                     .collect();
                 if exact.is_empty() {
                     exact = map
-                        .addresses
+                        .interfaces
                         .iter()
-                        .filter(|(_, ips)| ips.iter().any(IpAddr::is_loopback))
+                        .filter(|(_, info)| info.is_loopback)
                         .map(|(name, _)| name.clone())
                         .collect();
                 }
@@ -132,13 +129,13 @@ impl EvalContext<'_> {
                 }];
             }
         };
-        let matching: Vec<&String> = map
-            .addresses
+        let holders: Vec<&String> = map
+            .interfaces
             .iter()
-            .filter(|(_, ips)| ips.contains(&destination))
+            .filter(|(_, info)| info.addresses.contains(&destination))
             .map(|(name, _)| name)
             .collect();
-        if matching.is_empty() {
+        if holders.is_empty() {
             return vec![PfInterfaceVerdict {
                 interface: None,
                 outcome: Verdict::Unknown {
@@ -146,7 +143,39 @@ impl EvalContext<'_> {
                 },
             }];
         }
-        matching
+        // Link-local destinations are scoped to their interface; routable
+        // destinations can arrive on any active interface under macOS's
+        // weak-host input model.
+        let ingress: Vec<&String> = if is_link_local(destination) {
+            let active_holders: Vec<&String> = map
+                .active_interfaces()
+                .into_iter()
+                .filter(|(_, info)| info.addresses.contains(&destination))
+                .map(|(name, _)| name)
+                .collect();
+            if active_holders.is_empty() {
+                holders
+            } else {
+                active_holders
+            }
+        } else {
+            let active: Vec<&String> = map
+                .active_interfaces()
+                .into_iter()
+                .map(|(name, _)| name)
+                .collect();
+            if active.is_empty() {
+                return vec![PfInterfaceVerdict {
+                    interface: None,
+                    outcome: Verdict::Unknown {
+                        reason: "no active interface can receive traffic for this address"
+                            .to_owned(),
+                    },
+                }];
+            }
+            active
+        };
+        ingress
             .into_iter()
             .map(|iface| PfInterfaceVerdict {
                 interface: Some(iface.clone()),
@@ -172,23 +201,17 @@ impl EvalContext<'_> {
                 }];
             }
         };
-        let matching: Vec<(&String, Vec<IpAddr>)> = map
-            .addresses
-            .iter()
-            .filter_map(|(name, ips)| {
-                let family_ips: Vec<IpAddr> = ips
-                    .iter()
-                    .copied()
-                    .filter(|ip| family_of(*ip) == family)
-                    .collect();
-                (!family_ips.is_empty()).then_some((name, family_ips))
-            })
+        let label = match family {
+            AddressFamily::Ipv4 => "IPv4",
+            AddressFamily::Ipv6 => "IPv6",
+        };
+        let all_family_ips: BTreeSet<IpAddr> = map
+            .interfaces
+            .values()
+            .flat_map(|info| info.addresses.iter().copied())
+            .filter(|ip| family_of(*ip) == family)
             .collect();
-        if matching.is_empty() {
-            let label = match family {
-                AddressFamily::Ipv4 => "IPv4",
-                AddressFamily::Ipv6 => "IPv6",
-            };
+        if all_family_ips.is_empty() {
             return vec![PfInterfaceVerdict {
                 interface: None,
                 outcome: Verdict::Unknown {
@@ -196,19 +219,49 @@ impl EvalContext<'_> {
                 },
             }];
         }
-        matching
-            .into_iter()
-            .map(|(iface, ips)| {
-                let verdicts: Vec<Verdict> = ips
-                    .into_iter()
-                    .map(|ip| self.eval_one(iface, protocol, ip, port))
-                    .collect();
-                PfInterfaceVerdict {
-                    interface: Some(iface.clone()),
-                    outcome: combine_address_verdicts(iface, verdicts),
-                }
-            })
-            .collect()
+        let routable_family_ips: BTreeSet<IpAddr> = all_family_ips
+            .iter()
+            .copied()
+            .filter(|ip| !ip.is_loopback() && !is_link_local(*ip))
+            .collect();
+        let mut results = Vec::new();
+        for (iface, info) in map.active_interfaces() {
+            let mut candidates: BTreeSet<IpAddr> = if info.is_loopback {
+                all_family_ips
+                    .iter()
+                    .copied()
+                    .filter(|ip| !is_link_local(*ip))
+                    .collect()
+            } else {
+                routable_family_ips.clone()
+            };
+            candidates.extend(
+                info.addresses
+                    .iter()
+                    .copied()
+                    .filter(|ip| family_of(*ip) == family && is_link_local(*ip)),
+            );
+            if candidates.is_empty() {
+                continue;
+            }
+            let verdicts: Vec<Verdict> = candidates
+                .into_iter()
+                .map(|ip| self.eval_one(iface, protocol, ip, port))
+                .collect();
+            results.push(PfInterfaceVerdict {
+                interface: Some(iface.clone()),
+                outcome: combine_address_verdicts(iface, verdicts),
+            });
+        }
+        if results.is_empty() {
+            return vec![PfInterfaceVerdict {
+                interface: None,
+                outcome: Verdict::Unknown {
+                    reason: format!("no active interface has an {label} address"),
+                },
+            }];
+        }
+        results
     }
 
     fn eval_one(
@@ -271,6 +324,13 @@ fn combine_address_verdicts(interface: &str, verdicts: Vec<Verdict>) -> Verdict 
         };
     }
     current
+}
+
+fn is_link_local(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => v4.is_link_local(),
+        IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80,
+    }
 }
 
 fn family_of(ip: IpAddr) -> AddressFamily {

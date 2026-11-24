@@ -54,15 +54,20 @@ three macOS signals separate:
   - When pf is disabled, reachmap reports that pf does not filter inbound
     traffic while keeping the application firewall setting separate.
   - When pf is enabled, each listening socket gets a per-interface `pass`,
-    `block` or `unknown` verdict with its deciding rule or reason. Wildcard `::`
-    sockets are checked for both IPv4 and IPv6 because `lsof` does not report
-    `IPV6_V6ONLY`.
+    `block` or `unknown` verdict with its deciding rule or reason. Under
+    macOS's weak-host input model, non-loopback, non-link-local destinations are
+    evaluated across every active (`UP`, not `inactive`) interface, while
+    loopback binds stay on loopback interfaces and link-local binds stay scoped
+    to the active interface that holds the address. Wildcard `::` sockets report
+    their IPv4 verdict as `unknown` because `lsof` does not report `IPV6_V6ONLY`.
   - **What pf evidence does not cover:** application firewall per-app rules,
     `rdr`/`nat`/`binat` translation rules (`pfctl -sn` is not collected, though
     any `rdr`/`nat`/`binat` lines seen in `pfctl -sr` make matching targets
-    `unknown`), pf tables (`<name>`), source address or port restrictions, user,
-    group, OS fingerprint, state limits, dynamic `(iface)` addresses, interface
-    groups, multicast destinations, Docker publishes and Tailscale shares.
+    `unknown`), inline brace-delimited anchors (`anchor ... { ... }`, which
+    report `unknown`), pf tables (`<name>`), source address or port
+    restrictions, user, group, OS fingerprint, state limits, dynamic `(iface)`
+    addresses, interface groups, multicast destinations, Docker publishes and
+    Tailscale shares.
 - **Socket visibility.** The lsof note under the footer records that unprivileged
   scans can miss sockets owned by other users.
 

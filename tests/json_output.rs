@@ -23,7 +23,7 @@ use reachmap::parse::ip_addr::parse_ip_addr;
 use reachmap::parse::iptables::parse_docker_user;
 use reachmap::parse::tailscale::parse_serve_status;
 use reachmap::parse::ufw::parse_ufw_conf;
-use reachmap::pf::{PfCommand, PfReport, PfRunner, SocketTarget, collect_with, parse_ifconfig};
+use reachmap::pf::{PfCommand, PfReport, PfRunner, collect_with, parse_ifconfig};
 use reachmap::probe::claims;
 use reachmap::scan::{ApplicationFirewall, InterfacesError, MacosReport, join, parse_tables};
 use reachmap::service::Process;
@@ -297,13 +297,7 @@ fn macos_fixture_sockets() -> Vec<(Endpoint, Process)> {
 }
 
 fn macos_pf_report(mode: MacosFixtureMode, sockets: &[(Endpoint, Process)]) -> PfReport {
-    let targets: Vec<SocketTarget> = sockets
-        .iter()
-        .map(|(endpoint, _)| SocketTarget {
-            endpoint: *endpoint,
-            zone: None,
-        })
-        .collect();
+    let targets: Vec<Endpoint> = sockets.iter().map(|(endpoint, _)| *endpoint).collect();
     let ifaces = parse_ifconfig(include_str!("fixtures/pf/ifconfig_macos.txt"));
     let collected = collect_with(&mut MacosPfFixtureRunner { mode });
     PfReport::evaluate(collected, &targets, Ok(&ifaces))

@@ -330,10 +330,9 @@ fn macos_scan_reports_ipv4_and_ipv6_sockets_and_their_owner() {
         report["macos"]["application_firewall"]["state"].as_str(),
         Some("enabled" | "disabled" | "unknown")
     ));
-    assert!(matches!(
-        report["macos"]["pf"]["status"].as_str(),
-        Some("enabled" | "disabled" | "unknown")
-    ));
+    let pf_status = report["macos"]["pf"]["status"]
+        .as_str()
+        .expect("macos.pf.status should be a string");
     assert!(report["macos"]["socket_visibility"].is_string());
     let out = run(&["scan"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
@@ -341,6 +340,53 @@ fn macos_scan_reports_ipv4_and_ipv6_sockets_and_their_owner() {
     assert!(table.contains("macOS application firewall"));
     assert!(table.contains("macOS pf:"));
     assert!(table.contains("processes lsof can inspect"));
+    match pf_status {
+        "unknown" => {
+            let reason = report["macos"]["pf"]["reason"]
+                .as_str()
+                .expect("unknown pf status must include reason");
+            assert!(
+                reason.contains("root privileges") || reason.contains("sudo"),
+                "unexpected pf unknown reason: {reason}"
+            );
+            assert!(table.contains("macOS pf: unknown ("));
+            assert!(table.contains("sudo"));
+        }
+        "disabled" => {
+            assert!(table.contains("macOS pf: disabled"));
+        }
+        "enabled" => {
+            let pf_ports = report["macos"]["pf"]["ports"]
+                .as_array()
+                .expect("enabled pf status must include ports array");
+            for (address, protocol, _) in sockets {
+                let pf_entry = pf_ports.iter().find(|entry| {
+                    entry["port"] == address.port()
+                        && entry["address"] == address.ip().to_string()
+                        && entry["protocol"] == protocol
+                });
+                let pf_entry = pf_entry
+                    .unwrap_or_else(|| panic!("missing pf verdict for {protocol} {address}"));
+                let ifaces = pf_entry["interfaces"]
+                    .as_array()
+                    .expect("pf port entry must have interfaces");
+                assert!(!ifaces.is_empty());
+                for iface in ifaces {
+                    assert!(matches!(
+                        iface["verdict"].as_str(),
+                        Some("pass" | "block" | "unknown")
+                    ));
+                    assert!(
+                        iface["reason"]
+                            .as_str()
+                            .is_some_and(|reason| !reason.is_empty())
+                    );
+                }
+            }
+            assert!(table.contains("macOS pf: enabled"));
+        }
+        other => panic!("unexpected macos.pf.status: {other}"),
+    }
     for (address, protocol, table_protocol) in sockets {
         let row = ports.iter().find(|row| {
             row["port"] == address.port()

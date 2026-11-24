@@ -6,7 +6,7 @@ use std::time::Duration;
 use crate::collect::CollectError;
 use crate::pf::{
     CollectedPf, PfCollectError, PfCommand, PfInterfaceVerdict, PfPort, PfReport, PfRunner,
-    SocketTarget, Verdict, collect_with, parse_ifconfig,
+    Verdict, collect_with, parse_ifconfig,
 };
 use crate::socket::{AddressFamily, Endpoint, Protocol};
 
@@ -87,14 +87,11 @@ impl PfRunner for StubRunner {
     }
 }
 
-fn target(port: u16, protocol: Protocol, address: &str, zone: Option<&str>) -> SocketTarget {
-    SocketTarget {
-        endpoint: Endpoint {
-            port,
-            protocol,
-            address: address.parse().unwrap(),
-        },
-        zone: zone.map(ToOwned::to_owned),
+fn target(port: u16, protocol: Protocol, address: &str) -> Endpoint {
+    Endpoint {
+        port,
+        protocol,
+        address: address.parse().unwrap(),
     }
 }
 
@@ -108,7 +105,7 @@ fn disabled_pf_stops_after_info_and_reports_disabled() {
     assert!(matches!(collected, CollectedPf::Disabled));
     assert_eq!(runner.calls, ["-s info"]);
 
-    let sockets = [target(8080, Protocol::Tcp, "0.0.0.0", None)];
+    let sockets = [target(8080, Protocol::Tcp, "0.0.0.0")];
     let ifaces = parse_ifconfig(IFCONFIG_MACOS);
     assert_eq!(
         PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces)),
@@ -122,8 +119,8 @@ fn default_macos_anchors_and_skip_lo0_pass_sockets() {
     let collected = collect_with(&mut runner).unwrap();
     let ifaces = parse_ifconfig(IFCONFIG_MACOS);
     let sockets = [
-        target(8080, Protocol::Tcp, "127.0.0.1", None),
-        target(443, Protocol::Tcp, "192.0.2.10", None),
+        target(8080, Protocol::Tcp, "127.0.0.1"),
+        target(443, Protocol::Tcp, "192.0.2.10"),
     ];
     let report = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces));
     assert_eq!(
@@ -135,12 +132,20 @@ fn default_macos_anchors_and_skip_lo0_pass_sockets() {
                     protocol: Protocol::Tcp,
                     address: "192.0.2.10".parse().unwrap(),
                     family: AddressFamily::Ipv4,
-                    interfaces: vec![PfInterfaceVerdict {
-                        interface: Some("en0".to_owned()),
-                        outcome: Verdict::Pass {
-                            reason: "no rule matched, and pf passes by default".to_owned(),
+                    interfaces: vec![
+                        PfInterfaceVerdict {
+                            interface: Some("en0".to_owned()),
+                            outcome: Verdict::Pass {
+                                reason: "no rule matched, and pf passes by default".to_owned(),
+                            },
                         },
-                    }],
+                        PfInterfaceVerdict {
+                            interface: Some("lo0".to_owned()),
+                            outcome: Verdict::Pass {
+                                reason: "the interface is excluded by set skip".to_owned(),
+                            },
+                        },
+                    ],
                 },
                 PfPort {
                     port: 8080,
@@ -166,44 +171,92 @@ fn custom_rules_evaluate_block_pass_skip_wildcard_and_dual_stack() {
     let collected = collect_with(&mut runner).unwrap();
     let ifaces = parse_ifconfig(IFCONFIG_MACOS);
     let sockets = [
-        target(22, Protocol::Tcp, "::", None),
-        target(5353, Protocol::Udp, "192.0.2.10", None),
-        target(9000, Protocol::Tcp, "192.0.2.10", None),
-        target(9001, Protocol::Tcp, "127.0.0.1", None),
+        target(22, Protocol::Tcp, "::"),
+        target(22, Protocol::Tcp, "0.0.0.0"),
+        target(5353, Protocol::Udp, "192.0.2.10"),
+        target(9000, Protocol::Tcp, "192.0.2.10"),
+        target(9001, Protocol::Tcp, "127.0.0.1"),
     ];
     let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
     else {
         panic!("expected enabled pf report");
     };
-    // `::` expands into IPv4 and IPv6 entries for port 22.
-    let v4_22 = ports
+    // `::` emits IPv4 as Unknown (`IPV6_V6ONLY` not known) and evaluates IPv6.
+    let v6_wild_v4 = ports
         .iter()
-        .find(|p| p.port == 22 && p.family == AddressFamily::Ipv4)
+        .find(|p| {
+            p.port == 22
+                && p.address == "::".parse::<std::net::IpAddr>().unwrap()
+                && p.family == AddressFamily::Ipv4
+        })
         .unwrap();
-    assert_eq!(v4_22.interfaces[0].interface.as_deref(), Some("en0"));
-    assert!(matches!(v4_22.interfaces[0].outcome, Verdict::Pass { .. }));
-    assert_eq!(v4_22.interfaces[1].interface.as_deref(), Some("lo0"));
-    assert!(matches!(v4_22.interfaces[1].outcome, Verdict::Pass { .. }));
+    assert_eq!(v6_wild_v4.interfaces[0].interface, None);
+    assert!(matches!(
+        &v6_wild_v4.interfaces[0].outcome,
+        Verdict::Unknown { reason } if reason.contains("IPV6_V6ONLY")
+    ));
 
-    let v6_22 = ports
+    let v6_wild_v6 = ports
         .iter()
-        .find(|p| p.port == 22 && p.family == AddressFamily::Ipv6)
+        .find(|p| {
+            p.port == 22
+                && p.address == "::".parse::<std::net::IpAddr>().unwrap()
+                && p.family == AddressFamily::Ipv6
+        })
         .unwrap();
-    assert_eq!(v6_22.interfaces[0].interface.as_deref(), Some("en0"));
-    assert!(matches!(v6_22.interfaces[0].outcome, Verdict::Block { .. }));
-    assert_eq!(v6_22.interfaces[1].interface.as_deref(), Some("lo0"));
-    assert!(matches!(v6_22.interfaces[1].outcome, Verdict::Pass { .. }));
+    assert_eq!(v6_wild_v6.interfaces[0].interface.as_deref(), Some("en0"));
+    assert!(matches!(
+        v6_wild_v6.interfaces[0].outcome,
+        Verdict::Block { .. }
+    ));
+    assert_eq!(v6_wild_v6.interfaces[1].interface.as_deref(), Some("lo0"));
+    assert!(matches!(
+        v6_wild_v6.interfaces[1].outcome,
+        Verdict::Pass { .. }
+    ));
+
+    // Explicit `0.0.0.0` evaluates IPv4 wildcard across active interfaces.
+    let v4_wild = ports
+        .iter()
+        .find(|p| {
+            p.port == 22
+                && p.address == "0.0.0.0".parse::<std::net::IpAddr>().unwrap()
+                && p.family == AddressFamily::Ipv4
+        })
+        .unwrap();
+    assert_eq!(v4_wild.interfaces[0].interface.as_deref(), Some("en0"));
+    assert!(matches!(
+        v4_wild.interfaces[0].outcome,
+        Verdict::Pass { .. }
+    ));
+    assert_eq!(v4_wild.interfaces[1].interface.as_deref(), Some("lo0"));
+    assert!(matches!(
+        v4_wild.interfaces[1].outcome,
+        Verdict::Pass { .. }
+    ));
 
     let udp_5353 = ports.iter().find(|p| p.port == 5353).unwrap();
+    assert_eq!(udp_5353.interfaces[0].interface.as_deref(), Some("en0"));
     assert!(matches!(
         udp_5353.interfaces[0].outcome,
         Verdict::Pass { .. }
     ));
+    assert_eq!(udp_5353.interfaces[1].interface.as_deref(), Some("lo0"));
+    assert!(matches!(
+        udp_5353.interfaces[1].outcome,
+        Verdict::Pass { .. }
+    ));
 
     let tcp_9000 = ports.iter().find(|p| p.port == 9000).unwrap();
+    assert_eq!(tcp_9000.interfaces[0].interface.as_deref(), Some("en0"));
     assert!(matches!(
         tcp_9000.interfaces[0].outcome,
         Verdict::Block { .. }
+    ));
+    assert_eq!(tcp_9000.interfaces[1].interface.as_deref(), Some("lo0"));
+    assert!(matches!(
+        tcp_9000.interfaces[1].outcome,
+        Verdict::Pass { .. }
     ));
 
     let tcp_9001 = ports.iter().find(|p| p.port == 9001).unwrap();
@@ -360,19 +413,28 @@ fn skipped_interface_group_turns_block_unknown_but_keeps_pass() {
     let collected = collect_with(&mut runner).unwrap();
     let ifaces = parse_ifconfig(IFCONFIG_MACOS);
     let sockets = [
-        target(8080, Protocol::Tcp, "192.0.2.10", None),
-        target(8081, Protocol::Tcp, "127.0.0.1", None),
+        target(8080, Protocol::Tcp, "192.0.2.10"),
+        target(8081, Protocol::Tcp, "127.0.0.1"),
     ];
     let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
     else {
         panic!("expected enabled pf report");
     };
+    let port_8080 = ports.iter().find(|p| p.port == 8080).unwrap();
+    assert_eq!(port_8080.interfaces[0].interface.as_deref(), Some("en0"));
     assert!(matches!(
-        &ports[0].interfaces[0].outcome,
+        &port_8080.interfaces[0].outcome,
         Verdict::Unknown { reason } if reason.contains("egress")
     ));
+    assert_eq!(port_8080.interfaces[1].interface.as_deref(), Some("lo0"));
     assert!(matches!(
-        &ports[1].interfaces[0].outcome,
+        &port_8080.interfaces[1].outcome,
+        Verdict::Pass { .. }
+    ));
+
+    let port_8081 = ports.iter().find(|p| p.port == 8081).unwrap();
+    assert!(matches!(
+        &port_8081.interfaces[0].outcome,
         Verdict::Pass { .. }
     ));
 }
@@ -382,10 +444,10 @@ fn ifconfig_failure_still_evaluates_loopback_and_reports_other_binds_unknown() {
     let mut runner = StubRunner::enabled_default();
     let collected = collect_with(&mut runner).unwrap();
     let sockets = [
-        target(8080, Protocol::Tcp, "127.0.0.1", None),
-        target(8081, Protocol::Tcp, "192.0.2.10", None),
-        target(8082, Protocol::Udp, "fe80::200:ff:fe00:1", Some("en0")),
-        target(5353, Protocol::Udp, "224.0.0.251", None),
+        target(8080, Protocol::Tcp, "127.0.0.1"),
+        target(8081, Protocol::Tcp, "192.0.2.10"),
+        target(8082, Protocol::Udp, "fe80::200:ff:fe00:1"),
+        target(5353, Protocol::Udp, "224.0.0.251"),
     ];
     let PfReport::Enabled { ports } =
         PfReport::evaluate(Ok(collected), &sockets, Err("ifconfig failed"))
@@ -405,9 +467,181 @@ fn ifconfig_failure_still_evaluates_loopback_and_reports_other_binds_unknown() {
         &ports[2].interfaces[0].outcome,
         Verdict::Unknown { reason } if reason.contains("ifconfig failed")
     ));
-    assert_eq!(ports[3].interfaces[0].interface.as_deref(), Some("en0"));
     assert!(matches!(
         &ports[3].interfaces[0].outcome,
+        Verdict::Unknown { reason } if reason.contains("ifconfig failed")
+    ));
+}
+
+#[test]
+fn inline_brace_anchors_do_not_leak_inner_rules_to_top_level() {
+    let rules_cases = [
+        concat!(
+            "scrub in all fragment reassemble\n",
+            "pass in quick on en0 inet proto tcp from any to any port = 8443 flags S/SA keep state\n",
+            "anchor in on en1 all {\n",
+            "  block drop in quick all\n",
+            "}\n",
+        ),
+        concat!(
+            "scrub in all fragment reassemble\n",
+            "pass in quick on en0 inet proto tcp from any to any port = 8443 flags S/SA keep state\n",
+            "anchor \"scoped\" in on en1 all {\n",
+            "  anchor \"nested\" {\n",
+            "    block drop in quick all\n",
+            "  }\n",
+            "}\n",
+        ),
+        concat!(
+            "scrub in all fragment reassemble\n",
+            "pass in quick on en0 inet proto tcp from any to any port = 8443 flags S/SA keep state\n",
+            "scrub-anchor \"sc\" in on en1 {\n",
+            "  scrub in all fragment reassemble\n",
+            "}\n",
+        ),
+    ];
+    let ifaces = parse_ifconfig(IFCONFIG_MACOS);
+    let sockets = [
+        target(8443, Protocol::Tcp, "192.0.2.10"),
+        target(9000, Protocol::Tcp, "192.0.2.10"),
+    ];
+    for rules in rules_cases {
+        let mut runner = StubRunner::enabled_default();
+        runner.main_rules = Some(Ok(rules.to_owned()));
+        let collected = collect_with(&mut runner).unwrap();
+        let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
+        else {
+            panic!("expected enabled pf report");
+        };
+        let port_8443 = ports.iter().find(|p| p.port == 8443).unwrap();
+        assert_eq!(port_8443.interfaces[0].interface.as_deref(), Some("en0"));
+        assert!(
+            matches!(&port_8443.interfaces[0].outcome, Verdict::Pass { .. }),
+            "quick pass on en0 before inline block should pass, got {:?}",
+            port_8443.interfaces[0].outcome
+        );
+
+        let port_9000 = ports.iter().find(|p| p.port == 9000).unwrap();
+        assert_eq!(port_9000.interfaces[0].interface.as_deref(), Some("en0"));
+        assert!(
+            matches!(&port_9000.interfaces[0].outcome, Verdict::Unknown { .. }),
+            "inline anchor block must not report block/pass on en0, got {:?}",
+            port_9000.interfaces[0].outcome
+        );
+    }
+
+    let mut runner = StubRunner::enabled_default();
+    runner.main_rules = Some(Ok(concat!(
+        "scrub in all fragment reassemble\n",
+        "pass in quick on en0 inet proto tcp from any to any port = 8443 flags S/SA keep state\n",
+        "rdr-anchor \"ra\" in on en1 {\n",
+        "  rdr pass on en1 proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n",
+        "}\n",
+    )
+    .to_owned()));
+    let collected = collect_with(&mut runner).unwrap();
+    let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
+    else {
+        panic!("expected enabled pf report");
+    };
+    for port in &ports {
+        assert!(
+            matches!(&port.interfaces[0].outcome, Verdict::Unknown { .. }),
+            "inline translation anchor must make target unknown, got {:?}",
+            port.interfaces[0].outcome
+        );
+    }
+}
+
+#[test]
+fn weak_host_evaluates_all_active_interfaces_for_non_loopback_and_wildcard_sockets() {
+    let ifconfig_multi = concat!(
+        "lo0: flags=8049<UP,LOOPBACK,RUNNING,MULTICAST> mtu 16384\n",
+        "\tinet 127.0.0.1 netmask 0xff000000\n",
+        "\tinet6 ::1 prefixlen 128\n",
+        "en0: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+        "\tinet 192.0.2.10 netmask 0xffffff00 broadcast 192.0.2.255\n",
+        "\tinet6 fe80::200:ff:fe00:1%en0 prefixlen 64 scopeid 0x4\n",
+        "\tstatus: active\n",
+        "en1: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+        "\tinet 198.51.100.20 netmask 0xffffff00 broadcast 198.51.100.255\n",
+        "\tstatus: active\n",
+        "en2: flags=8863<UP,BROADCAST,SMART,RUNNING,SIMPLEX,MULTICAST> mtu 1500\n",
+        "\tinet 203.0.113.30 netmask 0xffffff00 broadcast 203.0.113.255\n",
+        "\tstatus: inactive\n",
+        "gif0: flags=8010<POINTOPOINT,MULTICAST> mtu 1280\n",
+        "\tinet 198.18.0.1 netmask 0xffffffff\n",
+    );
+    let mut runner = StubRunner::enabled_default();
+    runner.main_rules = Some(Ok(concat!(
+        "scrub in all fragment reassemble\n",
+        "block drop in all\n",
+        "pass in on en1 inet proto udp from any to 192.0.2.10 port = 5353 keep state\n",
+    )
+    .to_owned()));
+    let collected = collect_with(&mut runner).unwrap();
+    let ifaces = parse_ifconfig(ifconfig_multi);
+    let sockets = [
+        target(5353, Protocol::Udp, "192.0.2.10"),
+        target(5353, Protocol::Udp, "0.0.0.0"),
+        target(5353, Protocol::Udp, "fe80::200:ff:fe00:1"),
+    ];
+    let PfReport::Enabled { ports } = PfReport::evaluate(Ok(collected), &sockets, Ok(&ifaces))
+    else {
+        panic!("expected enabled pf report");
+    };
+
+    let specific = ports
+        .iter()
+        .find(|p| p.address == "192.0.2.10".parse::<std::net::IpAddr>().unwrap())
+        .unwrap();
+    let names: Vec<_> = specific
+        .interfaces
+        .iter()
+        .filter_map(|v| v.interface.as_deref())
+        .collect();
+    assert_eq!(names, ["en0", "en1", "lo0"]);
+    assert!(matches!(
+        specific.interfaces[0].outcome,
+        Verdict::Block { .. }
+    ));
+    assert!(matches!(
+        specific.interfaces[1].outcome,
         Verdict::Pass { .. }
     ));
+    assert!(matches!(
+        specific.interfaces[2].outcome,
+        Verdict::Pass { .. }
+    ));
+
+    let wildcard = ports
+        .iter()
+        .find(|p| p.address == "0.0.0.0".parse::<std::net::IpAddr>().unwrap())
+        .unwrap();
+    let wild_names: Vec<_> = wildcard
+        .interfaces
+        .iter()
+        .filter_map(|v| v.interface.as_deref())
+        .collect();
+    assert_eq!(wild_names, ["en0", "en1", "lo0"]);
+    assert!(matches!(
+        wildcard.interfaces[0].outcome,
+        Verdict::Block { .. }
+    ));
+    assert!(matches!(
+        &wildcard.interfaces[1].outcome,
+        Verdict::Unknown { reason } if reason.contains("differ across addresses")
+    ));
+    assert!(matches!(
+        wildcard.interfaces[2].outcome,
+        Verdict::Pass { .. }
+    ));
+
+    // Link-local remains scoped to its holding active interface.
+    let link_local = ports
+        .iter()
+        .find(|p| p.address == "fe80::200:ff:fe00:1".parse::<std::net::IpAddr>().unwrap())
+        .unwrap();
+    assert_eq!(link_local.interfaces.len(), 1);
+    assert_eq!(link_local.interfaces[0].interface.as_deref(), Some("en0"));
 }

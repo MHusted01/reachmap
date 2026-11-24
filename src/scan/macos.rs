@@ -5,17 +5,19 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
-use super::{HostCollector, ScanError};
+use super::HostCollector;
+#[cfg(any(target_os = "macos", test))]
+use super::ScanError;
 use super::{Listener, ScanReport, ScannedPort};
 #[cfg(target_os = "macos")]
 use crate::collect::macos as collect;
 #[cfg(target_os = "macos")]
 use crate::errors::render_chain;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 use crate::parse::lsof;
 use crate::pf::PfReport;
-#[cfg(target_os = "macos")]
-use crate::pf::{CollectedPf, SocketTarget, parse_ifconfig};
+#[cfg(any(target_os = "macos", test))]
+use crate::pf::{CollectedPf, PfCollectError, parse_ifconfig};
 use crate::{
     reach::{Reason, classify},
     service::{Process, Service},
@@ -117,48 +119,47 @@ pub(super) struct Macos;
 impl HostCollector for Macos {
     fn scan(&self) -> Result<ScanReport, ScanError> {
         let (output, diagnostic) = collect::read_sockets()?;
-        let sockets_with_zones =
-            lsof::parse_with_zones(&output).map_err(|error| ScanError::SocketInventory {
-                record: error.record,
-            })?;
-        let firewall = collect::read_firewall().map_or_else(
-            |error| ApplicationFirewall::Unknown {
-                reason: render_chain(&error),
-            },
-            |text| parse_firewall(&text),
-        );
+        let firewall = collect::read_firewall().map_err(|error| render_chain(&error));
         let pf_result = collect::read_pf();
-        let targets: Vec<SocketTarget> = sockets_with_zones
-            .iter()
-            .map(|(endpoint, _, zone)| SocketTarget {
-                endpoint: *endpoint,
-                zone: zone.clone(),
-            })
-            .collect();
-        let pf = match pf_result {
-            Ok(CollectedPf::Enabled { .. }) => {
-                let interfaces = collect::read_interfaces()
-                    .map(|text| parse_ifconfig(&text))
-                    .map_err(|error| render_chain(&error));
-                PfReport::evaluate(
-                    pf_result,
-                    &targets,
-                    interfaces.as_ref().map_err(String::as_str),
-                )
-            }
-            other => PfReport::evaluate(other, &targets, Err("interfaces were not read")),
-        };
-        let sockets = sockets_with_zones
-            .into_iter()
-            .map(|(endpoint, process, _)| (endpoint, process))
-            .collect();
-        Ok(MacosReport::scan_report(
-            sockets,
-            firewall,
-            Some(pf),
-            diagnostic.as_deref(),
-        ))
+        assemble_scan(&output, diagnostic.as_deref(), firewall, pf_result, || {
+            collect::read_interfaces().map_err(|error| render_chain(&error))
+        })
     }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn assemble_scan(
+    lsof_output: &str,
+    diagnostic: Option<&str>,
+    firewall_output: Result<String, String>,
+    pf_result: Result<CollectedPf, PfCollectError>,
+    read_interfaces: impl FnOnce() -> Result<String, String>,
+) -> Result<ScanReport, ScanError> {
+    let sockets = lsof::parse(lsof_output).map_err(|error| ScanError::SocketInventory {
+        record: error.record,
+    })?;
+    let firewall = firewall_output.map_or_else(
+        |reason| ApplicationFirewall::Unknown { reason },
+        |text| parse_firewall(&text),
+    );
+    let targets: Vec<Endpoint> = sockets.iter().map(|(endpoint, _)| *endpoint).collect();
+    let pf = match pf_result {
+        Ok(CollectedPf::Enabled { .. }) => {
+            let interfaces = read_interfaces().map(|text| parse_ifconfig(&text));
+            PfReport::evaluate(
+                pf_result,
+                &targets,
+                interfaces.as_ref().map_err(String::as_str),
+            )
+        }
+        other => PfReport::evaluate(other, &targets, Err("interfaces were not read")),
+    };
+    Ok(MacosReport::scan_report(
+        sockets,
+        firewall,
+        Some(pf),
+        diagnostic,
+    ))
 }
 
 #[cfg(any(target_os = "macos", test))]
@@ -276,6 +277,105 @@ mod tests {
         assert!(text.contains("macOS pf: enabled"));
         assert!(
             text.contains("8080/tcp 192.0.2.10 (IPv4): en0 block (matched block rule at line 3)")
+        );
+    }
+
+    #[test]
+    fn assemble_scan_connects_lsof_firewall_and_pf_fixtures_end_to_end() {
+        use std::time::Duration;
+
+        use crate::collect::CollectError;
+        use crate::pf::{PfCommand, PfRunner, collect_with};
+
+        struct FixtureRunner {
+            denied: bool,
+        }
+
+        impl PfRunner for FixtureRunner {
+            fn run(
+                &mut self,
+                command: PfCommand<'_>,
+                _timeout: Duration,
+            ) -> Result<String, CollectError> {
+                if self.denied {
+                    return Err(CollectError::CommandFailed {
+                        command: "/sbin/pfctl -s info".to_owned(),
+                        status: std::process::ExitStatus::default(),
+                        stderr: "pfctl: /dev/pf: Operation not permitted".to_owned(),
+                    });
+                }
+                match command {
+                    PfCommand::Info => Ok(include_str!(
+                        "../../tests/fixtures/pf/pfctl_info_enabled.txt"
+                    )
+                    .to_owned()),
+                    PfCommand::MainRules => {
+                        Ok(include_str!("../../tests/fixtures/pf/default_block.txt").to_owned())
+                    }
+                    PfCommand::Interfaces => Ok(include_str!(
+                        "../../tests/fixtures/pf/pfctl_interfaces_skip_lo0.txt"
+                    )
+                    .to_owned()),
+                    PfCommand::RootAnchors => Ok(include_str!(
+                        "../../tests/fixtures/pf/pfctl_anchors_default.txt"
+                    )
+                    .to_owned()),
+                    PfCommand::AnchorChildren("com.apple") => Ok(include_str!(
+                        "../../tests/fixtures/pf/pfctl_anchors_com_apple.txt"
+                    )
+                    .to_owned()),
+                    PfCommand::AnchorRules(_) | PfCommand::AnchorChildren(_) => Ok(String::new()),
+                }
+            }
+        }
+
+        let lsof_text = concat!(
+            "p42\0cworker\0\n",
+            "f3\0tIPv4\0PTCP\0n192.0.2.10:8443\0TST=LISTEN\0\n",
+        );
+        let enabled = assemble_scan(
+            lsof_text,
+            None,
+            Ok("Firewall is disabled. (State = 0)\n".to_owned()),
+            collect_with(&mut FixtureRunner { denied: false }),
+            || Ok(include_str!("../../tests/fixtures/pf/ifconfig_macos.txt").to_owned()),
+        )
+        .unwrap();
+        let enabled_table = crate::table::Report(&enabled).to_string();
+        assert!(enabled_table.contains("macOS application firewall: disabled"));
+        assert!(enabled_table.contains(
+            "8443/tcp 192.0.2.10 (IPv4): en0 block (matched block rule at line 3), \
+             lo0 pass (the interface is excluded by set skip)"
+        ));
+        let enabled_json: serde_json::Value =
+            serde_json::from_str(&crate::json::render(&enabled).unwrap()).unwrap();
+        assert_eq!(enabled_json["macos"]["pf"]["status"], "enabled");
+        assert_eq!(
+            enabled_json["macos"]["pf"]["ports"][0]["interfaces"][0]["verdict"],
+            "block"
+        );
+        assert_eq!(
+            enabled_json["macos"]["pf"]["ports"][0]["interfaces"][0]["reason"],
+            "matched block rule at line 3"
+        );
+
+        let denied = assemble_scan(
+            lsof_text,
+            None,
+            Ok("Firewall is enabled. (State = 1)\n".to_owned()),
+            collect_with(&mut FixtureRunner { denied: true }),
+            || unreachable!("interfaces must not be read when pf collection fails"),
+        )
+        .unwrap();
+        let denied_table = crate::table::Report(&denied).to_string();
+        assert!(denied_table.contains("macOS pf: unknown (reading pf status and rules requires root privileges (run with sudo)"));
+        let denied_json: serde_json::Value =
+            serde_json::from_str(&crate::json::render(&denied).unwrap()).unwrap();
+        assert_eq!(denied_json["macos"]["pf"]["status"], "unknown");
+        assert!(
+            denied_json["macos"]["pf"]["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("sudo"))
         );
     }
 }
